@@ -1,0 +1,20 @@
+{
+  "name": "daftar-reader",
+  "private": true,
+  "description": "The reading view of Daftar for Linux: markdown-it with Obsidian's syntax, bundled for a WebKitGTK web view.",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "highlight.js": "^11.12.0",
+    "katex": "^0.19.1",
+    "lucide-static": "^1.61.0",
+    "markdown-it": "^15.0.3",
+    "markdown-it-footnote": "^4.0.0",
+    "mermaid": "^12.2.0"
+  },
+  "type": "module"
+}

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Daftar
+GenericName=Notes
+Comment=A native app for an Obsidian vault in a Git repository
+Exec=daftar %f
+Icon=me.parham1995.notes
+Terminal=false
+Categories=Office;TextTools;
+Keywords=notes;markdown;obsidian;tasks;
+StartupWMClass=me.parham1995.notes

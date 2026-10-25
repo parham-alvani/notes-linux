@@ -1,0 +1,683 @@
+/* The reading view. The colours are Daftar's on the phone: naz
+   (`1995parham/naz.vim`, the colour scheme the vault is written in) on dark,
+   and Daftar's Daylight palette on light, where naz's accents are darkened
+   until they read on paper. The values are copied from
+   `notes-droid/.../ui/theme/Naz.kt` and `Markup.kt`; change them there and
+   here together. */
+
+@font-face {
+  font-family: "Persian Fallback";
+  src: local("Vazirmatn"), local("Vazirmatn UI");
+  font-weight: 100 900;
+  /* Only the Persian and Arabic letters: the face is never picked for Latin
+     text or ASCII digits. */
+  unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+200C-200D, U+FB50-FDFF, U+FE70-FEFF;
+}
+
+:root {
+  color-scheme: light dark;
+  --font-text: -apple-system, BlinkMacSystemFont, "Persian Fallback", "Geeza Pro", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --text-size: 14px;
+  /* SF Pro's alternates, as the Cupertino theme turns them on. */
+  --font-features: "ss01" 1, "ss07" 1, "cv07" 1;
+
+  /* Daylight */
+  --background: #faf9f5;
+  --panel: #efede6;
+  --text: #2a2a28;
+  --text-muted: #6a6a62;
+  --text-faint: #6a6a62;
+  --rule-color: #d8d5cc;
+  --accent: #a85200;
+  --h1-color: #a85200;
+  --h2-color: #8a6a00;
+  --h3-color: #0070a0;
+  --h4-color: #0a7a48;
+  --h5-color: #b02a70;
+  --h6-color: #8040a0;
+  --strong-color: #a85200;
+  --em-color: #0a7a48;
+  --strike-color: #2a2a28;
+  --code-inline: #8a6a00;
+  --code-background: #efede6;
+  --link-color: #00707a;
+  --link-external-color: #00707a;
+  --quote-color: #a85200;
+  --list-marker: #a85200;
+  --done-color: #6a6a62;
+  --table-header-color: #a85200;
+  --table-row-alt: rgba(0, 0, 0, 0.03);
+  --table-hairline: #d8d5cc;
+  --highlight-bg: #8a6a00;
+  --highlight-fg: #faf9f5;
+  --img-border: #d8d5cc;
+
+  --red: #c01030;
+  --orange: #a85200;
+  --yellow: #8a6a00;
+  --vivid-yellow: #8a6a00;
+  --spring-green: #0a7a48;
+  --chartreuse: #5a7a00;
+  --lime-green: #0a7a48;
+  --blue: #0070a0;
+  --aqua: #00707a;
+  --purple: #8040a0;
+  --pink: #b02a70;
+  --grey: #6a6a62;
+  --warm-grey: #7a5a3a;
+
+  --code-text: #2a2a28;
+  --code-keyword: #00707a;
+  --code-string: #5a7a00;
+  --code-literal: #8040a0;
+  --code-comment: #6a6a62;
+  --code-key: #a85200;
+  --code-punctuation: #6a6a62;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* naz */
+    --background: #323232;
+    --panel: #3a3a35;
+    --text: #f5f5f0;
+    --text-muted: #a8a8a0;
+    --text-faint: #707080;
+    --rule-color: #4a4a4a;
+    --accent: #ffb040;
+    --h1-color: #ffe0a0;
+    --h2-color: #ffff88;
+    --h3-color: #60d8ff;
+    --h4-color: #e0ffd8;
+    --h5-color: #ff69b4;
+    --h6-color: #f0a0f0;
+    --strong-color: #ffb070;
+    --em-color: #b8ffd0;
+    --strike-color: #f5f5f0;
+    --code-inline: #ffd850;
+    --code-background: #282826;
+    --link-color: #80e5ff;
+    --link-external-color: #80e5ff;
+    --quote-color: #ffb040;
+    --list-marker: #ffb040;
+    --done-color: #707080;
+    --table-header-color: #ffb040;
+    --table-row-alt: rgba(255, 255, 255, 0.03);
+    --table-hairline: #4a4a4a;
+    --highlight-bg: #f0e890;
+    --highlight-fg: #323232;
+    --img-border: #4a4a4a;
+
+    --red: #ff5070;
+    --orange: #ffb040;
+    --yellow: #f0e890;
+    --vivid-yellow: #ffe040;
+    --spring-green: #20ffa0;
+    --chartreuse: #a0ff40;
+    --lime-green: #b8ffd0;
+    --blue: #40d0ff;
+    --aqua: #80e5ff;
+    --purple: #f0a0f0;
+    --pink: #ff69b4;
+    --grey: #a8a8a0;
+    --warm-grey: #b09070;
+
+    --code-text: #f5f5f0;
+    --code-keyword: #80e5ff;
+    --code-string: #a0ff40;
+    --code-literal: #f0a0f0;
+    --code-comment: #a8a8a0;
+    --code-key: #ffb040;
+    --code-punctuation: #d0d0d0;
+  }
+}
+
+html {
+  background: var(--background);
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+  font-family: var(--font-text);
+  font-size: var(--text-size);
+  line-height: 1.6;
+  font-feature-settings: var(--font-features);
+  -webkit-font-smoothing: antialiased;
+}
+
+#note {
+  max-width: 46em;
+  margin: 0 auto;
+  padding: 1.5em 2.5em 6em;
+  overflow-wrap: break-word;
+}
+
+[dir="rtl"] {
+  line-height: 2;
+}
+
+.inline-title {
+  font-size: 2em;
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 0.2em 0 0.6em;
+  color: var(--h1-color);
+  border: none !important;
+}
+
+/* Cupertino's headings: light at the top, medium below. */
+h1, h2, h3, h4, h5, h6 { line-height: 1.3; margin: 1.6em 0 0.5em; }
+h1 { font-size: 1.75em; font-weight: 400; color: var(--h1-color); }
+h2 { font-size: 1.5em; font-weight: 400; color: var(--h2-color); }
+h3 { font-size: 1.25em; font-weight: 400; color: var(--h3-color); }
+h4 { font-size: 1em; font-weight: 500; color: var(--h4-color); }
+h5 { font-size: 1em; font-weight: 500; color: var(--h5-color); }
+h6 { font-size: 0.875em; font-weight: 500; color: var(--h6-color); }
+strong { font-weight: 700; }
+h1, h2 {
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid color-mix(in oklch, currentColor 35%, transparent);
+}
+
+p, ul, ol, table, pre, blockquote, .callout { margin: 0 0 1em; }
+strong { color: var(--strong-color); }
+em { color: var(--em-color); }
+mark { background: var(--highlight-bg); color: var(--highlight-fg); border-radius: 3px; padding: 0 2px; }
+hr { border: none; border-top: 1px solid var(--rule-color); margin: 2em 0; }
+del { color: var(--strike-color); }
+
+a { color: var(--link-external-color); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a.internal-link { color: var(--link-color); }
+a.internal-link.is-unresolved, span.internal-link.is-unresolved { color: var(--link-color); opacity: 0.6; text-decoration: underline dotted; }
+a.tag {
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 16%, transparent);
+  border-radius: 1em;
+  padding: 0 0.5em;
+  font-size: 0.9em;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  color: var(--code-inline);
+  background: var(--code-background);
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+}
+pre {
+  background: var(--code-background);
+  border-radius: 8px;
+  padding: 0.9em 1.1em;
+  overflow-x: auto;
+  direction: ltr;
+  text-align: left;
+}
+pre code { color: inherit; background: none; padding: 0; font-size: 0.85em; }
+
+ul, ol { padding-inline-start: 1.6em; }
+li { margin: 0.15em 0; }
+li::marker { color: var(--list-marker); }
+li > p { margin: 0; }
+li.task-list-item { list-style: none; }
+/* The box is the status's Lucide icon (tasks.css), not the system checkbox. */
+input.task-list-item-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 1.1em;
+  height: 1.1em;
+  margin: 0;
+  border: none;
+  background-color: var(--task-color);
+  -webkit-mask: var(--task-icon) center / contain no-repeat;
+  mask: var(--task-icon) center / contain no-repeat;
+  cursor: pointer;
+  vertical-align: -0.18em;
+  transition: transform 0.1s;
+}
+input.task-list-item-checkbox:hover { transform: scale(1.12); }
+input.task-list-item-checkbox:disabled { cursor: default; opacity: 0.7; }
+li.task-list-item > input, li.task-list-item > p > input { margin-inline: -1.55em 0.5em; }
+li.task-list-item.is-checked[data-task="x"], li.task-list-item.is-checked[data-task="X"] { color: var(--done-color); }
+li.task-list-item.is-checked[data-task="x"] > p, li.task-list-item.is-checked[data-task="x"]:not(:has(> p)) { text-decoration: line-through; text-decoration-color: var(--text-faint); }
+li.task-list-item[data-task="-"] { color: var(--done-color); text-decoration: line-through; }
+
+
+blockquote {
+  color: var(--quote-color);
+  border-inline-start: 3px solid var(--quote-color);
+  margin-inline: 0;
+  padding: 0.4em 1em;
+  border-radius: 4px;
+}
+blockquote > :last-child { margin-bottom: 0; }
+
+table { border-collapse: collapse; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--table-hairline); padding: 0.35em 0.7em; text-align: start; }
+th { color: var(--table-header-color); }
+tbody tr:nth-child(even) { background: var(--table-row-alt); }
+
+table.properties { font-size: 0.85em; margin-bottom: 1.5em; color: var(--text-muted); }
+table.properties th { color: var(--text-muted); font-weight: 500; }
+table.properties th, table.properties td { border: none; padding: 0.15em 1em 0.15em 0; }
+table.properties tbody tr:nth-child(even) { background: none; }
+
+img { max-width: 100%; border-radius: 6px; border: 1px solid var(--img-border); }
+
+.callout {
+  /* note, info and any kind Daftar does not know */
+  --callout-color: var(--blue);
+  border-inline-start: 3px solid color-mix(in oklch, var(--callout-color) 35%, transparent);
+  background-color: color-mix(in oklch, var(--callout-color) 10%, transparent);
+  border-radius: 8px;
+  padding: 0.7em 1em;
+}
+.callout-title { color: var(--callout-color); font-weight: 650; display: flex; gap: 0.4em; align-items: baseline; }
+summary.callout-title { cursor: pointer; list-style: none; }
+summary.callout-title::-webkit-details-marker { display: none; }
+summary.callout-title::after { content: "›"; margin-inline-start: auto; transition: transform 0.15s; }
+details[open] > summary.callout-title::after { transform: rotate(90deg); }
+.callout-content { margin-top: 0.4em; }
+.callout-content > :last-child { margin-bottom: 0; }
+.callout:not(:has(.callout-content > *)) .callout-content { display: none; }
+/* Daftar's kind-to-accent table (`Blocks.kt`, `CalloutKind.accent`), with
+   Obsidian's aliases for each kind. */
+.callout[data-callout="warning"], .callout[data-callout="caution"], .callout[data-callout="attention"] { --callout-color: var(--orange); }
+.callout[data-callout="danger"], .callout[data-callout="error"], .callout[data-callout="bug"], .callout[data-callout="failure"], .callout[data-callout="fail"], .callout[data-callout="missing"] { --callout-color: var(--red); }
+.callout[data-callout="success"], .callout[data-callout="check"], .callout[data-callout="done"] { --callout-color: var(--spring-green); }
+.callout[data-callout="tip"], .callout[data-callout="hint"], .callout[data-callout="important"] { --callout-color: var(--chartreuse); }
+.callout[data-callout="todo"] { --callout-color: var(--vivid-yellow); }
+.callout[data-callout="question"], .callout[data-callout="help"], .callout[data-callout="faq"] { --callout-color: var(--yellow); }
+.callout[data-callout="abstract"], .callout[data-callout="summary"], .callout[data-callout="tldr"] { --callout-color: var(--lime-green); }
+.callout[data-callout="example"] { --callout-color: var(--purple); }
+.callout[data-callout="quote"], .callout[data-callout="cite"] { --callout-color: var(--warm-grey); }
+.callout[data-callout="figure"] { --callout-color: var(--pink); }
+.callout[data-callout="read"] { --callout-color: var(--aqua); }
+
+.embed {
+  border-inline-start: 2px solid var(--accent);
+  padding-inline-start: 1em;
+  margin: 0 0 1em;
+}
+.embed-title { font-size: 0.8em; color: var(--text-muted); margin-bottom: 0.3em; }
+
+.math-block { overflow-x: auto; margin: 0 0 1em; }
+pre.mermaid { background: none; text-align: center; }
+pre.mermaid:not([data-processed]) { color: transparent; }
+pre.mermaid.mermaid-error { color: var(--red); text-align: left; }
+
+.footnotes { font-size: 0.88em; color: var(--text-muted); }
+
+.tasks-query { margin: 0 0 1em; }
+.query-list { padding-inline-start: 1.6em; margin: 0; }
+.query-group { list-style: none; margin: 0.9em 0 0.3em -1.6em; font-weight: 650; color: var(--accent); }
+.query-group.level-1 { margin-inline-start: -0.8em; color: var(--h3-color); font-weight: 600; }
+.query-group.level-2 { margin-inline-start: 0; color: var(--text-muted); }
+.query-dates { font-size: 0.8em; color: var(--text-muted); white-space: nowrap; }
+.query-source { font-size: 0.8em; opacity: 0.8; }
+.query-count, .query-empty { list-style: none; margin: 0.6em 0 0 -1.6em; font-size: 0.8em; color: var(--text-faint); }
+.query-warning ul { margin: 0.3em 0 0; }
+.footnotes-sep { border-top: 1px solid var(--rule-color); }
+
+/* Code colours: Daftar's `CodeHighlighter` roles. */
+pre code { color: var(--code-text); }
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-type, .hljs-title { color: var(--code-keyword); }
+.hljs-string, .hljs-template-string, .hljs-regexp, .hljs-addition { color: var(--code-string); }
+.hljs-number, .hljs-literal, .hljs-symbol { color: var(--code-literal); }
+.hljs-comment, .hljs-quote { color: var(--code-comment); font-style: italic; }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-meta, .hljs-section, .hljs-variable { color: var(--code-key); }
+.hljs-punctuation, .hljs-operator { color: var(--code-punctuation); }
+.hljs-deletion { color: var(--red); }
+
+/* Bases: a tab per view, then the table, its groups as header rows. */
+#note.is-base { max-width: none; }
+.base-query, .base-file { margin: 0 0 1em; }
+.base-tabs { display: flex; flex-wrap: wrap; gap: 0.3em; margin: 0 0 0.8em; }
+.base-tab {
+  font: inherit; font-size: 0.85em; color: var(--text-muted);
+  background: none; border: 1px solid var(--table-hairline); border-radius: 6px;
+  padding: 0.2em 0.7em; cursor: pointer;
+}
+.base-tab:hover { color: var(--text); }
+.base-tab.is-active { color: var(--accent); border-color: var(--accent); background: var(--panel); }
+.base-table { font-size: 0.9em; margin: 0; }
+.base-table thead th { position: sticky; top: 0; background: var(--background); white-space: nowrap; }
+.base-table td.numeric { text-align: end; font-variant-numeric: tabular-nums; }
+.base-table tr.base-group th { color: var(--accent); background: var(--panel); font-weight: 600; }
+.base-group-count { color: var(--text-faint); font-weight: 400; font-size: 0.85em; margin-inline-start: 0.4em; }
+.base-query .query-count, .base-query .query-empty, .base-file .query-count, .base-file .query-empty { margin-inline-start: 0; }
+
+/* A picture clicked to see it large; a click or Escape closes it. */
+#note img, #note pre.mermaid svg { cursor: zoom-in; }
+.zoom {
+  position: fixed; inset: 0; z-index: 100; cursor: zoom-out;
+  display: flex; align-items: center; justify-content: center; padding: 2em;
+  background: color-mix(in srgb, var(--background) 92%, transparent);
+  backdrop-filter: blur(6px);
+}
+.zoom > img, .zoom > svg {
+  max-width: 100%; max-height: 100%; width: auto; height: auto;
+  object-fit: contain; border: none; border-radius: 6px;
+}
+.zoom > svg { width: 100%; height: 100%; }
+
+/* ==========================================================================
+   Colour. Everything below takes the palette above, so naz and Daylight
+   both get it; nothing here names a colour of its own.
+   ========================================================================== */
+
+::selection { background: color-mix(in oklch, var(--accent) 32%, transparent); }
+
+/* The reading progress, a thin rainbow at the top of the window. */
+#progress {
+  position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 50;
+  transform-origin: left; transform: scaleX(0);
+  background: linear-gradient(90deg, var(--accent), var(--pink), var(--purple), var(--aqua));
+  transition: transform 0.08s linear;
+}
+
+/* The title runs from the heading colour into pink. */
+.inline-title {
+  width: fit-content;
+  background: linear-gradient(100deg, var(--h1-color) 10%, var(--pink) 60%, var(--purple));
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+  padding-bottom: 0.05em;
+}
+h1, h2 { border-bottom: 2px solid; border-image: linear-gradient(90deg, currentColor, color-mix(in oklch, currentColor 10%, transparent) 70%, transparent) 1; }
+h3 { border-inline-start: 3px solid var(--h3-color); padding-inline-start: 0.5em; }
+h4, h5, h6 { letter-spacing: 0.01em; }
+
+/* Highlights like a marker pen. */
+mark {
+  color: var(--highlight-fg);
+  background: linear-gradient(100deg, color-mix(in oklch, var(--highlight-bg) 75%, transparent), var(--highlight-bg) 8%, var(--highlight-bg) 92%, color-mix(in oklch, var(--highlight-bg) 70%, transparent));
+  padding: 0 0.15em;
+  border-radius: 0.2em;
+}
+
+/* Bold, italic and the rest inside a highlight take its text colour: their
+   own colours do not read on the marker. They keep their weight and slant. */
+mark strong, mark em, mark b, mark i, mark del, mark s, mark a:not(.tag) { color: inherit; }
+mark a.internal-link:not(.attachment) { text-decoration-color: currentColor; }
+mark code { color: inherit; background: color-mix(in oklch, var(--background) 25%, transparent); border-color: transparent; }
+
+/* Obsidian's six highlight colours (==🔴 text== and so on), in the
+   callouts' colours, as the vault's snippet maps them. */
+mark[data-highlight="red"] { --highlight-bg: var(--red); }
+mark[data-highlight="orange"] { --highlight-bg: var(--orange); }
+mark[data-highlight="yellow"] { --highlight-bg: var(--vivid-yellow); }
+mark[data-highlight="green"] { --highlight-bg: var(--spring-green); }
+mark[data-highlight="blue"] { --highlight-bg: var(--blue); }
+mark[data-highlight="purple"] { --highlight-bg: var(--purple); }
+
+/* Links: an underline in the link's own colour, a tint on hover. */
+a.internal-link:not(.attachment) {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--link-color) 40%, transparent);
+  text-underline-offset: 0.22em;
+  text-decoration-thickness: 1px;
+  border-radius: 3px;
+  transition: background 0.12s, text-decoration-color 0.12s;
+}
+a.internal-link:hover { text-decoration-color: var(--link-color); background: color-mix(in oklch, var(--link-color) 12%, transparent); }
+#note a:not(.internal-link):not(.tag):not(.footnote-backref):not([href^="#"])::after {
+  content: "↗"; font-size: 0.72em; margin-inline-start: 0.12em; vertical-align: 0.25em; opacity: 0.7;
+}
+a.tag {
+  --tag-color: var(--accent);
+  color: var(--tag-color);
+  background: color-mix(in oklch, var(--tag-color) 14%, transparent);
+  border: 1px solid color-mix(in oklch, var(--tag-color) 30%, transparent);
+  padding: 0.02em 0.55em;
+  font-weight: 500;
+  transition: background 0.12s;
+}
+a.tag:hover { text-decoration: none; background: color-mix(in oklch, var(--tag-color) 26%, transparent); }
+
+code { border: 1px solid color-mix(in oklch, var(--code-inline) 22%, transparent); }
+pre code { border: none; }
+
+/* Code blocks: a header with the language in its colour, and a copy button. */
+.code-block {
+  --lang-color: var(--accent);
+  margin: 0 0 1em;
+  border-radius: 10px;
+  background: var(--code-background);
+  border: 1px solid color-mix(in oklch, var(--lang-color) 22%, transparent);
+  box-shadow: inset 3px 0 0 var(--lang-color);
+  overflow: hidden;
+}
+.code-block > pre { margin: 0; border-radius: 0; background: none; padding-top: 0.5em; }
+.code-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.35em 0.6em 0 1.1em; direction: ltr;
+}
+.code-lang {
+  font-family: var(--font-mono); font-size: 0.72em; font-weight: 600; text-transform: lowercase;
+  color: var(--lang-color);
+  background: color-mix(in oklch, var(--lang-color) 14%, transparent);
+  border-radius: 1em; padding: 0.1em 0.65em;
+}
+.code-copy {
+  display: inline-flex; align-items: center; gap: 0.35em;
+  font: inherit; font-size: 0.75em; color: var(--text-muted);
+  background: none; border: 1px solid transparent; border-radius: 6px; padding: 0.15em 0.5em; cursor: pointer;
+  opacity: 0; transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+}
+.code-block:hover .code-copy, .code-copy.is-done { opacity: 1; }
+.code-copy:hover { color: var(--text); border-color: var(--table-hairline); }
+.code-copy .icon { width: 1.1em; height: 1.1em; background: currentColor; -webkit-mask: var(--icon-copy) center / contain no-repeat; }
+.code-copy.is-done { color: var(--spring-green); }
+.code-copy.is-done .icon { -webkit-mask-image: var(--icon-copied); }
+
+/* Quotes get a tint and a bar that fades. */
+blockquote {
+  color: var(--text);
+  background: linear-gradient(90deg, color-mix(in oklch, var(--quote-color) 10%, transparent), transparent 85%);
+  border-inline-start: 3px solid var(--quote-color);
+  border-radius: 0 8px 8px 0;
+}
+[dir="rtl"] blockquote, blockquote[dir="rtl"] { border-radius: 8px 0 0 8px; background: linear-gradient(270deg, color-mix(in oklch, var(--quote-color) 10%, transparent), transparent 85%); }
+
+/* Lists: each level of bullets has its own colour. */
+li::marker { font-weight: 600; }
+ul ul > li::marker, ol ul > li::marker { color: var(--aqua); }
+ul ul ul > li::marker { color: var(--pink); }
+ul ul ul ul > li::marker { color: var(--chartreuse); }
+ol > li::marker { color: var(--accent); }
+
+hr {
+  height: 2px; border: none; border-radius: 2px; opacity: 0.8;
+  background: linear-gradient(90deg, transparent, var(--accent), var(--pink), var(--aqua), transparent);
+}
+
+/* Tables: rounded, the header tinted, a row lit under the pointer. */
+table:not(.properties) { border-collapse: separate; border-spacing: 0; border: 1px solid var(--table-hairline); border-radius: 10px; width: fit-content; max-width: 100%; }
+table:not(.properties) th, table:not(.properties) td { border: none; border-bottom: 1px solid var(--table-hairline); }
+table:not(.properties) th + th, table:not(.properties) td + td { border-inline-start: 1px solid var(--table-hairline); }
+table:not(.properties) tbody tr:last-child td { border-bottom: none; }
+table:not(.properties) thead th { background: color-mix(in oklch, var(--table-header-color) 12%, transparent); }
+table:not(.properties) tbody tr:hover { background: color-mix(in oklch, var(--accent) 7%, transparent); }
+
+/* Properties as a card. */
+table.properties {
+  display: table; border-collapse: separate;
+  background: color-mix(in oklch, var(--panel) 70%, transparent);
+  border: 1px solid var(--table-hairline); border-radius: 10px; padding: 0.4em 0.8em;
+}
+table.properties th { color: var(--accent); font-weight: 600; font-size: 0.92em; }
+table.properties td { color: var(--text); }
+
+/* Callouts: the kind's icon, a stronger bar, a soft gradient. */
+.callout {
+  border-inline-start: 4px solid var(--callout-color);
+  background: linear-gradient(135deg, color-mix(in oklch, var(--callout-color) 15%, transparent), color-mix(in oklch, var(--callout-color) 5%, transparent));
+  box-shadow: 0 1px 0 color-mix(in oklch, var(--callout-color) 12%, transparent);
+}
+.callout-title { align-items: center; }
+.callout-icon {
+  flex: none; width: 1.1em; height: 1.1em;
+  background: var(--callout-color);
+  -webkit-mask: var(--callout-icon) center / contain no-repeat;
+  mask: var(--callout-icon) center / contain no-repeat;
+}
+
+.embed {
+  border-inline-start: 3px solid;
+  border-image: linear-gradient(180deg, var(--accent), var(--pink)) 1;
+  background: color-mix(in oklch, var(--panel) 45%, transparent);
+  padding: 0.6em 1em;
+}
+.embed-title { color: var(--accent); font-weight: 600; }
+
+/* Pictures float a little, and lift under the pointer. */
+#note img { box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18); transition: transform 0.15s, box-shadow 0.15s; }
+#note img:hover { transform: translateY(-1px); box-shadow: 0 8px 26px rgba(0, 0, 0, 0.26); }
+
+/* Video, sound and PDF. */
+video.media { display: block; max-width: 100%; border-radius: 10px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22); margin: 0 0 1em; background: #000; }
+.media-audio {
+  display: flex; align-items: center; gap: 0.8em; flex-wrap: wrap;
+  padding: 0.6em 0.9em; margin: 0 0 1em; border-radius: 10px;
+  background: linear-gradient(90deg, color-mix(in oklch, var(--purple) 16%, transparent), color-mix(in oklch, var(--aqua) 10%, transparent));
+}
+.media-audio audio { flex: 1; min-width: 14em; }
+.media-name { color: var(--purple); font-weight: 600; }
+iframe.media-pdf { width: 100%; height: 75vh; border: 1px solid var(--table-hairline); border-radius: 10px; margin: 0 0 1em; background: var(--panel); }
+
+.footnote-ref a { color: var(--pink); font-weight: 600; }
+
+/* Find in the note. */
+.find-bar {
+  position: fixed; top: 12px; right: 16px; z-index: 60;
+  display: flex; align-items: center; gap: 0.35em;
+  padding: 0.35em 0.4em 0.35em 0.7em;
+  background: color-mix(in oklch, var(--panel) 88%, transparent);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  border: 1px solid color-mix(in oklch, var(--accent) 55%, transparent);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25), 0 0 0 4px color-mix(in oklch, var(--accent) 12%, transparent);
+  font-size: 0.9em;
+  transform: translateY(-140%); opacity: 0; pointer-events: none;
+  transition: transform 0.18s ease-out, opacity 0.18s;
+}
+.find-bar.is-open { transform: none; opacity: 1; pointer-events: auto; }
+.find-bar.is-empty { border-color: var(--red); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25), 0 0 0 4px color-mix(in oklch, var(--red) 14%, transparent); }
+.find-bar input {
+  font: inherit; color: var(--text); background: none; border: none; outline: none; width: 15em;
+}
+.find-icon, .find-bar button::before {
+  display: block; width: 1em; height: 1em; background: var(--accent);
+  -webkit-mask: var(--icon-search) center / contain no-repeat;
+}
+.find-count { color: var(--text-muted); font-size: 0.85em; font-variant-numeric: tabular-nums; min-width: 4.5em; text-align: end; }
+.find-bar.is-empty .find-count { color: var(--red); }
+.find-bar button { background: none; border: none; padding: 0.3em; border-radius: 6px; cursor: pointer; }
+.find-bar button:hover { background: color-mix(in oklch, var(--accent) 16%, transparent); }
+.find-bar button::before { content: ""; background: var(--text-muted); }
+.find-previous::before { -webkit-mask-image: var(--icon-up) !important; }
+.find-next::before { -webkit-mask-image: var(--icon-down) !important; }
+.find-close::before { -webkit-mask-image: var(--icon-close) !important; }
+::highlight(find) { background-color: color-mix(in oklch, var(--vivid-yellow) 38%, transparent); color: inherit; }
+::highlight(find-current) { background-color: var(--accent); color: var(--background); }
+
+/* Task queries: the groups as coloured headings, each date a chip, the
+   note a pill. */
+.query-group {
+  display: flex; align-items: center; gap: 0.5em;
+  padding: 0.2em 0.6em; border-radius: 6px;
+  background: linear-gradient(90deg, color-mix(in oklch, var(--accent) 16%, transparent), transparent 80%);
+  border-inline-start: 3px solid var(--accent);
+}
+.query-group.level-1 { background: linear-gradient(90deg, color-mix(in oklch, var(--h3-color) 12%, transparent), transparent 70%); border-color: var(--h3-color); }
+.query-group.level-2 { background: none; border-color: var(--text-faint); }
+.query-dates { display: inline-flex; gap: 0.3em; flex-wrap: wrap; vertical-align: 0.05em; }
+.query-date { --date-color: var(--text-muted); color: var(--date-color); background: color-mix(in oklch, var(--date-color) 14%, transparent); border-radius: 1em; padding: 0 0.5em; font-size: 0.92em; }
+.query-date.is-due { --date-color: var(--orange); }
+.query-date.is-late { --date-color: var(--red); font-weight: 600; }
+.query-date.is-scheduled { --date-color: var(--blue); }
+.query-date.is-done, .query-date.is-past { --date-color: var(--spring-green); }
+a.query-source {
+  color: var(--aqua); text-decoration: none !important;
+  background: color-mix(in oklch, var(--aqua) 12%, transparent); border-radius: 1em; padding: 0 0.55em;
+}
+.query-count { color: var(--accent); font-weight: 500; }
+
+/* Bases: the active view in a gradient, groups as coloured bands, numbers
+   and checks in their colours. */
+.base-tab.is-active {
+  color: var(--background); border-color: transparent;
+  background: linear-gradient(100deg, var(--accent), var(--pink));
+  font-weight: 600;
+}
+.base-table thead th { color: var(--accent); background: color-mix(in oklch, var(--accent) 10%, var(--background)); }
+.base-table tr.base-group th {
+  color: var(--accent);
+  background: linear-gradient(90deg, color-mix(in oklch, var(--accent) 22%, var(--background)), color-mix(in oklch, var(--panel) 60%, var(--background)));
+  border-inline-start: 3px solid var(--accent);
+}
+.base-group-count { color: var(--accent); background: color-mix(in oklch, var(--accent) 18%, transparent); border-radius: 1em; padding: 0 0.5em; }
+.base-table td.numeric { color: var(--aqua); font-weight: 500; }
+.base-table input[type=checkbox] { accent-color: var(--spring-green); }
+.base-query .query-count, .base-file .query-count { color: var(--accent); }
+.query-date.is-start { --date-color: var(--purple); }
+.query-date.is-created { --date-color: var(--text-muted); }
+.query-date.is-cancelled { --date-color: var(--red); text-decoration: line-through; }
+.query-date.is-repeat { --date-color: var(--pink); }
+li.task-list-item .query-date { margin-inline: 0.15em; }
+li.task-list-item.is-checked .query-date { text-decoration: none; opacity: 0.75; }
+.task-priority {
+  display: inline-block; min-width: 1.3em; text-align: center; font-weight: 700; font-size: 0.85em;
+  border-radius: 0.4em; padding: 0 0.25em; margin-inline: 0.15em;
+  --priority-color: var(--accent);
+  color: var(--priority-color); background: color-mix(in oklch, var(--priority-color) 16%, transparent);
+}
+.task-priority.is-highest, .task-priority.is-high { --priority-color: var(--red); }
+.task-priority.is-medium { --priority-color: var(--orange); }
+.task-priority.is-low, .task-priority.is-lowest { --priority-color: var(--blue); }
+
+/* A note's preview, under the link the pointer is on. */
+.preview {
+  position: fixed; z-index: 70; overflow: auto;
+  padding: 0 1em 0.8em; font-size: 0.9em;
+  background: var(--background);
+  border: 1px solid color-mix(in oklch, var(--accent) 45%, var(--table-hairline));
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35), 0 0 0 4px color-mix(in oklch, var(--accent) 10%, transparent);
+  opacity: 0; transform: translateY(4px) scale(0.98); pointer-events: none;
+  transition: opacity 0.14s, transform 0.14s;
+}
+.preview.is-open { opacity: 1; transform: none; pointer-events: auto; }
+.preview-head {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: baseline; gap: 0.5em; flex-wrap: wrap;
+  margin: 0 -1em 0.6em; padding: 0.6em 1em 0.5em;
+  background: linear-gradient(100deg, color-mix(in oklch, var(--accent) 18%, var(--background)), color-mix(in oklch, var(--pink) 10%, var(--background)));
+  border-bottom: 1px solid color-mix(in oklch, var(--accent) 25%, transparent);
+}
+.preview-title { font-weight: 700; color: var(--accent); }
+.preview-anchor { color: var(--h3-color); font-weight: 600; }
+.preview-path { margin-inline-start: auto; color: var(--text-faint); font-size: 0.82em; }
+.preview-body > :last-child { margin-bottom: 0; }
+.preview-body h1, .preview-body h2, .preview-body h3 { margin-top: 0.8em; }
+.preview-empty { color: var(--text-faint); font-style: italic; }
+
+/* The reading cursor: the block being read, as the editor tints its line. */
+#reading-cursor {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 80%, transparent);
+  opacity: 0;
+  transition: top 0.14s ease-out, height 0.14s ease-out, opacity 0.2s;
+}
+#reading-cursor.is-on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  #reading-cursor { transition: none; }
+}

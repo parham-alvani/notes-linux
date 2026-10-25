@@ -1,0 +1,32 @@
+# Daftar for Linux. `just` lists the recipes.
+
+default:
+    @just --list
+
+# The reader bundle, from web/src into crates/daftar/reader.
+web:
+    cd web && ([ -d node_modules ] || npm ci) && node build.mjs
+
+# The Rust tests and the renderer's tests.
+test: web
+    cargo test --workspace
+    cd web && node --test test/*.test.mjs
+
+# Formatting and clippy, as CI runs them.
+lint: web
+    cargo fmt --check
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# Starts the app; `just run Notes/Inbox.md` opens that note.
+run *args: web
+    cargo run -p daftar -- {{args}}
+
+# The release binary, with the reader built into it.
+app: web
+    cargo build --release -p daftar
+
+# Installs for this user: the binary, its desktop entry and its icon.
+install: app
+    install -Dm755 target/release/daftar ~/.local/bin/daftar
+    install -Dm644 data/me.parham1995.notes.desktop ~/.local/share/applications/me.parham1995.notes.desktop
+    install -Dm644 data/me.parham1995.notes.png ~/.local/share/icons/hicolor/256x256/apps/me.parham1995.notes.png

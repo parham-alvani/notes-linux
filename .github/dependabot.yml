@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      # gtk-rs releases its crates together: one pull request for all of them.
+      gtk:
+        patterns: ["gtk4", "libadwaita", "webkit6", "soup3", "glib*", "gio*"]
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    groups:
+      # The renderer's libraries move together: one pull request a week.
+      reader:
+        patterns: ["*"]
