@@ -161,6 +161,15 @@ impl GitSync {
         *self.soon.borrow_mut() = Some(id);
     }
 
+    /// A new interval from the settings: the timer starts again with it.
+    pub fn reconfigure(self: &Rc<Self>, interval: u32) {
+        self.stop_timers();
+        self.interval.set(interval);
+        if self.button.is_visible() {
+            self.schedule();
+        }
+    }
+
     fn schedule(self: &Rc<Self>) {
         let minutes = self.interval.get();
         if minutes == 0 {

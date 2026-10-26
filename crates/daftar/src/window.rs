@@ -513,6 +513,7 @@ impl Window {
             commands.push(command("Sync Now", "Git", "win.sync", "Ctrl+Shift+S"));
             commands.push(command("Pull", "Git", "win.pull", ""));
         }
+        commands.push(command("Settings", "App", "win.preferences", "Ctrl+,"));
         commands.push(command("Quit", "App", "app.quit", "Ctrl+Q"));
         let window = self.window.clone();
         palette::present_commands(&self.window, commands, move |action| {
@@ -520,6 +521,25 @@ impl Window {
                 let _ = WidgetExt::activate_action(&window, &format!("{group}.{name}"), None);
             }
         });
+    }
+
+    fn preferences(&self) {
+        let hooks = crate::preferences::Hooks {
+            theme: Box::new(apply_theme),
+            reader: Box::new({
+                let reader = self.reader.clone();
+                move || reader.reload()
+            }),
+            git: Box::new({
+                let git = self.git.clone();
+                move |_, interval| git.reconfigure(interval)
+            }),
+            notice: Box::new({
+                let toasts = self.toasts.clone();
+                move |text| toasts.add_toast(adw::Toast::new(text))
+            }),
+        };
+        crate::preferences::present(&self.window, self.settings.clone(), Rc::new(hooks));
     }
 
     fn palette(&self, mode: Mode) {
@@ -553,6 +573,10 @@ impl Window {
         let this = self.clone();
         open_vault.connect_activate(move |_, _| this.choose_vault());
         self.window.add_action(&open_vault);
+        let preferences = gio::SimpleAction::new("preferences", None);
+        let this = self.clone();
+        preferences.connect_activate(move |_, _| this.preferences());
+        self.window.add_action(&preferences);
         let commands = gio::SimpleAction::new("commands", None);
         let this = self.clone();
         commands.connect_activate(move |_, _| this.commands());

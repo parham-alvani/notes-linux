@@ -3,6 +3,7 @@
 
 mod editor;
 mod palette;
+mod preferences;
 mod reader;
 mod settings;
 mod sidebar;
@@ -36,6 +37,7 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.open-vault", &["<Ctrl><Shift>o"]);
     app.set_accels_for_action("win.today", &["<Ctrl>1"]);
     app.set_accels_for_action("win.commands", &["<Ctrl><Shift>p"]);
+    app.set_accels_for_action("win.preferences", &["<Ctrl>comma"]);
     app.set_accels_for_action("win.edit", &["<Ctrl>e"]);
     app.set_accels_for_action("win.save", &["<Ctrl>s"]);
     app.set_accels_for_action("win.sync", &["<Ctrl><Shift>s"]);
