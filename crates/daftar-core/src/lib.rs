@@ -6,6 +6,7 @@
 //! and on Android (`notes-droid`). The three apps share no code; when a rule
 //! changes in one, change it in the others.
 
+pub mod bookmarks;
 pub mod calendar_week;
 pub mod config;
 pub mod day;
@@ -17,6 +18,7 @@ pub mod markdown_highlighter;
 pub mod markdown_table;
 pub mod note_parser;
 pub mod quick_switcher;
+pub mod reading_places;
 pub mod search;
 pub mod tag_tree;
 pub mod task_board;
@@ -26,7 +28,9 @@ pub mod tasks_query;
 pub mod text;
 pub mod vault;
 pub mod vault_edits;
+pub mod vault_moves;
 
+pub use bookmarks::{BookmarkEntry, Bookmarks, BookmarksFailure};
 pub use calendar_week::{CalendarDay, CalendarWeek, Meeting};
 pub use config::{ConfigFile, Value};
 pub use day::Day;
@@ -38,6 +42,7 @@ pub use markdown_highlighter::{BlockState, Kind as HighlightKind, MarkdownHighli
 pub use markdown_table::{MarkdownTable, TableTab};
 pub use note_parser::{FrontMatter, Heading, Link, NoteParser, ParsedNote, ParsedTask, Wikilink};
 pub use quick_switcher::{Candidate, QuickSwitcher};
+pub use reading_places::ReadingPlaces;
 pub use search::{Hit, SearchIndex};
 pub use tag_tree::TagNode;
 pub use task_board::{Column, Drop as BoardDrop, Grouping, TaskBoard};
@@ -46,3 +51,4 @@ pub use task_line::{Meta, Recurrence, TaskFields, TaskLine, TaskMetadata};
 pub use tasks_query::{DateRange, QueryTask, TaskState, TasksQuery};
 pub use vault::{Backlink, ExcludedFiles, NoteEntry, TreeNode, Vault, VaultIndex, VaultTask};
 pub use vault_edits::{Failure, VaultEdits};
+pub use vault_moves::{MoveFailure, VaultMoves};

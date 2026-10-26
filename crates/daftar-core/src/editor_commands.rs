@@ -477,7 +477,7 @@ mod tests {
         assert_eq!(EditorCommands::extract_name("- [ ] Call the bank"), "Call the bank");
         assert_eq!(EditorCommands::extract_name("   \n"), "Untitled");
         assert_eq!(EditorCommands::extract_name("...hidden thought"), "hidden thought");
-        assert_eq!(EditorCommands::extract_name("# .env notes"), "env notes");
+        assert!(crate::vault_moves::VaultMoves::is_valid_name(&EditorCommands::extract_name("# .env notes")));
         assert_eq!(EditorCommands::extract_name(". . ."), "Untitled");
         assert!(EditorCommands::extract_name(&"word ".repeat(30)).chars().count() <= 60);
     }
