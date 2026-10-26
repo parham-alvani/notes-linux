@@ -134,6 +134,7 @@ impl Window {
         let editor = {
             let (notices, conflicts, opener) = (toasts.clone(), toasts.clone(), opener.clone());
             Editor::new(
+                settings.clone(),
                 move |text| notices.add_toast(adw::Toast::new(text)),
                 move |text| {
                     let toast = adw::Toast::builder().title(text).button_label("Reload").timeout(0).build();
@@ -177,6 +178,15 @@ impl Window {
             forward: Rc::new(RefCell::new(Vec::new())),
         };
         *opener.borrow_mut() = Some(this.clone());
+        {
+            // Neovim's mode beside "Editing", while the editor is on screen.
+            let (title, stack) = (title.clone(), stack.clone());
+            editor.connect_mode(move |mode| {
+                if stack.visible_child_name().as_deref() == Some("editor") {
+                    title.set_subtitle(&mode.map_or("Editing".to_string(), |mode| format!("Editing · {mode}")));
+                }
+            });
+        }
 
         {
             let this = this.clone();
@@ -337,6 +347,7 @@ impl Window {
             this.forward.borrow_mut().clear();
             this.sidebar.set_tree(store.index().tree());
             this.reader.set_store(store.clone());
+            this.editor.set_store(store.clone());
             {
                 let git = this.git.clone();
                 store.connect_wrote(move || git.edited());

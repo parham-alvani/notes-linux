@@ -3,7 +3,10 @@
 
 mod board;
 mod editor;
+mod editor_popup;
+mod editor_style;
 mod graph;
+mod neovim_session;
 mod notifier;
 mod palette;
 mod preferences;

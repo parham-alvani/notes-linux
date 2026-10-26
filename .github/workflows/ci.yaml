@@ -13,7 +13,7 @@ jobs:
     # that run Daftar do.
     container: archlinux:latest
     steps:
-      - run: pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita webkitgtk-6.0 gtksourceview5 vte4 sqlite nodejs npm just git
+      - run: pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita webkitgtk-6.0 gtksourceview5 vte4 neovim sqlite nodejs npm just git
       - uses: actions/checkout@v7
       - uses: actions/cache@v6
         with:

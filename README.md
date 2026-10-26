@@ -21,7 +21,8 @@ This is the first part of the port. It has:
 - **Quick open:** Ctrl+P finds a note or a file by name as Obsidian's quick switcher does: words in any order, letters that skip, aliases, and `comp/acme` for a path. Ctrl+Shift+F searches the text of every note.
 - **Follows the disk:** a note changed by another app, by Neovim or by `git pull` is read again, and the one on screen is drawn again where you were reading.
 - **Find:** Ctrl+F in the note, Ctrl+G and Ctrl+Shift+G for the next and the previous match.
-- **Editor:** Ctrl+E edits the note on screen in GtkSourceView, in the reader's colors, and Ctrl+E again reads it where the cursor is. It saves a second after you stop typing, on Ctrl+S and when you leave, and never over a change made on disk meanwhile: it says so and offers to reload.
+- **Editor:** Ctrl+E edits the note on screen, colored as the Mac editor colors it, and Ctrl+E again reads it where the cursor is. Return continues a list or a task list and ends it on an empty item; Tab and Shift+Tab indent an item, or go from cell to cell of a table and line its columns up; Ctrl+B, Ctrl+I and Ctrl+Shift+H mark the selection, Ctrl+K links it, Ctrl+Return ticks the task on the line, Alt+Up and Alt+Down move lines. `[[` offers notes as the quick switcher ranks them, `/` offers snippets (headings, tasks, callouts, tables, today's date), brackets and marks close themselves, a web address pasted on words links them, and a pasted picture is saved in the vault's attachment folder and embedded. A bar under the text counts the words. It saves a second after you stop typing, on Ctrl+S and when you leave, and never over a change made on disk meanwhile: it says so and offers to reload.
+- **Neovim mode:** with `editor.vim_mode = true`, the editor is your own Neovim (`nvim --embed`, with your config, or `editor.nvim_config`): keys go to it, the view shows its buffer with the same colors and Persian text, its mode shows in the title and the bar with its command line, and Neovim writes the file.
 - **Today:** Ctrl+1, the meetings from the phone's week note in `Calendar/` (now, next and over, the free time, overlaps, and a Join button for a web link), then the overdue tasks, the ones due today, the ones in progress and the next seven days, in cards; a box ticks a task, its text opens it.
 - **Board:** Ctrl+2, the tasks in columns by status, by day or by note, filtered by note or by words. A card dragged to another status or day column changes its line as the Tasks plugin writes it, and only while the line is still the task the card showed; a click opens the task, a right click edits or moves it.
 - **Edit Task:** a right click on a task, in a note, on Today or on the board: the text, the status, the priority, the due, scheduled and start dates, and the repeat rule. The line is read again before the save, which is refused when it changed.
@@ -35,7 +36,7 @@ This is the first part of the port. It has:
 - **Command line:** `daftar-cli`, below.
 - **Core:** the parser, the link resolver, the task lines, the vault index, the quick switcher's ranking, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
 
-Next come file actions (new, rename, move, delete), bookmarks and the Neovim mode.
+Next come file actions (new, rename, move, delete) and bookmarks.
 
 ## Command line
 
