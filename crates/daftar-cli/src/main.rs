@@ -6,6 +6,7 @@ mod images;
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -107,8 +108,9 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Search { query, limit } => {
             let search = SearchIndex::new();
             Vault::index(&root, Some(&search));
+            let terminal = std::io::stdout().is_terminal();
             for hit in search.search(&query.join(" "), limit) {
-                println!("{}\t{}", hit.path, hit.snippet.replace('\n', " "));
+                println!("{}\t{}", hit.path, snippet(&hit.snippet, terminal));
             }
         }
         Command::Tasks { due, path, all } => {
@@ -193,6 +195,13 @@ fn run(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
+/// A search snippet on one line, its matches in bold on a terminal; the
+/// index marks them with `\u{1}` and `\u{2}`.
+fn snippet(text: &str, terminal: bool) -> String {
+    let (open, close) = if terminal { ("\x1b[1m", "\x1b[0m") } else { ("", "") };
+    text.replace('\n', " ").replace('\u{1}', open).replace('\u{2}', close)
+}
+
 /// The vault given, else the app's.
 fn vault(given: Option<PathBuf>) -> Result<PathBuf, String> {
     let root = match given {
@@ -220,6 +229,12 @@ fn note_path(index: &VaultIndex, note: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_snippet_is_bold_only_on_a_terminal() {
+        assert_eq!(snippet("a \u{1}plan\u{2}\nnext", false), "a plan next");
+        assert_eq!(snippet("a \u{1}plan\u{2}", true), "a \x1b[1mplan\x1b[0m");
+    }
 
     #[test]
     fn a_note_is_found_by_path_or_by_name() {

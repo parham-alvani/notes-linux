@@ -1,6 +1,8 @@
 //! The folder tree, as Obsidian's file explorer shows it: folders first, a
 //! folder note opens with its folder.
 
+use std::collections::HashSet;
+
 use adw::prelude::*;
 use gtk::{gio, glib};
 
@@ -9,6 +11,7 @@ use daftar_core::{TreeNode, Vault};
 pub struct Sidebar {
     pub widget: gtk::ScrolledWindow,
     root: gio::ListStore,
+    model: gtk::TreeListModel,
 }
 
 fn node_of(item: &glib::Object) -> Option<TreeNode> {
@@ -41,7 +44,7 @@ impl Sidebar {
             let children = node_of(item)?.children?;
             Some(store_of(&children).upcast())
         });
-        let selection = gtk::SingleSelection::new(Some(model));
+        let selection = gtk::SingleSelection::new(Some(model.clone()));
         selection.set_autoselect(false);
         selection.set_can_unselect(true);
 
@@ -87,11 +90,28 @@ impl Sidebar {
         });
 
         let widget = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&list).build();
-        Sidebar { widget, root }
+        Sidebar { widget, root, model }
     }
 
+    /// Shows [tree], with the folders that were open still open.
     pub fn set_tree(&self, tree: &[TreeNode]) {
+        let open: HashSet<String> = (0..self.model.n_items())
+            .filter_map(|at| self.model.row(at))
+            .filter(|row| row.is_expanded())
+            .filter_map(|row| row.item().as_ref().and_then(node_of))
+            .map(|node| node.path)
+            .collect();
         let nodes: Vec<glib::BoxedAnyObject> = tree.iter().map(|node| glib::BoxedAnyObject::new(node.clone())).collect();
         self.root.splice(0, self.root.n_items(), &nodes);
+        // Opening a folder puts its rows after it, so the walk sees them too.
+        let mut at = 0;
+        while at < self.model.n_items() {
+            if let Some(row) = self.model.row(at)
+                && row.item().as_ref().and_then(node_of).is_some_and(|node| open.contains(&node.path))
+            {
+                row.set_expanded(true);
+            }
+            at += 1;
+        }
     }
 }

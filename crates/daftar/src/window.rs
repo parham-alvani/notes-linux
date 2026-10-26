@@ -1,6 +1,7 @@
 //! A Daftar window: the tree on the side, the note in the reader.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -10,10 +11,15 @@ use gtk::{gio, glib};
 
 use daftar_core::{SearchIndex, Value, Vault};
 
+use crate::palette::{self, Mode};
 use crate::reader::{Reader, Request};
 use crate::settings::AppSettings;
 use crate::sidebar::Sidebar;
 use crate::store::VaultStore;
+use crate::watcher::FileWatcher;
+
+/// How many notes the quick switcher remembers as opened lately.
+const RECENT: usize = 20;
 
 #[derive(Clone)]
 pub struct Window {
@@ -26,6 +32,9 @@ pub struct Window {
     reader: Reader,
     sidebar: Rc<Sidebar>,
     store: Rc<RefCell<Option<Rc<VaultStore>>>>,
+    watcher: Rc<RefCell<Option<FileWatcher>>>,
+    /// The notes opened lately, the last first.
+    recent: Rc<RefCell<Vec<String>>>,
 }
 
 impl Window {
@@ -62,6 +71,8 @@ impl Window {
             reader: reader.clone(),
             sidebar: sidebar.clone(),
             store: Rc::new(RefCell::new(None)),
+            watcher: Rc::new(RefCell::new(None)),
+            recent: Rc::new(RefCell::new(Vec::new())),
         };
         *opener.borrow_mut() = Some(this.clone());
 
@@ -76,6 +87,12 @@ impl Window {
 
         // The sidebar.
         let side_header = adw::HeaderBar::new();
+        let quick_open = gtk::Button::builder()
+            .icon_name("system-search-symbolic")
+            .tooltip_text("Open a Note (Ctrl+P)")
+            .action_name("win.quick-open")
+            .build();
+        side_header.pack_end(&quick_open);
         let side = adw::ToolbarView::new();
         side.add_top_bar(&side_header);
         side.set_content(Some(&sidebar.widget));
@@ -169,6 +186,15 @@ impl Window {
             };
             let folder = root;
             let store = Rc::new(VaultStore::new(folder.clone(), index, search));
+            let watcher = {
+                let this = this.clone();
+                FileWatcher::new(&folder, move |changed| this.files_changed(changed))
+            };
+            match watcher {
+                Ok(watcher) => *this.watcher.borrow_mut() = Some(watcher),
+                Err(error) => this.toasts.add_toast(adw::Toast::new(&format!("Changes on disk are not followed: {error}"))),
+            }
+            this.recent.borrow_mut().clear();
             this.sidebar.set_tree(store.index().tree());
             this.reader.set_store(store.clone());
             *this.store.borrow_mut() = Some(store);
@@ -192,6 +218,12 @@ impl Window {
             gtk::FileLauncher::new(Some(&file)).launch(Some(&self.window), gio::Cancellable::NONE, |_| {});
             return;
         }
+        {
+            let mut recent = self.recent.borrow_mut();
+            recent.retain(|p| p != path);
+            recent.insert(0, path.to_string());
+            recent.truncate(RECENT);
+        }
         let folder = path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("");
         self.title.set_title(&Vault::title(path));
         self.title.set_subtitle(folder);
@@ -200,7 +232,49 @@ impl Window {
         self.reader.show(Request { path: path.to_string(), heading: anchor.map(String::from), line: None }, false);
     }
 
+    /// Files changed on disk, by another app, `git` or this one: the index
+    /// learns them, and the note on screen is drawn again when it, or a
+    /// note it links to or embeds, is one of them.
+    fn files_changed(&self, changed: BTreeSet<String>) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let (files, folders) = {
+            let index = store.index();
+            (index.files.clone(), index.empty_folders.clone())
+        };
+        store.refresh(&changed.iter().cloned().collect::<Vec<_>>());
+        let index = store.index();
+        if index.files != files || index.empty_folders != folders {
+            self.sidebar.set_tree(index.tree());
+        }
+        let Some(shown) = self.reader.shown() else { return };
+        if !index.files.contains(&shown.path) {
+            self.title.set_title("Daftar");
+            self.title.set_subtitle("");
+            self.stack.set_visible_child_name("empty");
+            return;
+        }
+        let touched = changed.contains(&shown.path) || index.resolved_links(&shown.path).values().any(|target| changed.contains(target));
+        drop(index);
+        if touched {
+            self.reader.reload();
+        }
+    }
+
+    fn palette(&self, mode: Mode) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let this = self.clone();
+        palette::present(&self.window, mode, store, self.recent.borrow().clone(), move |path| this.open(path, None));
+    }
+
     fn add_actions(&self) {
+        let quick_open = gio::SimpleAction::new("quick-open", None);
+        let this = self.clone();
+        quick_open.connect_activate(move |_, _| this.palette(Mode::Files));
+        self.window.add_action(&quick_open);
+        let search = gio::SimpleAction::new("search", None);
+        let this = self.clone();
+        search.connect_activate(move |_, _| this.palette(Mode::Text));
+        self.window.add_action(&search);
         let find = gio::SimpleAction::new("find", None);
         let reader = self.reader.clone();
         find.connect_activate(move |_, _| reader.find("open"));

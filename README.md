@@ -16,11 +16,13 @@ This is the first part of the port. It has:
 - **Reader:** Obsidian's markdown with wikilinks, embeds, callouts, highlights, tags, footnotes, math (KaTeX), Mermaid diagrams and colored code, from `web/`, the Mac app's renderer. Each paragraph takes its own direction, so Persian text reads right to left with no plugin. Pictures, videos and sounds from the vault play in the note.
 - **Tasks:** a click on a checkbox completes a task as the Tasks plugin does, a repeating one too, and refuses when the line changed on disk.
 - **Sidebar:** the folder tree with folder notes; a folder's note opens with the folder.
+- **Quick open:** Ctrl+P finds a note or a file by name as Obsidian's quick switcher does: words in any order, letters that skip, aliases, and `comp/acme` for a path. Ctrl+Shift+F searches the text of every note.
+- **Follows the disk:** a note changed by another app, by Neovim or by `git pull` is read again, and the one on screen is drawn again where you were reading.
 - **Find:** Ctrl+F in the note, Ctrl+G and Ctrl+Shift+G for the next and the previous match.
 - **Command line:** `daftar-cli`, below.
 - **Core:** the parser, the link resolver, the task lines, the vault index, the quick switcher's ranking, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
 
-Next come search and quick open in the window, file watching, tasks queries and Bases, the Today page, Git sync, the editor and the Neovim mode.
+Next come tasks queries and Bases, the Today page, Git sync, the editor and the Neovim mode.
 
 ## Command line
 
