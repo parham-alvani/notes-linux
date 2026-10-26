@@ -7,7 +7,7 @@
 //! reach the network or the rest of the disk.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Once;
 
@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use webkit6::prelude::*;
 use webkit6::{NavigationPolicyDecision, PolicyDecisionType, URISchemeRequest, URISchemeResponse, WebView};
 
-use daftar_core::{Base, BaseCell, BaseEngine, Day, NoteParser, QueryTask, TasksQuery, Vault};
+use daftar_core::{Base, BaseCell, BaseEngine, Day, NoteParser, QueryTask, TasksQuery, Vault, VaultIndex};
 
 use crate::settings::AppSettings;
 use crate::store::{VaultStore, file_in};
@@ -51,6 +51,8 @@ type CursorHandler = Box<dyn Fn(&str, usize)>;
 struct State {
     ready: bool,
     shown: Option<Request>,
+    /// How many times a note was asked for: a base run for an older ask is dropped.
+    shows: u64,
     store: Option<Rc<VaultStore>>,
     on_open: Option<OpenHandler>,
     on_notice: Option<NoticeHandler>,
@@ -82,6 +84,7 @@ impl Reader {
             state: Rc::new(RefCell::new(State {
                 ready: false,
                 shown: None,
+                shows: 0,
                 store: None,
                 on_open: None,
                 on_notice: None,
@@ -127,22 +130,44 @@ impl Reader {
     pub fn show(&self, request: Request, keep_scroll: bool) {
         let mut state = self.state.borrow_mut();
         state.shown = Some(request.clone());
+        state.shows += 1;
         if !state.ready {
             return;
         }
         let Some(store) = state.store.clone() else { return };
+        let shows = state.shows;
         drop(state);
         let Some(text) = store.text(&request.path) else { return };
+        if !Vault::is_base(&request.path) {
+            self.draw(&store, &request, keep_scroll, &text, None);
+            return;
+        }
+        // A `.base` file: its title at once, and its views when they are run,
+        // away from the window, unless another note came on screen meanwhile.
+        self.draw(&store, &request, keep_scroll, "", Some(json!({ "views": [], "problems": [] })));
+        let job = BaseJob::new(&store, text, request.path.clone());
+        let reader = self.clone();
+        glib::spawn_future_local(async move {
+            let Ok(base) = gio::spawn_blocking(move || job.run()).await else { return };
+            let state = reader.state.borrow();
+            let Some(store) = state.store.clone().filter(|_| state.shows == shows) else { return };
+            drop(state);
+            reader.draw(&store, &request, true, "", Some(base));
+        });
+    }
+
+    /// Hands [request]'s note to the page: [text] as markdown, or a base's
+    /// views when [base] has them.
+    fn draw(&self, store: &VaultStore, request: &Request, keep_scroll: bool, text: &str, base: Option<Value>) {
         let settings = self.settings.borrow();
         let (font_text, font_code) = settings.font_css();
-        let mut note = if Vault::is_base(&request.path) {
-            // A `.base` file: its views in place of a note's text.
+        let mut note = if let Some(base) = base {
             json!({
                 "path": request.path, "title": Vault::title(&request.path), "text": "", "links": {}, "properties": [],
-                "base": run_base(&store, &text, &request.path),
+                "base": base,
             })
         } else {
-            let parsed = NoteParser::parse(&text);
+            let parsed = NoteParser::parse(text);
             let properties: Vec<Value> = parsed
                 .properties
                 .iter()
@@ -214,6 +239,10 @@ impl Reader {
             let reader = self.clone();
             manager.connect_script_message_with_reply_received(Some(name), move |_, value, reply| {
                 let body = value.to_json(0).and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(Value::Null);
+                if name == "base" {
+                    reader.answer_base(&body, value.context(), reply.clone());
+                    return true;
+                }
                 let answer = reader.answer(name, &body);
                 if let Some(context) = value.context() {
                     reply.return_value(&webkit6::javascriptcore::Value::from_json(&context, &answer.to_string()));
@@ -302,7 +331,36 @@ impl Reader {
         }
     }
 
-    /// The page's questions: an embedded note, a tasks query, a base.
+    /// ` ```base ` in a note, or `![[file.base]]`, where `this` is the note:
+    /// run away from the window, and answered with nothing when another note
+    /// came on screen meanwhile, which the page no longer draws.
+    fn answer_base(&self, body: &Value, context: Option<webkit6::javascriptcore::Context>, reply: webkit6::ScriptMessageReply) {
+        let state = self.state.borrow();
+        let shows = state.shows;
+        let job = state.store.clone().and_then(|store| {
+            let note = body.get("context").and_then(Value::as_str).unwrap_or("").to_string();
+            let source = match body.get("path").and_then(Value::as_str).filter(|p| !p.is_empty()) {
+                Some(path) if store.index().files.contains(path) => store.text(path)?,
+                Some(_) => return None,
+                None => body.get("source").and_then(Value::as_str).unwrap_or("").to_string(),
+            };
+            Some(BaseJob::new(&store, source, note))
+        });
+        drop(state);
+        let reader = self.clone();
+        glib::spawn_future_local(async move {
+            let answer = match job {
+                Some(job) => gio::spawn_blocking(move || job.run()).await.unwrap_or(Value::Null),
+                None => Value::Null,
+            };
+            let answer = if reader.state.borrow().shows == shows { answer } else { Value::Null };
+            if let Some(context) = context {
+                reply.return_value(&webkit6::javascriptcore::Value::from_json(&context, &answer.to_string()));
+            }
+        });
+    }
+
+    /// The page's other questions: an embedded note, a tasks query.
     fn answer(&self, name: &str, body: &Value) -> Value {
         match name {
             "tasks" => {
@@ -310,21 +368,6 @@ impl Reader {
                 let source = body.get("source").and_then(Value::as_str).unwrap_or("");
                 let path = body.get("path").and_then(Value::as_str);
                 run_query(&store, source, path)
-            }
-            // ` ```base ` in a note, or `![[file.base]]`; `this` is the note.
-            "base" => {
-                let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
-                let context = body.get("context").and_then(Value::as_str).unwrap_or("");
-                match body.get("path").and_then(Value::as_str).filter(|p| !p.is_empty()) {
-                    Some(path) => {
-                        if !store.index().files.contains(path) {
-                            return Value::Null;
-                        }
-                        let Some(source) = store.text(path) else { return Value::Null };
-                        run_base(&store, &source, context)
-                    }
-                    None => run_base(&store, body.get("source").and_then(Value::as_str).unwrap_or(""), context),
-                }
             }
             _ => {
                 let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
@@ -487,11 +530,29 @@ fn run_query(store: &VaultStore, source: &str, path: Option<&str>) -> Value {
     json!({ "tasks": rows, "notUnderstood": query.not_understood, "links": links })
 }
 
-/// Every view of a base, as the page draws it. [context] is the file `this`
-/// names: the base, or the note that embeds it.
-fn run_base(store: &VaultStore, source: &str, context: &str) -> Value {
-    let index = store.index();
-    let mut engine = BaseEngine::on_disk(&index, &store.root);
+/// One run of a base, with all it reads, so it can run on another thread:
+/// the index as it is now, the vault's folder, the base's text and the file
+/// `this` names (the base, or the note that embeds it).
+struct BaseJob {
+    index: VaultIndex,
+    root: PathBuf,
+    source: String,
+    context: String,
+}
+
+impl BaseJob {
+    fn new(store: &VaultStore, source: String, context: String) -> BaseJob {
+        BaseJob { index: store.index().clone(), root: store.root.clone(), source, context }
+    }
+
+    fn run(&self) -> Value {
+        run_base(&self.index, &self.root, &self.source, &self.context)
+    }
+}
+
+/// Every view of a base, as the page draws it.
+fn run_base(index: &VaultIndex, root: &Path, source: &str, context: &str) -> Value {
+    let mut engine = BaseEngine::on_disk(index, root);
     let tables = engine.run(&Base::parse(source), context);
     let views: Vec<Value> = tables
         .iter()
