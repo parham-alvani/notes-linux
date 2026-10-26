@@ -25,7 +25,8 @@ use daftar_core::{Candidate, ConfigFile, Day, Git, QuickSwitcher, SearchIndex, T
 #[derive(Parser)]
 #[command(name = "daftar-cli", version, about = "Daftar on the command line: an Obsidian vault in a Git repository")]
 struct Cli {
-    /// The vault's folder; else `vault` in ~/.config/daftar/config.toml.
+    /// The vault's folder; else the vault the current folder is in, else
+    /// `vault` in ~/.config/daftar/config.toml.
     #[arg(long, global = true, env = "DAFTAR_VAULT")]
     vault: Option<PathBuf>,
     #[command(subcommand)]
@@ -258,19 +259,30 @@ fn repository(root: &std::path::Path) -> Result<Git, String> {
     if git.is_repository() { Ok(git) } else { Err(format!("{} is not a git repository", root.display())) }
 }
 
-/// The vault given, else the app's.
+/// The vault given, else the one the current folder is in (the nearest
+/// folder up with `.obsidian`, as git finds its repository), else the app's.
 fn vault(given: Option<PathBuf>) -> Result<PathBuf, String> {
     let root = match given {
         Some(root) => root,
-        None => {
-            let text = fs::read_to_string(ConfigFile::default_path()).unwrap_or_default();
-            ConfigFile::new(text).vault().ok_or("no vault: pass --vault, or set `vault` in ~/.config/daftar/config.toml")?
-        }
+        None => match std::env::current_dir().ok().as_deref().and_then(vault_around) {
+            Some(root) => root,
+            None => {
+                let text = fs::read_to_string(ConfigFile::default_path()).unwrap_or_default();
+                ConfigFile::new(text)
+                    .vault()
+                    .ok_or("no vault: run it in one, pass --vault, or set `vault` in ~/.config/daftar/config.toml")?
+            }
+        },
     };
     if !root.is_dir() {
         return Err(format!("{} is not a folder", root.display()));
     }
     Ok(root)
+}
+
+/// The vault [folder] is in: itself or the nearest folder up with `.obsidian`.
+fn vault_around(folder: &std::path::Path) -> Option<PathBuf> {
+    folder.ancestors().find(|f| f.join(".obsidian").is_dir()).map(PathBuf::from)
 }
 
 /// A note named as a path in the vault, or as a link would name it.
@@ -285,6 +297,15 @@ fn note_path(index: &VaultIndex, note: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_vault_is_found_from_a_folder_in_it() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".obsidian")).unwrap();
+        fs::create_dir_all(root.path().join("Notes/Deep")).unwrap();
+        assert_eq!(vault_around(&root.path().join("Notes/Deep")).as_deref(), Some(root.path()));
+        assert_eq!(vault_around(root.path()).as_deref(), Some(root.path()));
+    }
 
     #[test]
     fn a_snippet_is_bold_only_on_a_terminal() {
