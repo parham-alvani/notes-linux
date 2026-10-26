@@ -53,3 +53,23 @@ release version:
     git commit -qam "release v{{version}}"
     git tag -a "v{{version}}" -m "v{{version}}"
     git push -q origin HEAD "v{{version}}"
+
+# Moves the AUR packages, daftar-bin and daftar-cli-bin, to the released VERSION and pushes them to the AUR, which needs your AUR SSH key. Run it once the release's binaries are up.
+aur:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(cat VERSION)
+    for pkg in daftar-bin daftar-cli-bin; do
+      dir=packaging/aur/$pkg
+      sed -i -E "s/^pkgver=.*/pkgver=$version/; s/^pkgrel=.*/pkgrel=1/" $dir/PKGBUILD
+      (cd $dir && updpkgsums && makepkg --printsrcinfo > .SRCINFO && rm -f ./*.tar.gz LICENSE-*)
+      work=$(mktemp -d)
+      git clone -q "ssh://aur@aur.archlinux.org/$pkg.git" "$work"
+      cp $dir/PKGBUILD $dir/.SRCINFO "$work"/
+      git -C "$work" add PKGBUILD .SRCINFO
+      git -C "$work" diff --cached --quiet || git -C "$work" commit -qm "$pkg $version"
+      git -C "$work" push -q origin HEAD:master
+      rm -rf "$work"
+    done
+    git add packaging/aur
+    git diff --cached --quiet || { git commit -qm "aur: $version"; git push -q origin HEAD; }

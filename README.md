@@ -48,6 +48,8 @@ Unlike the app, it needs no GTK and runs on Linux, macOS and Windows: each [rele
 
 With Homebrew, on macOS or Linux: `brew install parham-alvani/tap/daftar-cli`.
 
+On Arch, from the AUR: `yay -S daftar-bin` for the app and the command line, or `yay -S daftar-cli-bin` for the command line alone (x86_64, aarch64).
+
 ```bash
 daftar-cli find kub fire          # notes by name, as the quick switcher ranks them
 daftar-cli search "backup plan"   # the text of every note
