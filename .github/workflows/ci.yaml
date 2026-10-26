@@ -37,7 +37,7 @@ jobs:
       - name: The tag matches VERSION
         run: test "v$(cat VERSION)" = "${GITHUB_REF_NAME}"
       - run: just app
-      - run: tar -czf "daftar-$(cat VERSION)-x86_64.tar.gz" -C target/release daftar -C ../../data me.parham1995.notes.desktop me.parham1995.notes.png
+      - run: tar -czf "daftar-$(cat VERSION)-x86_64.tar.gz" -C target/release daftar daftar-cli -C ../../data me.parham1995.notes.desktop me.parham1995.notes.png
       - uses: softprops/action-gh-release@v3
         with:
           files: daftar-*.tar.gz

@@ -36,17 +36,7 @@ impl AppSettings {
 
     /// The vault's folder, with `~` for the home folder.
     pub fn vault(&self) -> Option<PathBuf> {
-        let text = self.file.string("vault")?;
-        let text = text.trim();
-        if text.is_empty() {
-            return None;
-        }
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        Some(match text.strip_prefix("~/") {
-            Some(rest) => home.join(rest),
-            None if text == "~" => home,
-            None => PathBuf::from(text),
-        })
+        self.file.vault()
     }
 
     pub fn theme(&self) -> String {

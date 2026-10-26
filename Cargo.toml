@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/daftar-core", "crates/daftar"]
+members = ["crates/daftar-core", "crates/daftar", "crates/daftar-cli"]
 
 [workspace.package]
 edition = "2024"

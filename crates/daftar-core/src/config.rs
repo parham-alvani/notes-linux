@@ -96,6 +96,21 @@ impl ConfigFile {
         }
     }
 
+    /// The vault's folder, with `~` for the home folder.
+    pub fn vault(&self) -> Option<PathBuf> {
+        let text = self.string("vault")?;
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let home = PathBuf::from(env::var_os("HOME").unwrap_or_default());
+        Some(match text.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None if text == "~" => home,
+            None => PathBuf::from(text),
+        })
+    }
+
     /// Sets one value: in place when the key is there, else at the end of its
     /// section, else in a new section at the end of the file.
     pub fn set(&mut self, path: &str, new: Value) {

@@ -17,9 +17,27 @@ This is the first part of the port. It has:
 - **Tasks:** a click on a checkbox completes a task as the Tasks plugin does, a repeating one too, and refuses when the line changed on disk.
 - **Sidebar:** the folder tree with folder notes; a folder's note opens with the folder.
 - **Find:** Ctrl+F in the note, Ctrl+G and Ctrl+Shift+G for the next and the previous match.
-- **Core:** the parser, the link resolver, the task lines, the vault index, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
+- **Command line:** `daftar-cli`, below.
+- **Core:** the parser, the link resolver, the task lines, the vault index, the quick switcher's ranking, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
 
 Next come search and quick open in the window, file watching, tasks queries and Bases, the Today page, Git sync, the editor and the Neovim mode.
+
+## Command line
+
+`daftar-cli` reads the same vault with the same rules, for a shell, a script or a launcher. It takes the vault from the config file, or from `--vault` or `$DAFTAR_VAULT`.
+
+```bash
+daftar-cli find kub fire          # notes by name, as the quick switcher ranks them
+daftar-cli search "backup plan"   # the text of every note
+daftar-cli tasks --due today      # open tasks due or scheduled by today, as path:line
+daftar-cli toggle Inbox 12        # ticks the task on line 12 of Inbox, as a click does
+daftar-cli backlinks Kubernetes   # the notes that link to it
+daftar-cli broken                 # links that go nowhere
+daftar-cli tags                   # every tag, with its count
+daftar-cli images --dry-run       # the picture cleanup of notes-cli
+```
+
+`images` is [notes-cli](https://github.com/parham-alvani/notes-cli) in Rust: it removes the pictures in `uploads/` that no note names, makes the others JPEGs under 1 MB named after their note and their content's hash, and rewrites the notes to the new names. Unlike notes-cli, a converted picture is named by the hash of the JPEG it became, so a second run changes nothing.
 
 ## Configuration
 
@@ -38,7 +56,7 @@ pacman -S rust gtk4 libadwaita webkitgtk-6.0 nodejs npm just
 ```bash
 just test     # the Rust tests and the renderer tests
 just run      # build and start it
-just install  # into ~/.local: the binary, its desktop entry and its icon
+just install  # into ~/.local: daftar, daftar-cli, the desktop entry and the icon
 ```
 
 ## License
