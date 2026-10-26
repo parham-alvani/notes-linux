@@ -11,6 +11,7 @@ macro_rules! out {
 }
 
 mod images;
+mod tui;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -18,7 +19,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use daftar_core::{
     Candidate, ConfigFile, Day, Git, QueryTask, QuickSwitcher, SearchIndex, TaskLine, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
@@ -31,12 +32,16 @@ struct Cli {
     /// `vault` in ~/.config/daftar/config.toml.
     #[arg(long, global = true, env = "DAFTAR_VAULT")]
     vault: Option<PathBuf>,
+    /// With none, the TUI on a terminal, else this help.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// The vault in the terminal: the tree, the note, the quick switcher,
+    /// search, tasks, backlinks and tags, in Daftar's colors.
+    Tui,
     /// Notes and files by name, as the quick switcher ranks them.
     Find {
         query: Vec<String>,
@@ -120,8 +125,15 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), String> {
+    let Some(command) = cli.command else {
+        if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
+            return tui::run(vault(cli.vault)?);
+        }
+        return Cli::command().print_help().map_err(|e| e.to_string());
+    };
     let root = vault(cli.vault)?;
-    match cli.command {
+    match command {
+        Command::Tui => tui::run(root)?,
         Command::Find { query, limit } => {
             let index = Vault::index(&root, None);
             let candidates: Vec<Candidate> = index

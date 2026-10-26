@@ -46,8 +46,11 @@ daftar-cli broken                 # links that go nowhere
 daftar-cli tags                   # every tag, with its count
 daftar-cli sync                   # commit, pull with a rebase, push: obsidian-git's workflow
 daftar-cli status                 # the branch, ahead and behind, and the files changed
+daftar-cli tui                    # the vault in the terminal; `daftar-cli` alone does the same
 daftar-cli images --dry-run       # the picture cleanup of notes-cli
 ```
+
+`daftar-cli tui`, or `daftar-cli` alone on a terminal, opens the vault in the terminal, in Daftar's colors (naz on dark, Daylight on light, as `appearance.theme` says): the folder tree, the note drawn with its headings, lists, tasks, callouts, tables, code and properties, and a status bar with the git branch. `Ctrl+P` or `p` opens a note by name, `/` searches the text, `t` lists the note's tasks queries (every open task when it has none), `b` its backlinks and `#` the tags. `j`/`k` move, `]`/`[` jump to the next link or task, `Enter` follows a link, `Backspace` goes back, `Space` ticks a task as a click does, `e` opens the note in `$EDITOR`, `s` syncs, `?` lists every key and `q` quits.
 
 `images` is [notes-cli](https://github.com/parham-alvani/notes-cli) in Rust: it removes the pictures in `uploads/` that no note names, makes the others JPEGs under 1 MB named after their note and their content's hash, and rewrites the notes to the new names. Unlike notes-cli, a converted picture is named by the hash of the JPEG it became, and a picture already named `{name}_{hash}` keeps its name when its hash is corrected, so a second run changes nothing.
 
