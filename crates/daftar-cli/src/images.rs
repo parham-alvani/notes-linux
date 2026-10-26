@@ -6,6 +6,7 @@
 //! A picture is kept when any note mentions its file name anywhere, even in
 //! a code block: a word too many keeps a picture, never removes one.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -41,11 +42,11 @@ struct Moved {
 
 pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
     if options.dry_run {
-        println!("Dry run: nothing is changed.\n");
+        out!("Dry run: nothing is changed.\n");
     }
     let pictures = pictures_in(uploads)?;
     let notes = notes_in(root);
-    println!("{} pictures in {}, {} notes", pictures.len(), uploads.display(), notes.len());
+    out!("{} pictures in {}, {} notes", pictures.len(), uploads.display(), notes.len());
     let texts: Vec<(PathBuf, String)> =
         notes.into_iter().filter_map(|path| fs::read_to_string(&path).ok().map(|text| (path, text))).collect();
 
@@ -56,64 +57,64 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
         if notes.is_empty() { unused.push(path) } else { used.push(Picture { path, notes }) }
     }
 
-    println!("\n1. Pictures no note names");
+    out!("\n1. Pictures no note names");
     let mut freed = 0;
     for path in &unused {
         let size = fs::metadata(path)?.len();
         freed += size;
         if options.dry_run {
-            println!("  would remove {} ({})", file_name(path), kb(size));
+            out!("  would remove {} ({})", file_name(path), kb(size));
         } else {
             fs::remove_file(path)?;
-            println!("  removed {} ({})", file_name(path), kb(size));
+            out!("  removed {} ({})", file_name(path), kb(size));
         }
     }
-    println!("  {} pictures, {}", unused.len(), mb(freed));
+    out!("  {} pictures, {}", unused.len(), mb(freed));
 
-    println!("\n2. Pictures notes show");
+    out!("\n2. Pictures notes show");
     let mut moved = Vec::new();
     for picture in used {
         match optimize(&picture, options.dry_run) {
             Ok(Some(to)) => moved.push(Moved { from: picture.path, to, notes: picture.notes }),
             Ok(None) => {}
-            Err(error) => println!("  {}: {error}", file_name(&picture.path)),
+            Err(error) => out!("  {}: {error}", file_name(&picture.path)),
         }
     }
 
-    println!("\n3. Notes");
-    let (mut files, mut references) = (0, 0);
+    out!("\n3. Notes");
+    let (mut files, mut references) = (BTreeSet::new(), 0);
     for item in moved.iter().filter(|m| m.from != m.to) {
         let (old, new) = (file_name(&item.from), file_name(&item.to));
         for note in &item.notes {
             let Ok(text) = fs::read_to_string(note) else { continue };
             let Some(changed) = rewrite(&text, &old, &new) else { continue };
             references += 1;
+            files.insert(note.clone());
             if options.dry_run {
-                println!("  would update {} ({old} → {new})", file_name(note));
+                out!("  would update {} ({old} → {new})", file_name(note));
             } else {
                 write_in_place(note, changed.as_bytes())?;
-                files += 1;
-                println!("  updated {} ({old} → {new})", file_name(note));
+                out!("  updated {} ({old} → {new})", file_name(note));
             }
         }
     }
-    println!("  {references} references in {files} notes");
+    out!("  {references} references in {} notes", files.len());
 
-    println!("\n4. Originals");
+    out!("\n4. Originals");
     if options.keep_originals {
-        println!("  kept (--keep-originals)");
+        out!("  kept (--keep-originals)");
     } else {
         let mut freed = 0;
         for item in moved.iter().filter(|m| m.from != m.to && m.from.exists() && (options.dry_run || m.to.exists())) {
             freed += fs::metadata(&item.from)?.len();
             if options.dry_run {
-                println!("  would remove {}", file_name(&item.from));
+                out!("  would remove {}", file_name(&item.from));
             } else {
                 fs::remove_file(&item.from)?;
-                println!("  removed {}", file_name(&item.from));
+                out!("  removed {}", file_name(&item.from));
             }
         }
-        println!("  {}", mb(freed));
+        out!("  {}", mb(freed));
     }
     Ok(())
 }
@@ -123,32 +124,27 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
 fn optimize(picture: &Picture, dry_run: bool) -> io::Result<Option<PathBuf>> {
     let path = &picture.path;
     if is_optimized(path)? {
-        println!("  {} is done", file_name(path));
+        out!("  {} is done", file_name(path));
         return Ok(Some(path.clone()));
     }
     let size = fs::metadata(path)?.len();
-    let base = picture
-        .notes
-        .first()
-        .and_then(|n| n.file_stem())
-        .map(|s| s.to_string_lossy().replace(' ', ""))
-        .unwrap_or_else(|| "optimized".into());
+    let base = base_name(path, &picture.notes);
     let jpeg = is_jpeg(path);
     if jpeg && size <= TARGET_SIZE {
         // Right already, but for its name.
         let to = path.with_file_name(format!("{base}_{}.jpg", hash(&fs::read(path)?)));
         if dry_run {
-            println!("  would rename {} → {} ({})", file_name(path), file_name(&to), kb(size));
+            out!("  would rename {} → {} ({})", file_name(path), file_name(&to), kb(size));
         } else {
             fs::rename(path, &to)?;
-            println!("  renamed {} → {} ({})", file_name(path), file_name(&to), kb(size));
+            out!("  renamed {} → {} ({})", file_name(path), file_name(&to), kb(size));
         }
         return Ok(Some(to));
     }
     let image = match ImageReader::open(path)?.with_guessed_format()?.decode() {
         Ok(image) => image,
         Err(error) => {
-            println!("  {} could not be read: {error}", file_name(path));
+            out!("  {} could not be read: {error}", file_name(path));
             return Ok(None);
         }
     };
@@ -160,8 +156,26 @@ fn optimize(picture: &Picture, dry_run: bool) -> io::Result<Option<PathBuf>> {
         fs::write(&to, &bytes)?;
     }
     let warning = if bytes.len() as u64 > TARGET_SIZE { ", still over 1 MB" } else { "" };
-    println!("  {verb} {} → {} (quality {quality}, {} → {}{warning})", file_name(path), file_name(&to), kb(size), kb(bytes.len() as u64));
+    out!("  {verb} {} → {} (quality {quality}, {} → {}{warning})", file_name(path), file_name(&to), kb(size), kb(bytes.len() as u64));
     Ok(Some(to))
+}
+
+/// The name before the hash: the one a picture already has as `{name}_{hash}`,
+/// so a picture shown by several notes is not renamed after another one on
+/// each run, else the first note that shows it, without spaces.
+fn base_name(path: &Path, notes: &[PathBuf]) -> String {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    if let Some((name, hash)) = stem.rsplit_once('_')
+        && !name.is_empty()
+        && is_hash(hash)
+    {
+        return name.to_string();
+    }
+    notes.first().and_then(|n| n.file_stem()).map(|s| s.to_string_lossy().replace(' ', "")).unwrap_or_else(|| "optimized".into())
+}
+
+fn is_hash(text: &str) -> bool {
+    text.len() == 8 && text.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// [image] as a JPEG on white, at the best quality under 1 MB, and that quality.
@@ -208,7 +222,7 @@ fn is_optimized(path: &Path) -> io::Result<bool> {
     }
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let Some((_, named)) = stem.rsplit_once('_') else { return Ok(false) };
-    if named.len() != 8 || !named.chars().all(|c| c.is_ascii_hexdigit()) {
+    if !is_hash(named) {
         return Ok(false);
     }
     Ok(hash(&fs::read(path)?) == named.to_lowercase())
@@ -260,6 +274,8 @@ fn notes_in(root: &Path) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "md"))
         .map(|e| e.into_path())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -349,6 +365,14 @@ mod tests {
             rewrite("![[my-image_2024(1).png]]", "my-image_2024(1).png", "my-image_2024(1)-opt.png").unwrap(),
             "![[uploads/my-image_2024(1)-opt.png]]"
         );
+    }
+
+    #[test]
+    fn a_picture_keeps_its_name_and_gets_a_new_hash() {
+        let notes = [PathBuf::from("/v/Other Note.md")];
+        assert_eq!(base_name(Path::new("/v/uploads/Gabal_b64e24a1.jpg"), &notes), "Gabal");
+        assert_eq!(base_name(Path::new("/v/uploads/Periods_confiance_lady.jpg"), &notes), "OtherNote");
+        assert_eq!(base_name(Path::new("/v/uploads/Pasted image 2026.png"), &[]), "optimized");
     }
 
     #[test]

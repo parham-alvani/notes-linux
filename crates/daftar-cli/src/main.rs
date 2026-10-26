@@ -2,6 +2,14 @@
 //! script or a launcher (`daftar-cli find … | fzf`). It reads the same
 //! config file as the app and the same rules from `daftar-core`.
 
+/// `println!` for what the command prints: a reader that stops early, as
+/// `head` or `fzf` does, ends the command quietly instead of a panic.
+macro_rules! out {
+    ($($arg:tt)*) => {
+        $crate::emit(format_args!($($arg)*))
+    };
+}
+
 mod images;
 
 use std::collections::BTreeSet;
@@ -12,7 +20,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use daftar_core::{Candidate, ConfigFile, Day, QuickSwitcher, SearchIndex, TaskLine, Vault, VaultEdits, VaultIndex};
+use daftar_core::{Candidate, ConfigFile, Day, Git, QuickSwitcher, SearchIndex, TaskLine, Vault, VaultEdits, VaultIndex};
 
 #[derive(Parser)]
 #[command(name = "daftar-cli", version, about = "Daftar on the command line: an Obsidian vault in a Git repository")]
@@ -62,6 +70,15 @@ enum Command {
     Broken,
     /// Every tag, with how many notes have it.
     Tags,
+    /// Commits every change, pulls with a rebase and pushes, as obsidian-git
+    /// and the Mac app do. Uses your git config, credentials and SSH agent.
+    Sync {
+        /// The commit message; else `update notes @ <time> on <host>`.
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+    /// The branch, how far it is from its remote, and how many files changed.
+    Status,
     /// Removes pictures no note names, makes the others JPEGs under 1 MB and
     /// renames them in the notes, as notes-cli does.
     Images {
@@ -102,7 +119,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 })
                 .collect();
             for path in QuickSwitcher::rank(&query.join(" "), &candidates, &[], limit) {
-                println!("{path}");
+                out!("{path}");
             }
         }
         Command::Search { query, limit } => {
@@ -110,7 +127,7 @@ fn run(cli: Cli) -> Result<(), String> {
             Vault::index(&root, Some(&search));
             let terminal = std::io::stdout().is_terminal();
             for hit in search.search(&query.join(" "), limit) {
-                println!("{}\t{}", hit.path, snippet(&hit.snippet, terminal));
+                out!("{}\t{}", hit.path, snippet(&hit.snippet, terminal));
             }
         }
         Command::Tasks { due, path, all } => {
@@ -140,7 +157,7 @@ fn run(cli: Cli) -> Result<(), String> {
                         line.push_str(&format!(" {mark} {value}"));
                     }
                 }
-                println!("{line}");
+                out!("{line}");
             }
         }
         Command::Toggle { note, line } => {
@@ -153,13 +170,13 @@ fn run(cli: Cli) -> Result<(), String> {
             VaultEdits::apply(&path, &root, |text| VaultEdits::toggle_task(text, at, task.status, Day::today()))
                 .map_err(|e| e.to_string())?;
             let after = fs::read_to_string(root.join(&path)).unwrap_or_default();
-            println!("{}", after.split('\n').nth(at).unwrap_or_default());
+            out!("{}", after.split('\n').nth(at).unwrap_or_default());
         }
         Command::Backlinks { note } => {
             let index = Vault::index(&root, None);
             let path = note_path(&index, &note)?;
             for link in index.backlinks(&path) {
-                println!("{}:{}", link.source, link.line + 1);
+                out!("{}:{}", link.source, link.line + 1);
             }
         }
         Command::Broken => {
@@ -173,7 +190,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 }
             }
             for (path, line, target) in broken {
-                println!("{path}:{line}\t{target}");
+                out!("{path}:{line}\t{target}");
             }
         }
         Command::Tags => {
@@ -181,8 +198,32 @@ fn run(cli: Cli) -> Result<(), String> {
             let mut tags: Vec<_> = index.tags().iter().collect();
             tags.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
             for (tag, count) in tags {
-                println!("{count}\t#{tag}");
+                out!("{count}\t#{tag}");
             }
+        }
+        Command::Sync { message } => {
+            let git = repository(&root)?;
+            let message = message.unwrap_or_else(|| Git::message(chrono::Local::now(), &Git::host()));
+            let done = git.sync(&message).map_err(|e| e.to_string())?;
+            let status = git.status().map_err(|e| e.to_string())?;
+            let mut steps = Vec::new();
+            if done.committed {
+                steps.push(format!("committed \"{message}\""));
+            }
+            if done.pulled {
+                steps.push("pulled".to_string());
+            }
+            if done.pushed {
+                steps.push("pushed".to_string());
+            }
+            if steps.is_empty() {
+                steps.push("up to date".to_string());
+            }
+            out!("{}: {}", status.branch, steps.join(", "));
+        }
+        Command::Status => {
+            let status = repository(&root)?.status().map_err(|e| e.to_string())?;
+            out!("{}\tahead {}\tbehind {}\tchanged {}", status.branch, status.ahead, status.behind, status.changed);
         }
         Command::Images { folder, dry_run, keep_originals } => {
             let folder = if folder.is_absolute() { folder } else { root.join(folder) };
@@ -195,11 +236,26 @@ fn run(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
+fn emit(line: std::fmt::Arguments) {
+    use std::io::Write;
+    if let Err(error) = writeln!(std::io::stdout().lock(), "{line}") {
+        if error.kind() != std::io::ErrorKind::BrokenPipe {
+            eprintln!("daftar-cli: {error}");
+        }
+        std::process::exit(if error.kind() == std::io::ErrorKind::BrokenPipe { 0 } else { 1 });
+    }
+}
+
 /// A search snippet on one line, its matches in bold on a terminal; the
 /// index marks them with `\u{1}` and `\u{2}`.
 fn snippet(text: &str, terminal: bool) -> String {
     let (open, close) = if terminal { ("\x1b[1m", "\x1b[0m") } else { ("", "") };
     text.replace('\n', " ").replace('\u{1}', open).replace('\u{2}', close)
+}
+
+fn repository(root: &std::path::Path) -> Result<Git, String> {
+    let git = Git::new(root);
+    if git.is_repository() { Ok(git) } else { Err(format!("{} is not a git repository", root.display())) }
 }
 
 /// The vault given, else the app's.

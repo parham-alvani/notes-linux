@@ -10,6 +10,7 @@ name = "daftar-cli"
 path = "src/main.rs"
 
 [dependencies]
+chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 daftar-core = { version = "0.1.0", path = "../daftar-core" }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "webp", "tiff"] }

@@ -38,10 +38,14 @@ daftar-cli toggle Inbox 12        # ticks the task on line 12 of Inbox, as a cli
 daftar-cli backlinks Kubernetes   # the notes that link to it
 daftar-cli broken                 # links that go nowhere
 daftar-cli tags                   # every tag, with its count
+daftar-cli sync                   # commit, pull with a rebase, push: obsidian-git's workflow
+daftar-cli status                 # the branch, ahead and behind, and the files changed
 daftar-cli images --dry-run       # the picture cleanup of notes-cli
 ```
 
-`images` is [notes-cli](https://github.com/parham-alvani/notes-cli) in Rust: it removes the pictures in `uploads/` that no note names, makes the others JPEGs under 1 MB named after their note and their content's hash, and rewrites the notes to the new names. Unlike notes-cli, a converted picture is named by the hash of the JPEG it became, so a second run changes nothing.
+`images` is [notes-cli](https://github.com/parham-alvani/notes-cli) in Rust: it removes the pictures in `uploads/` that no note names, makes the others JPEGs under 1 MB named after their note and their content's hash, and rewrites the notes to the new names. Unlike notes-cli, a converted picture is named by the hash of the JPEG it became, and a picture already named `{name}_{hash}` keeps its name when its hash is corrected, so a second run changes nothing.
+
+`sync` commits with obsidian-git's message (`update notes @ 2026-10-25 09:30:00 on x-wing`, or `-m`), pulls with `--rebase --autostash` and pushes, through the system `git`: your git config, credential helper and SSH agent apply, and it never waits on a password prompt.
 
 ## Configuration
 
