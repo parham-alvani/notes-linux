@@ -67,7 +67,8 @@ fn css(palette: &[(&str, &str)]) -> String {
         ));
     }
     out.push_str(
-        ".daftar-page, .daftar-page > viewport, .daftar-editor { background-color: @daftar_background; }\n\
+        "vte-terminal { padding: 6px 12px; }\n\
+         .daftar-page, .daftar-page > viewport, .daftar-editor { background-color: @daftar_background; }\n\
          .daftar-card { border-radius: 14px; padding: 16px; }\n\
          .daftar-card .card-title { font-weight: bold; }\n\
          .daftar-card .card-icon { border-radius: 7px; color: white; min-width: 26px; min-height: 26px; }\n\

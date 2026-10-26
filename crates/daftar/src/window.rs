@@ -13,6 +13,7 @@ use daftar_core::{SearchIndex, Value, Vault};
 
 use crate::board::{self, Board};
 use crate::editor::{Editor, Saved};
+use crate::notifier::{Notifier, Wanted};
 use crate::palette::{self, Mode};
 use crate::reader::{Reader, Request};
 use crate::settings::AppSettings;
@@ -20,6 +21,7 @@ use crate::sidebar::Sidebar;
 use crate::store::VaultStore;
 use crate::sync::{GitSync, Run};
 use crate::task_edit;
+use crate::terminal::TerminalPane;
 use crate::today::Today;
 use crate::watcher::FileWatcher;
 
@@ -40,6 +42,8 @@ pub struct Window {
     today: Rc<Today>,
     board: Rc<Board>,
     editor: Rc<Editor>,
+    terminal: Rc<TerminalPane>,
+    notifier: Rc<Notifier>,
     store: Rc<RefCell<Option<Rc<VaultStore>>>>,
     watcher: Rc<RefCell<Option<FileWatcher>>>,
     /// The notes opened lately, the last first.
@@ -143,6 +147,14 @@ impl Window {
                 },
             )
         };
+        let terminal = {
+            let settings = settings.borrow();
+            TerminalPane::new(
+                settings.file.string("terminal.shell").unwrap_or_default(),
+                &settings.file.string("appearance.code_font").unwrap_or_default(),
+                settings.file.int("terminal.font_size").unwrap_or(13),
+            )
+        };
         let this = Window {
             window: window.clone(),
             settings,
@@ -156,6 +168,8 @@ impl Window {
             today: today.clone(),
             board: board.clone(),
             editor: editor.clone(),
+            terminal: terminal.clone(),
+            notifier: Notifier::new(),
             store: Rc::new(RefCell::new(None)),
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
@@ -229,7 +243,15 @@ impl Window {
         stack.add_named(&this.choose_page(), Some("choose"));
         let content = adw::ToolbarView::new();
         content.add_top_bar(&header);
-        content.set_content(Some(&stack));
+        let panes = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .start_child(&stack)
+            .end_child(&terminal.widget)
+            .resize_end_child(false)
+            .shrink_end_child(false)
+            .build();
+        panes.set_position(560);
+        content.set_content(Some(&panes));
         toasts.set_child(Some(&content));
         split.set_content(Some(&adw::NavigationPage::builder().title("Note").child(&toasts).build()));
 
@@ -327,6 +349,8 @@ impl Window {
                 )
             };
             this.git.attach(folder.clone(), pull, interval);
+            this.terminal.set_folder(folder.clone());
+            this.plan_notifications();
             *this.store.borrow_mut() = Some(store);
             let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if let Some(page) = this.split.sidebar() {
@@ -542,6 +566,7 @@ impl Window {
         };
         store.refresh(&changed.iter().cloned().collect::<Vec<_>>());
         self.git.refresh();
+        self.plan_notifications();
         let index = store.index();
         if index.files != files || index.empty_folders != folders {
             self.sidebar.set_tree(index.tree());
@@ -588,6 +613,7 @@ impl Window {
             command("Forward", "Go", "win.forward", "Ctrl+]"),
             command("Edit or Read the Note", "Note", "win.edit", "Ctrl+E"),
             command("Show the Graph", "View", "win.graph", "Ctrl+Alt+G"),
+            command("Show or Hide the Terminal", "View", "win.terminal", "Ctrl+`"),
             command("Find in the Note", "Note", "win.find", "Ctrl+F"),
             command("Bigger Text", "View", "win.bigger-text", "Ctrl+="),
             command("Smaller Text", "View", "win.smaller-text", "Ctrl+-"),
@@ -598,6 +624,7 @@ impl Window {
             commands.push(command("Sync Now", "Git", "win.sync", "Ctrl+Shift+S"));
             commands.push(command("Pull", "Git", "win.pull", ""));
         }
+        commands.push(command("New Window", "App", "app.new-window", "Ctrl+Alt+N"));
         commands.push(command("Settings", "App", "win.preferences", "Ctrl+,"));
         commands.push(command("Quit", "App", "app.quit", "Ctrl+Q"));
         let window = self.window.clone();
@@ -613,6 +640,13 @@ impl Window {
         let center = self.reader.shown().map(|shown| shown.path).filter(|p| Vault::is_note(p));
         let this = self.clone();
         crate::graph::present(&self.window, store, center, move |path| this.open(path, None));
+    }
+
+    /// Meeting alerts and the digest, planned again from the vault as it is now.
+    fn plan_notifications(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let wanted = Wanted::from(&self.settings.borrow().file);
+        self.notifier.plan(&store, &wanted);
     }
 
     fn preferences(&self) {
@@ -665,6 +699,10 @@ impl Window {
         let this = self.clone();
         open_vault.connect_activate(move |_, _| this.choose_vault());
         self.window.add_action(&open_vault);
+        let terminal = gio::SimpleAction::new("terminal", None);
+        let pane = self.terminal.clone();
+        terminal.connect_activate(move |_, _| pane.toggle());
+        self.window.add_action(&terminal);
         let graph = gio::SimpleAction::new("graph", None);
         let this = self.clone();
         graph.connect_activate(move |_, _| this.graph());

@@ -4,6 +4,7 @@
 mod board;
 mod editor;
 mod graph;
+mod notifier;
 mod palette;
 mod preferences;
 mod reader;
@@ -13,6 +14,7 @@ mod store;
 mod style;
 mod sync;
 mod task_edit;
+mod terminal;
 mod today;
 mod watcher;
 mod window;
@@ -43,6 +45,7 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.commands", &["<Ctrl><Shift>p"]);
     app.set_accels_for_action("win.preferences", &["<Ctrl>comma"]);
     app.set_accels_for_action("win.graph", &["<Ctrl><Alt>g"]);
+    app.set_accels_for_action("win.terminal", &["<Ctrl>grave"]);
     app.set_accels_for_action("win.edit", &["<Ctrl>e"]);
     app.set_accels_for_action("win.save", &["<Ctrl>s"]);
     app.set_accels_for_action("win.sync", &["<Ctrl><Shift>s"]);
@@ -56,5 +59,28 @@ fn main() -> glib::ExitCode {
     quit.connect_activate(move |_, _| handle.quit());
     app.add_action(&quit);
     app.set_accels_for_action("app.quit", &["<Ctrl>q"]);
+    // A notification's actions: a meeting's web link, or the Today page.
+    let open_url = gtk::gio::SimpleAction::new("open-url", Some(glib::VariantTy::STRING));
+    open_url.connect_activate(|_, target| {
+        let Some(url) = target.and_then(|t| t.get::<String>()) else { return };
+        if url.starts_with("https://") || url.starts_with("http://") {
+            let _ = gtk::gio::AppInfo::launch_default_for_uri(&url, gtk::gio::AppLaunchContext::NONE);
+        }
+    });
+    app.add_action(&open_url);
+    let today = gtk::gio::SimpleAction::new("today", None);
+    let handle = app.clone();
+    today.connect_activate(move |_, _| {
+        if let Some(window) = handle.active_window() {
+            window.present();
+            let _ = WidgetExt::activate_action(&window, "win.today", None);
+        }
+    });
+    app.add_action(&today);
+    let new_window = gtk::gio::SimpleAction::new("new-window", None);
+    let handle = app.clone();
+    new_window.connect_activate(move |_, _| window::Window::present(&handle, None));
+    app.add_action(&new_window);
+    app.set_accels_for_action("app.new-window", &["<Ctrl><Alt>n"]);
     app.run_with_args(&[program])
 }
