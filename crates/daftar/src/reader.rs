@@ -43,10 +43,12 @@ pub struct Request {
     pub line: Option<usize>,
 }
 
-type OpenHandler = Box<dyn Fn(&str, Option<&str>)>;
-type NoticeHandler = Box<dyn Fn(&str)>;
-type EditTaskHandler = Box<dyn Fn(&str, usize)>;
-type CursorHandler = Box<dyn Fn(&str, usize)>;
+// Shared, so a handler is taken out of the state before it runs: one that
+// shows a note borrows the state again.
+type OpenHandler = Rc<dyn Fn(&str, Option<&str>)>;
+type NoticeHandler = Rc<dyn Fn(&str)>;
+type EditTaskHandler = Rc<dyn Fn(&str, usize)>;
+type CursorHandler = Rc<dyn Fn(&str, usize)>;
 
 struct State {
     ready: bool,
@@ -104,21 +106,21 @@ impl Reader {
     }
 
     pub fn connect_open(&self, handler: impl Fn(&str, Option<&str>) + 'static) {
-        self.state.borrow_mut().on_open = Some(Box::new(handler));
+        self.state.borrow_mut().on_open = Some(Rc::new(handler));
     }
 
     pub fn connect_notice(&self, handler: impl Fn(&str) + 'static) {
-        self.state.borrow_mut().on_notice = Some(Box::new(handler));
+        self.state.borrow_mut().on_notice = Some(Rc::new(handler));
     }
 
     /// A right click on a task: the note and the line to edit.
     pub fn connect_edit_task(&self, handler: impl Fn(&str, usize) + 'static) {
-        self.state.borrow_mut().on_edit_task = Some(Box::new(handler));
+        self.state.borrow_mut().on_edit_task = Some(Rc::new(handler));
     }
 
     /// The reading cursor moved: the note and its source line.
     pub fn connect_cursor(&self, handler: impl Fn(&str, usize) + 'static) {
-        self.state.borrow_mut().on_cursor = Some(Box::new(handler));
+        self.state.borrow_mut().on_cursor = Some(Rc::new(handler));
     }
 
     pub fn shown(&self) -> Option<Request> {
@@ -220,7 +222,8 @@ impl Reader {
     }
 
     fn notice(&self, text: &str) {
-        if let Some(handler) = &self.state.borrow().on_notice {
+        let handler = self.state.borrow().on_notice.clone();
+        if let Some(handler) = handler {
             handler(text);
         }
     }
@@ -293,7 +296,8 @@ impl Reader {
                 };
                 match found {
                     Some(found) => {
-                        if let Some(handler) = &self.state.borrow().on_open {
+                        let handler = self.state.borrow().on_open.clone();
+                        if let Some(handler) = handler {
                             handler(&found, anchor.as_deref());
                         }
                     }
@@ -304,13 +308,15 @@ impl Reader {
                 let (Some(shown), Some(line)) = (self.shown(), body.get("line").and_then(Value::as_u64)) else { return };
                 // A task in a query result is in its own note.
                 let path = Some(text("path")).filter(|p| !p.is_empty()).unwrap_or(shown.path);
-                if let Some(handler) = &self.state.borrow().on_edit_task {
+                let handler = self.state.borrow().on_edit_task.clone();
+                if let Some(handler) = handler {
                     handler(&path, line as usize);
                 }
             }
             "cursor" => {
                 let (Some(shown), Some(line)) = (self.shown(), body.get("line").and_then(Value::as_u64)) else { return };
-                if let Some(handler) = &self.state.borrow().on_cursor {
+                let handler = self.state.borrow().on_cursor.clone();
+                if let Some(handler) = handler {
                     handler(&shown.path, line as usize);
                 }
             }
