@@ -6,6 +6,7 @@
 //! and on Android (`notes-droid`). The three apps share no code; when a rule
 //! changes in one, change it in the others.
 
+pub mod calendar_week;
 pub mod config;
 pub mod day;
 pub mod fuzzy;
@@ -15,6 +16,7 @@ pub mod note_parser;
 pub mod quick_switcher;
 pub mod search;
 pub mod tag_tree;
+pub mod task_board;
 pub mod task_expression;
 pub mod task_line;
 pub mod tasks_query;
@@ -22,6 +24,7 @@ pub mod text;
 pub mod vault;
 pub mod vault_edits;
 
+pub use calendar_week::{CalendarDay, CalendarWeek, Meeting};
 pub use config::{ConfigFile, Value};
 pub use day::Day;
 pub use fuzzy::{Fuzzy, Match};
@@ -31,6 +34,7 @@ pub use note_parser::{FrontMatter, Heading, Link, NoteParser, ParsedNote, Parsed
 pub use quick_switcher::{Candidate, QuickSwitcher};
 pub use search::{Hit, SearchIndex};
 pub use tag_tree::TagNode;
+pub use task_board::{Column, Drop as BoardDrop, Grouping, TaskBoard};
 pub use task_expression::TaskExpression;
 pub use task_line::{Meta, Recurrence, TaskFields, TaskLine, TaskMetadata};
 pub use tasks_query::{DateRange, QueryTask, TaskState, TasksQuery};
