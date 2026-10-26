@@ -27,10 +27,15 @@ This is the first part of the port. It has:
 - **Edit Task:** a right click on a task, in a note, on Today or on the board: the text, the status, the priority, the due, scheduled and start dates, and the repeat rule. The line is read again before the save, which is refused when it changed.
 - **Git sync:** a button in the sidebar shows the branch and what waits to be pushed, pulled or committed; Ctrl+Shift+S commits, pulls with a rebase and pushes, as `daftar-cli sync` does. It pulls at launch (`git.pull_on_launch`), syncs every `git.sync_interval` minutes when that is set, and shortly after a task is ticked.
 - **Back and Forward:** Ctrl+[ and Ctrl+], or Alt+Left and Alt+Right. Ctrl+= and Ctrl+- set the text size, Ctrl+0 resets it.
+- **Command palette:** Ctrl+Shift+P, every command by name, matched as the switcher matches.
+- **Graph:** Ctrl+Alt+G, the notes a few links from the open one, or the whole vault, each top folder in its color as on the Mac; drag to move, scroll to zoom, click a note to open it.
+- **Terminal:** Ctrl+\`, your login shell under the note, started in the vault's folder, in Daftar's colors (`terminal.shell`, `terminal.font_size`).
+- **Notifications:** a meeting alert a few minutes before each meeting in the week note, with Join, and a morning digest of the tasks due (`[notifications]`). Unlike on the Mac, they ring while Daftar runs.
+- **Settings:** Ctrl+, for the theme, the text size, the fonts and git, written back to `config.toml` line by line. Ctrl+Alt+N opens another window.
 - **Command line:** `daftar-cli`, below.
 - **Core:** the parser, the link resolver, the task lines, the vault index, the quick switcher's ranking, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
 
-Next come file actions (new, rename, move, delete), bookmarks, the graph and the Neovim mode.
+Next come file actions (new, rename, move, delete), bookmarks and the Neovim mode.
 
 ## Command line
 
