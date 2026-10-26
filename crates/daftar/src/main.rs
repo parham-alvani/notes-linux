@@ -2,6 +2,9 @@
 //! repository. The sister of Daftar for macOS and Daftar for Android.
 
 mod editor;
+mod editor_popup;
+mod editor_style;
+mod neovim_session;
 mod palette;
 mod reader;
 mod settings;
