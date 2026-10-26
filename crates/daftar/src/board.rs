@@ -3,6 +3,11 @@
 //! line in the note as the Tasks plugin would write it, and only while the
 //! line still holds the task the card showed. A click opens the task's note
 //! at its line; a right click edits it or moves it.
+//!
+//! The keys: arrows or hjkl go from card to card and column to column, Space
+//! ticks, Enter edits, o opens the note, g and G go to a column's first and
+//! last card, and Shift with Left or Right (or H, L) moves the card to the
+//! next column, as dropping it there would.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -49,6 +54,69 @@ pub struct Board {
     query: RefCell<String>,
     store: RefCell<Option<Rc<VaultStore>>>,
     handlers: Handlers,
+    /// The cards on screen, column by column, with their tasks.
+    grid: RefCell<Vec<Vec<(gtk::Box, VaultTask)>>>,
+    /// What each column on screen writes on a card moved to it.
+    drops: RefCell<Vec<Option<BoardDrop>>>,
+    /// The card with the keyboard's focus, as (column, row).
+    focused: Rc<Cell<Option<(usize, usize)>>>,
+    /// Where the focus goes after the next draw: the task by its id, else
+    /// the same place.
+    refocus: RefCell<Option<(String, usize, usize)>>,
+}
+
+/// What a key does on a focused card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardKey {
+    /// Focus by columns and rows.
+    Go(isize, isize),
+    First,
+    Last,
+    /// Move the card to the column this many columns over.
+    Move(isize),
+    Toggle,
+    Edit,
+    Open,
+}
+
+/// The key's meaning on a card, with no Control, Alt or Super held.
+pub fn card_key(key: gdk::Key, shift: bool) -> Option<CardKey> {
+    use gdk::Key;
+    Some(match key {
+        Key::Left if shift => CardKey::Move(-1),
+        Key::Right if shift => CardKey::Move(1),
+        Key::H => CardKey::Move(-1),
+        Key::L => CardKey::Move(1),
+        Key::Left | Key::h => CardKey::Go(-1, 0),
+        Key::Right | Key::l => CardKey::Go(1, 0),
+        Key::Up | Key::k => CardKey::Go(0, -1),
+        Key::Down | Key::j => CardKey::Go(0, 1),
+        Key::Home | Key::g => CardKey::First,
+        Key::End | Key::G => CardKey::Last,
+        Key::space => CardKey::Toggle,
+        Key::Return | Key::KP_Enter => CardKey::Edit,
+        Key::o => CardKey::Open,
+        _ => return None,
+    })
+}
+
+/// The card [step] leads to from [at], in columns of [lengths] cards: up and
+/// down within a column, stopping at its ends; left and right to the nearest
+/// column that has cards, at the same row or its last.
+pub fn step(lengths: &[usize], at: (usize, usize), step: (isize, isize)) -> Option<(usize, usize)> {
+    let (column, row) = at;
+    if step.0 == 0 {
+        let row = row.checked_add_signed(step.1)?;
+        return (row < *lengths.get(column)?).then_some((column, row));
+    }
+    let mut next = column;
+    loop {
+        next = next.checked_add_signed(step.0.signum())?;
+        let length = *lengths.get(next)?;
+        if length > 0 {
+            return Some((next, row.min(length - 1)));
+        }
+    }
 }
 
 impl Board {
@@ -93,6 +161,7 @@ impl Board {
             .child(&columns)
             .css_classes(["daftar-page"])
             .build();
+        follow_focus(&scroller);
         let empty = adw::StatusPage::builder()
             .icon_name("checkbox-checked-symbolic")
             .title("No tasks")
@@ -116,7 +185,25 @@ impl Board {
             query: RefCell::new(String::new()),
             store: RefCell::new(None),
             handlers,
+            grid: RefCell::new(Vec::new()),
+            drops: RefCell::new(Vec::new()),
+            focused: Rc::new(Cell::new(None)),
+            refocus: RefCell::new(None),
         });
+        {
+            // The keys of a focused card reach the columns as they bubble up.
+            let keys = gtk::EventControllerKey::new();
+            let this = Rc::downgrade(&board);
+            keys.connect_key_pressed(move |_, key, _, state| {
+                let held = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK;
+                let Some(this) = this.upgrade() else { return glib::Propagation::Proceed };
+                match card_key(key, state.contains(gdk::ModifierType::SHIFT_MASK)).filter(|_| !state.intersects(held)) {
+                    Some(key) if this.key(key) => glib::Propagation::Stop,
+                    _ => glib::Propagation::Proceed,
+                }
+            });
+            board.columns.add_controller(keys);
+        }
         for (grouping, button) in buttons {
             let this = Rc::downgrade(&board);
             button.connect_toggled(move |button| {
@@ -154,7 +241,67 @@ impl Board {
                 }
             });
         }
+        {
+            // Enter in the filter: on to the cards it left.
+            let this = Rc::downgrade(&board);
+            filter.connect_activate(move |_| {
+                if let Some(this) = this.upgrade() {
+                    this.focus_cards();
+                }
+            });
+        }
         board
+    }
+
+    /// Puts the keyboard on the first card, unless it is on a card already.
+    pub fn focus_cards(&self) {
+        if self.columns.focus_child().is_some() {
+            return;
+        }
+        let lengths: Vec<usize> = self.grid.borrow().iter().map(Vec::len).collect();
+        if let Some(column) = lengths.iter().position(|&length| length > 0) {
+            self.focus_at((column, 0));
+        }
+    }
+
+    fn focus_at(&self, (column, row): (usize, usize)) {
+        if let Some((card, _)) = self.grid.borrow().get(column).and_then(|cards| cards.get(row)) {
+            card.grab_focus();
+        }
+    }
+
+    /// Does what [key] means on the focused card; false when it means nothing there.
+    fn key(&self, key: CardKey) -> bool {
+        let Some(at) = self.focused.get() else { return false };
+        let Some(task) = self.grid.borrow().get(at.0).and_then(|cards| cards.get(at.1)).map(|(_, task)| task.clone()) else {
+            return false;
+        };
+        let lengths: Vec<usize> = self.grid.borrow().iter().map(Vec::len).collect();
+        match key {
+            CardKey::Go(columns, rows) => {
+                if let Some(next) = step(&lengths, at, (columns, rows)) {
+                    self.focus_at(next);
+                }
+            }
+            CardKey::First => self.focus_at((at.0, 0)),
+            CardKey::Last => self.focus_at((at.0, lengths[at.0].saturating_sub(1))),
+            CardKey::Move(columns) => {
+                let Some(to) = at.0.checked_add_signed(columns) else { return true };
+                let Some(drop) = self.drops.borrow().get(to).cloned().flatten() else { return true };
+                *self.refocus.borrow_mut() = Some((task.id(), to, at.1));
+                (self.moved())(&task, &drop);
+            }
+            CardKey::Toggle => {
+                *self.refocus.borrow_mut() = Some((task.id(), at.0, at.1));
+                (self.toggle())(&task.path, task.task.line, task.task.status);
+            }
+            CardKey::Edit => {
+                *self.refocus.borrow_mut() = Some((task.id(), at.0, at.1));
+                (self.edit())(&task.path, task.task.line);
+            }
+            CardKey::Open => (self.open())(&task.path, task.task.line),
+        }
+        true
     }
 
     /// Draws the board again from [store]'s index, keeping the filters.
@@ -192,6 +339,19 @@ impl Board {
         self.count.set_label(&format!("{open} open {}", if open == 1 { "task" } else { "tasks" }));
         let within = (!self.all_closed.is_active()).then_some(CLOSED_WITHIN);
         let columns = TaskBoard::columns(&tasks, self.grouping.get(), Day::today(), within);
+        // A focused card is focused again after the draw: the same task, else the same place.
+        let had_focus = self.columns.focus_child().is_some();
+        if had_focus
+            && self.refocus.borrow().is_none()
+            && let Some((column, row)) = self.focused.get()
+            && let Some((_, task)) = self.grid.borrow().get(column).and_then(|cards| cards.get(row))
+        {
+            *self.refocus.borrow_mut() = Some((task.id(), column, row));
+        }
+        let refocus = self.refocus.take();
+        self.focused.set(None);
+        self.grid.borrow_mut().clear();
+        self.drops.borrow_mut().clear();
         while let Some(child) = self.columns.first_child() {
             self.columns.remove(&child);
         }
@@ -208,12 +368,27 @@ impl Board {
         self.stack.set_visible_child_name("columns");
         let targets: Vec<(String, BoardDrop)> =
             TaskBoard::columns(&[], self.grouping.get(), Day::today(), None).into_iter().filter_map(|c| Some((c.title, c.drop?))).collect();
-        for column in &columns {
-            self.columns.append(&self.column(column, &tasks, &targets));
+        for (at, column) in columns.iter().enumerate() {
+            self.grid.borrow_mut().push(Vec::new());
+            self.drops.borrow_mut().push(column.drop.clone());
+            self.columns.append(&self.column(at, column, &tasks, &targets));
+        }
+        if let Some((id, column, row)) = refocus {
+            let grid = self.grid.borrow();
+            let found = grid.iter().enumerate().find_map(|(c, cards)| cards.iter().position(|(_, t)| t.id() == id).map(|r| (c, r)));
+            let lengths: Vec<usize> = grid.iter().map(Vec::len).collect();
+            drop(grid);
+            let place = found.or_else(|| match lengths.get(column) {
+                Some(&length) if length > 0 => Some((column, row.min(length - 1))),
+                _ => step(&lengths, (column, row), (-1, 0)).or_else(|| step(&lengths, (column, row), (1, 0))),
+            });
+            if let Some(place) = place {
+                self.focus_at(place);
+            }
         }
     }
 
-    fn column(&self, column: &Column, tasks: &[VaultTask], targets: &[(String, BoardDrop)]) -> gtk::Box {
+    fn column(&self, at: usize, column: &Column, tasks: &[VaultTask], targets: &[(String, BoardDrop)]) -> gtk::Box {
         let tint = tint(column);
         let outer = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -235,10 +410,12 @@ impl Board {
         head.append(&gtk::Label::builder().label(column.tasks.len().to_string()).css_classes(["daftar-count", &tint, "numeric"]).build());
         outer.append(&head);
         let cards = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).build();
-        for task in &column.tasks {
-            cards.append(&self.card(task, &tint, targets));
+        for (row, task) in column.tasks.iter().enumerate() {
+            cards.append(&self.card(task, &tint, targets, (at, row)));
         }
-        outer.append(&gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&cards).build());
+        let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&cards).build();
+        follow_focus(&scroller);
+        outer.append(&scroller);
 
         // A card dropped here: its id is `path:line`, found again in [tasks].
         if let Some(drop) = column.drop.clone() {
@@ -263,19 +440,28 @@ impl Board {
         outer
     }
 
-    fn card(&self, task: &VaultTask, tint: &str, targets: &[(String, BoardDrop)]) -> gtk::Box {
+    fn card(&self, task: &VaultTask, tint: &str, targets: &[(String, BoardDrop)], at: (usize, usize)) -> gtk::Box {
         let t = &task.task;
         let card = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(6)
             .css_classes(["board-card"])
             .tooltip_text(&task.path)
+            .focusable(true)
             .build();
+        {
+            let focused = self.focused.clone();
+            let focus = gtk::EventControllerFocus::new();
+            focus.connect_enter(move |_| focused.set(Some(at)));
+            card.add_controller(focus);
+        }
+        self.grid.borrow_mut()[at.0].push((card.clone(), task.clone()));
         if !t.is_open() {
             card.add_css_class("is-closed");
         }
         let top = gtk::Box::builder().spacing(8).build();
-        let check = gtk::CheckButton::builder().valign(gtk::Align::Start).active(!t.is_open()).build();
+        // Space ticks the focused card: the box itself never takes the focus.
+        let check = gtk::CheckButton::builder().valign(gtk::Align::Start).active(!t.is_open()).focusable(false).build();
         check.set_inconsistent(t.status == '/');
         check.set_tooltip_text(Some(if t.is_open() { "Complete" } else { "Open again" }));
         {
@@ -426,6 +612,14 @@ pub fn shown(tasks: Vec<VaultTask>, file: Option<&str>, query: &str) -> Vec<Vaul
         .collect()
 }
 
+/// A focused card scrolls into view: the viewport a scroller wraps around a
+/// box does not follow the focus unless told to.
+fn follow_focus(scroller: &gtk::ScrolledWindow) {
+    if let Some(viewport) = scroller.child().and_downcast::<gtk::Viewport>() {
+        viewport.set_scroll_to_focus(true);
+    }
+}
+
 /// A column's color, as the Mac gives it.
 pub fn tint(column: &Column) -> String {
     let name = match column.id.as_str() {
@@ -465,6 +659,25 @@ mod tests {
 
     fn task(path: &str, raw: &str, line: usize) -> VaultTask {
         VaultTask { path: path.into(), task: TaskLine::parse(raw, line, "Kit").unwrap() }
+    }
+
+    #[test]
+    fn keys_go_from_card_to_card() {
+        // Three columns of 2, 0 and 3 cards.
+        let lengths = [2, 0, 3];
+        assert_eq!(step(&lengths, (0, 0), (0, 1)), Some((0, 1)));
+        assert_eq!(step(&lengths, (0, 1), (0, 1)), None);
+        assert_eq!(step(&lengths, (0, 0), (0, -1)), None);
+        // Over the empty column, at the same row.
+        assert_eq!(step(&lengths, (0, 1), (1, 0)), Some((2, 1)));
+        assert_eq!(step(&lengths, (2, 2), (-1, 0)), Some((0, 1)));
+        assert_eq!(step(&lengths, (2, 0), (1, 0)), None);
+        assert_eq!(card_key(gdk::Key::j, false), Some(CardKey::Go(0, 1)));
+        assert_eq!(card_key(gdk::Key::Right, true), Some(CardKey::Move(1)));
+        assert_eq!(card_key(gdk::Key::H, true), Some(CardKey::Move(-1)));
+        assert_eq!(card_key(gdk::Key::G, true), Some(CardKey::Last));
+        assert_eq!(card_key(gdk::Key::space, false), Some(CardKey::Toggle));
+        assert_eq!(card_key(gdk::Key::x, false), None);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! commands on a right click.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -68,8 +68,8 @@ fn draw_icon(image: &gtk::Image, emoji: &gtk::Label, icon: Option<&Icon>, fallba
             image.set_visible(true);
             let name = icon.and_then(|i| i.name.as_deref()).and_then(lucide).unwrap_or(fallback);
             image.set_icon_name(Some(name));
-            if let Some(color) = icon.and_then(|i| i.color.as_deref()).filter(|c| Iconic::COLORS.contains(c)) {
-                image.add_css_class(&format!("iconic-{color}"));
+            if let Some(class) = icon.and_then(|i| i.color.as_deref()).and_then(color_class) {
+                image.add_css_class(&class);
             }
         }
     }
@@ -309,24 +309,69 @@ const ICONIC_COLORS: [(&str, &str, &str); 9] = [
     ("gray", "#a8a8a0", "#6a6a62"),
 ];
 
-fn iconic_css(dark: bool) -> String {
-    ICONIC_COLORS
-        .iter()
-        .map(|(name, naz, daylight)| format!(".iconic-{name} {{ color: {}; }}\n", if dark { naz } else { daylight }))
-        .collect()
+/// The class that colors an icon [color]: one of Iconic's names, or a
+/// `#rrggbb` (or `#rgb`) of the person's own, which looks the same in both
+/// schemes, as Iconic draws it. `None` for anything else.
+fn color_class(color: &str) -> Option<String> {
+    if Iconic::COLORS.contains(&color) {
+        return Some(format!("iconic-{color}"));
+    }
+    let hex = hex_color(color)?;
+    let class = format!("iconic-hex-{hex}");
+    let added = HEX_COLORS.with(|colors| colors.borrow_mut().insert(hex));
+    if added {
+        reload_colors();
+    }
+    Some(class)
+}
+
+/// `#rrggbb` or `#rgb` as six lowercase digits.
+fn hex_color(color: &str) -> Option<String> {
+    let digits = color.strip_prefix('#')?;
+    if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    match digits.len() {
+        6 => Some(digits.to_ascii_lowercase()),
+        3 => Some(digits.chars().flat_map(|c| [c, c]).collect::<String>().to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+fn iconic_css(dark: bool, hexes: &BTreeSet<String>) -> String {
+    let named =
+        ICONIC_COLORS.iter().map(|(name, naz, daylight)| format!(".iconic-{name} {{ color: {}; }}\n", if dark { naz } else { daylight }));
+    let own = hexes.iter().map(|hex| format!(".iconic-hex-{hex} {{ color: #{hex}; }}\n"));
+    named.chain(own).collect()
+}
+
+thread_local! {
+    /// The colors' stylesheet, once a display has one, and the `#rrggbb`s
+    /// the vault's icons asked for so far.
+    static PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
+    static HEX_COLORS: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
+}
+
+fn reload_colors() {
+    let dark = adw::StyleManager::default().is_dark();
+    PROVIDER.with(|provider| {
+        if let Some(provider) = provider.borrow().as_ref() {
+            provider.load_from_string(&HEX_COLORS.with(|hexes| iconic_css(dark, &hexes.borrow())));
+        }
+    });
 }
 
 /// The colors, for the scheme now and whenever it changes.
 fn install_colors() {
     let Some(display) = gdk::Display::default() else { return };
-    let provider = gtk::CssProvider::new();
-    let manager = adw::StyleManager::default();
-    provider.load_from_string(&iconic_css(manager.is_dark()));
-    {
-        let provider = provider.clone();
-        manager.connect_dark_notify(move |manager| provider.load_from_string(&iconic_css(manager.is_dark())));
+    if PROVIDER.with(|provider| provider.borrow().is_some()) {
+        return;
     }
+    let provider = gtk::CssProvider::new();
     gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    PROVIDER.with(|slot| *slot.borrow_mut() = Some(provider));
+    reload_colors();
+    adw::StyleManager::default().connect_dark_notify(|_| reload_colors());
 }
 
 /// A Lucide name, as Iconic keeps it, to the nearest icon GTK's theme has;
@@ -397,5 +442,17 @@ mod tests {
         assert_eq!(lucide("lucide-building"), Some("x-office-address-book-symbolic"));
         assert_eq!(lucide("lucide-no-such-icon"), None);
         assert_eq!(lucide("😋"), None);
+    }
+
+    #[test]
+    fn own_colors_are_six_lowercase_digits() {
+        assert_eq!(hex_color("#FF8800").as_deref(), Some("ff8800"));
+        assert_eq!(hex_color("#f80").as_deref(), Some("ff8800"));
+        assert_eq!(hex_color("ff8800"), None);
+        assert_eq!(hex_color("#ff88001"), None);
+        assert_eq!(hex_color("#gg0000"), None);
+        let css = iconic_css(true, &BTreeSet::from(["ff8800".to_string()]));
+        assert!(css.contains(".iconic-orange { color: #ffb040; }"));
+        assert!(css.ends_with(".iconic-hex-ff8800 { color: #ff8800; }\n"));
     }
 }
