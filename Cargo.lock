@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "daftar"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-channel",
  "chrono",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "daftar-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "clap",
@@ -542,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "daftar-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "chrono-tz",
