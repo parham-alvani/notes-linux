@@ -16,6 +16,7 @@ use crate::reader::{Reader, Request};
 use crate::settings::AppSettings;
 use crate::sidebar::Sidebar;
 use crate::store::VaultStore;
+use crate::sync::{GitSync, Run};
 use crate::watcher::FileWatcher;
 
 /// How many notes the quick switcher remembers as opened lately.
@@ -31,6 +32,7 @@ pub struct Window {
     split: adw::NavigationSplitView,
     reader: Reader,
     sidebar: Rc<Sidebar>,
+    git: Rc<GitSync>,
     store: Rc<RefCell<Option<Rc<VaultStore>>>>,
     watcher: Rc<RefCell<Option<FileWatcher>>>,
     /// The notes opened lately, the last first.
@@ -61,6 +63,10 @@ impl Window {
             }))
         };
 
+        let git = {
+            let toasts = toasts.clone();
+            GitSync::new(move |text| toasts.add_toast(adw::Toast::new(text)))
+        };
         let this = Window {
             window: window.clone(),
             settings,
@@ -70,6 +76,7 @@ impl Window {
             split: split.clone(),
             reader: reader.clone(),
             sidebar: sidebar.clone(),
+            git: git.clone(),
             store: Rc::new(RefCell::new(None)),
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
@@ -93,6 +100,7 @@ impl Window {
             .action_name("win.quick-open")
             .build();
         side_header.pack_end(&quick_open);
+        side_header.pack_start(&git.button);
         let side = adw::ToolbarView::new();
         side.add_top_bar(&side_header);
         side.set_content(Some(&sidebar.widget));
@@ -197,6 +205,18 @@ impl Window {
             this.recent.borrow_mut().clear();
             this.sidebar.set_tree(store.index().tree());
             this.reader.set_store(store.clone());
+            {
+                let git = this.git.clone();
+                store.connect_wrote(move || git.edited());
+            }
+            let (pull, interval) = {
+                let settings = this.settings.borrow();
+                (
+                    settings.file.bool("git.pull_on_launch").unwrap_or(true),
+                    settings.file.int("git.sync_interval").unwrap_or(0).max(0) as u32,
+                )
+            };
+            this.git.attach(folder.clone(), pull, interval);
             *this.store.borrow_mut() = Some(store);
             let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if let Some(page) = this.split.sidebar() {
@@ -242,6 +262,7 @@ impl Window {
             (index.files.clone(), index.empty_folders.clone())
         };
         store.refresh(&changed.iter().cloned().collect::<Vec<_>>());
+        self.git.refresh();
         let index = store.index();
         if index.files != files || index.empty_folders != folders {
             self.sidebar.set_tree(index.tree());
@@ -291,6 +312,12 @@ impl Window {
         let this = self.clone();
         open_vault.connect_activate(move |_, _| this.choose_vault());
         self.window.add_action(&open_vault);
+        for (name, kind) in [("sync", Run::Sync), ("pull", Run::Pull)] {
+            let action = gio::SimpleAction::new(name, None);
+            let git = self.git.clone();
+            action.connect_activate(move |_, _| git.run(kind, true));
+            self.window.add_action(&action);
+        }
     }
 }
 

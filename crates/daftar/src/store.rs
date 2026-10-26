@@ -13,11 +13,17 @@ pub struct VaultStore {
     pub root: PathBuf,
     index: RefCell<VaultIndex>,
     pub search: Arc<SearchIndex>,
+    /// Told after the app wrote a note, for the sync that follows an edit.
+    wrote: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl VaultStore {
     pub fn new(root: PathBuf, index: VaultIndex, search: Arc<SearchIndex>) -> VaultStore {
-        VaultStore { root, index: RefCell::new(index), search }
+        VaultStore { root, index: RefCell::new(index), search, wrote: RefCell::new(None) }
+    }
+
+    pub fn connect_wrote(&self, wrote: impl Fn() + 'static) {
+        *self.wrote.borrow_mut() = Some(Box::new(wrote));
     }
 
     pub fn index(&self) -> Ref<'_, VaultIndex> {
@@ -37,6 +43,9 @@ impl VaultStore {
         }
         VaultEdits::apply(path, &self.root, |text| VaultEdits::toggle_task(text, line, status, Day::today()))?;
         self.refresh(&[path.to_string()]);
+        if let Some(wrote) = self.wrote.borrow().as_ref() {
+            wrote();
+        }
         Ok(())
     }
 

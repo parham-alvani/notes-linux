@@ -6,6 +6,7 @@ mod reader;
 mod settings;
 mod sidebar;
 mod store;
+mod sync;
 mod watcher;
 mod window;
 
@@ -30,6 +31,7 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.quick-open", &["<Ctrl>p", "<Ctrl>o"]);
     app.set_accels_for_action("win.search", &["<Ctrl><Shift>f"]);
     app.set_accels_for_action("win.open-vault", &["<Ctrl><Shift>o"]);
+    app.set_accels_for_action("win.sync", &["<Ctrl><Shift>s"]);
     let quit = gtk::gio::SimpleAction::new("quit", None);
     let handle = app.clone();
     quit.connect_activate(move |_, _| handle.quit());
