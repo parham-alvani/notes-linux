@@ -8,8 +8,10 @@
 
 pub mod config;
 pub mod day;
+pub mod fuzzy;
 pub mod link_resolver;
 pub mod note_parser;
+pub mod quick_switcher;
 pub mod search;
 pub mod tag_tree;
 pub mod task_line;
@@ -19,8 +21,10 @@ pub mod vault_edits;
 
 pub use config::{ConfigFile, Value};
 pub use day::Day;
+pub use fuzzy::{Fuzzy, Match};
 pub use link_resolver::LinkResolver;
 pub use note_parser::{FrontMatter, Heading, Link, NoteParser, ParsedNote, ParsedTask, Wikilink};
+pub use quick_switcher::{Candidate, QuickSwitcher};
 pub use search::{Hit, SearchIndex};
 pub use tag_tree::TagNode;
 pub use task_line::{Meta, Recurrence, TaskFields, TaskLine, TaskMetadata};
