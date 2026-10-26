@@ -24,9 +24,54 @@ jobs:
       - run: just lint
       - run: just test
 
+  cli:
+    # The command line runs wherever the vault is, not only on Linux: the
+    # core needs no GTK, and SQLite is built into it.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin, cross: true }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup update stable --no-self-update && rustup default stable && rustup target add ${{ matrix.target }}
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cli-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+      - name: Test
+        if: ${{ !matrix.cross }}
+        run: cargo test --locked -p daftar-core -p daftar-cli --target ${{ matrix.target }}
+      - run: cargo build --locked --release -p daftar-cli --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name="daftar-cli-$(cat VERSION)-${{ matrix.target }}"
+          mkdir "$name"
+          cp README.md LICENSE "$name/"
+          if [ "${{ runner.os }}" = Windows ]; then
+            cp "target/${{ matrix.target }}/release/daftar-cli.exe" "$name/"
+            7z a "$name.zip" "$name" >/dev/null
+          else
+            cp "target/${{ matrix.target }}/release/daftar-cli" "$name/"
+            tar -czf "$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: daftar-cli-${{ matrix.target }}
+          path: daftar-cli-*.*
+          if-no-files-found: error
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    needs: [test, cli]
     runs-on: ubuntu-latest
     container: archlinux:latest
     permissions:
@@ -38,7 +83,13 @@ jobs:
         run: test "v$(cat VERSION)" = "${GITHUB_REF_NAME}"
       - run: just app
       - run: tar -czf "daftar-$(cat VERSION)-x86_64.tar.gz" -C target/release daftar daftar-cli -C ../../data me.parham1995.notes.desktop me.parham1995.notes.png
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: daftar-cli-*
+          merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
-          files: daftar-*.tar.gz
+          files: |
+            daftar-*.tar.gz
+            daftar-cli-*.zip
           generate_release_notes: true

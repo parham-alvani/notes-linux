@@ -46,10 +46,7 @@ impl ConfigFile {
     }
 
     pub fn default_path() -> PathBuf {
-        let base = env::var_os("XDG_CONFIG_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(env::var_os("HOME").unwrap_or_default()).join(".config"));
+        let base = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
         base.join("daftar/config.toml")
     }
 
@@ -103,7 +100,7 @@ impl ConfigFile {
         if text.is_empty() {
             return None;
         }
-        let home = PathBuf::from(env::var_os("HOME").unwrap_or_default());
+        let home = home();
         Some(match text.strip_prefix("~/") {
             Some(rest) => home.join(rest),
             None if text == "~" => home,
@@ -285,6 +282,12 @@ fn trailing_comment(line: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// The person's home folder: `$HOME`, or `%USERPROFILE%` on Windows, where
+/// the command line runs too; the config file is at the same place in it.
+fn home() -> PathBuf {
+    env::home_dir().unwrap_or_default()
 }
 
 #[cfg(test)]

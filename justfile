@@ -29,6 +29,11 @@ app: web
 cli *args:
     cargo run -q -p daftar-cli -- {{args}}
 
+# Installs the command line alone, which needs no GTK: ~/.local/bin/daftar-cli.
+install-cli:
+    cargo build --release -p daftar-cli
+    install -Dm755 target/release/daftar-cli ~/.local/bin/daftar-cli
+
 # Installs for this user: the binaries, the desktop entry and the icon.
 install: app
     install -Dm755 target/release/daftar ~/.local/bin/daftar
