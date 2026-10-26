@@ -30,6 +30,8 @@ Next come tasks queries and Bases, the Today page, Git sync, the editor and the 
 
 Unlike the app, it needs no GTK and runs on Linux, macOS and Windows: each [release](https://github.com/parham-alvani/notes-linux/releases) has it for Linux (x86_64, arm64), macOS (Apple silicon, Intel) and Windows (x86_64). From the source, `cargo install --path crates/daftar-cli` or `just install-cli` builds it anywhere Rust does. On Windows the config file is in `%USERPROFILE%\.config\daftar\config.toml`.
 
+With Homebrew, on macOS or Linux: `brew install parham-alvani/tap/daftar-cli`.
+
 ```bash
 daftar-cli find kub fire          # notes by name, as the quick switcher ranks them
 daftar-cli search "backup plan"   # the text of every note

@@ -63,3 +63,5 @@ The host's side of the protocol, in `reader.rs`: the app calls `daftar.show(note
 ## Testing the app
 
 **Do not click a task in the real vault to test.** A tick writes the file. Test writes on a copy, or with the unit tests.
+
+`just release 0.2.0` sets VERSION and the crate versions, commits, tags and pushes; CI checks the tag matches VERSION, builds the CLI for every OS and publishes the release. The `daftar-cli` formula in parham-alvani/homebrew-tap follows releases with a daily bump job that also runs the tap's CI, or at once with `gh workflow run bump.yaml -R parham-alvani/homebrew-tap`.

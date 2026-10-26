@@ -40,3 +40,16 @@ install: app
     install -Dm755 target/release/daftar-cli ~/.local/bin/daftar-cli
     install -Dm644 data/me.parham1995.notes.desktop ~/.local/share/applications/me.parham1995.notes.desktop
     install -Dm644 data/me.parham1995.notes.png ~/.local/share/icons/hicolor/256x256/apps/me.parham1995.notes.png
+
+# Cuts a release: `just release 0.2.0` sets the version everywhere, commits, tags and pushes. The tag's CI publishes the binaries, and the tap's daily bump moves the daftar-cli formula to them.
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test -z "$(git status --porcelain)" || { echo "commit your changes first"; exit 1; }
+    old=$(cat VERSION)
+    echo "{{version}}" > VERSION
+    sed -i -E "s/^version = \"$old\"/version = \"{{version}}\"/; s/daftar-core = \{ version = \"$old\"/daftar-core = { version = \"{{version}}\"/" crates/*/Cargo.toml
+    cargo update -q -w
+    git commit -qam "release v{{version}}"
+    git tag -a "v{{version}}" -m "v{{version}}"
+    git push -q origin HEAD "v{{version}}"
