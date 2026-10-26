@@ -1,11 +1,13 @@
 //! The window's own colors: Daftar's naz palette on dark and Daylight on
 //! light, the ones `web/src/reader.css` gives the page, for the parts drawn
-//! with GTK (the Today page and the editor's page). Swapped with the scheme.
+//! with GTK (the Today page, the board and the editor's page). Swapped with the scheme.
 
 use gtk::gdk;
 
 /// The page's palette, by name: background, text, muted, and the colors.
-const DAYLIGHT: [(&str, &str); 11] = [
+const DAYLIGHT: [(&str, &str); 13] = [
+    ("panel", "#efede6"),
+    ("yellow", "#8a6a00"),
     ("background", "#faf9f5"),
     ("text", "#2a2a28"),
     ("muted", "#6a6a62"),
@@ -19,7 +21,9 @@ const DAYLIGHT: [(&str, &str); 11] = [
     ("rule", "#d8d5cc"),
 ];
 
-const NAZ: [(&str, &str); 11] = [
+const NAZ: [(&str, &str); 13] = [
+    ("panel", "#3a3a35"),
+    ("yellow", "#ffd850"),
     ("background", "#323232"),
     ("text", "#f5f5f0"),
     ("muted", "#a8a8a0"),
@@ -35,7 +39,7 @@ const NAZ: [(&str, &str); 11] = [
 
 /// The colors a card or a chip may take, as `t-` classes: `accent` alone is
 /// libadwaita's own class.
-pub const TINTS: [&str; 7] = ["accent", "red", "blue", "aqua", "purple", "pink", "green"];
+pub const TINTS: [&str; 9] = ["accent", "red", "blue", "aqua", "purple", "pink", "green", "yellow", "muted"];
 
 fn css(palette: &[(&str, &str)]) -> String {
     let mut out = String::new();
@@ -51,7 +55,15 @@ fn css(palette: &[(&str, &str)]) -> String {
              .daftar-chip.t-{tint}, .daftar-count.t-{tint}, .daftar-day.t-{tint} {{ color: @daftar_{tint}; background-color: alpha(@daftar_{tint}, 0.14); }}\n\
              .daftar-chip.t-{tint} {{ border: 1px solid alpha(@daftar_{tint}, 0.3); }}\n\
              .t-{tint} checkbutton check {{ border-color: @daftar_{tint}; }}\n\
-             .t-{tint} checkbutton check:indeterminate, .t-{tint} checkbutton check:checked {{ background-color: @daftar_{tint}; color: white; }}\n"
+             .t-{tint} checkbutton check:indeterminate, .t-{tint} checkbutton check:checked {{ background-color: @daftar_{tint}; color: white; }}\n\
+             .daftar-meeting.t-{tint} .meeting-bar {{ background-color: @daftar_{tint}; }}\n\
+             .daftar-meeting.t-{tint} .tint {{ color: @daftar_{tint}; }}\n\
+             .daftar-column.t-{tint} {{ background-color: alpha(@daftar_{tint}, 0.05); }}\n\
+             .daftar-column.t-{tint}.drop-target {{ background-color: alpha(@daftar_{tint}, 0.16); border-color: alpha(@daftar_{tint}, 0.8); }}\n\
+             .daftar-column.t-{tint} .column-dot {{ background-color: @daftar_{tint}; }}\n\
+             .daftar-column.t-{tint} .column-head {{ background-color: alpha(@daftar_{tint}, 0.14); }}\n\
+             .t-{tint} .board-card {{ border-left: 3px solid @daftar_{tint}; }}\n\
+             .daftar-pill.t-{tint}:checked {{ background-color: @daftar_{tint}; color: @daftar_background; font-weight: bold; }}\n"
         ));
     }
     out.push_str(
@@ -65,7 +77,22 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-note { color: @daftar_aqua; }\n\
          .daftar-muted { color: @daftar_muted; }\n\
          .daftar-task { padding: 2px 0; }\n\
-         .daftar-task button.flat { padding: 2px 4px; }\n",
+         .daftar-task button.flat { padding: 2px 4px; }\n\
+         .daftar-meeting { padding: 3px 0; }\n\
+         .daftar-meeting .meeting-bar { border-radius: 2px; min-height: 18px; }\n\
+         .daftar-meeting.is-past { opacity: 0.6; }\n\
+         .daftar-meeting .meeting-warning { color: @daftar_red; }\n\
+         .daftar-badge { border-radius: 999px; padding: 0 6px; font-weight: bold; font-size: smaller; color: white; background-color: @daftar_accent; }\n\
+         .daftar-join { background-color: @daftar_blue; color: @daftar_background; font-weight: bold; padding: 2px 12px; min-height: 0; }\n\
+         .daftar-join-now { background-color: @daftar_accent; color: @daftar_background; font-weight: bold; padding: 2px 12px; min-height: 0; }\n\
+         .daftar-column { border-radius: 16px; padding: 8px; border: 2px solid transparent; }\n\
+         .daftar-column .column-head { border-radius: 12px; padding: 8px 12px; }\n\
+         .daftar-column .column-dot { border-radius: 999px; min-width: 9px; min-height: 9px; }\n\
+         .board-card { background-color: @daftar_panel; border-radius: 11px; padding: 10px; border: 1px solid alpha(@daftar_text, 0.06); }\n\
+         .board-card.is-closed .board-text { color: @daftar_muted; text-decoration: line-through; }\n\
+         .daftar-board-head { padding: 10px 16px; }\n\
+         .daftar-board-icon { border-radius: 8px; color: white; min-width: 30px; min-height: 30px; background-image: linear-gradient(135deg, @daftar_purple, @daftar_accent); }\n\
+         .daftar-pill { border-radius: 999px; padding: 4px 9px; }\n",
     );
     out
 }

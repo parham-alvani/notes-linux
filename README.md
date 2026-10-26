@@ -22,13 +22,15 @@ This is the first part of the port. It has:
 - **Follows the disk:** a note changed by another app, by Neovim or by `git pull` is read again, and the one on screen is drawn again where you were reading.
 - **Find:** Ctrl+F in the note, Ctrl+G and Ctrl+Shift+G for the next and the previous match.
 - **Editor:** Ctrl+E edits the note on screen in GtkSourceView, in the reader's colors, and Ctrl+E again reads it where the cursor is. It saves a second after you stop typing, on Ctrl+S and when you leave, and never over a change made on disk meanwhile: it says so and offers to reload.
-- **Today:** Ctrl+1, the overdue tasks, the ones due today, the ones in progress and the next seven days, in cards; a box ticks a task, its text opens it.
+- **Today:** Ctrl+1, the meetings from the phone's week note in `Calendar/` (now, next and over, the free time, overlaps, and a Join button for a web link), then the overdue tasks, the ones due today, the ones in progress and the next seven days, in cards; a box ticks a task, its text opens it.
+- **Board:** Ctrl+2, the tasks in columns by status, by day or by note, filtered by note or by words. A card dragged to another status or day column changes its line as the Tasks plugin writes it, and only while the line is still the task the card showed; a click opens the task, a right click edits or moves it.
+- **Edit Task:** a right click on a task, in a note, on Today or on the board: the text, the status, the priority, the due, scheduled and start dates, and the repeat rule. The line is read again before the save, which is refused when it changed.
 - **Git sync:** a button in the sidebar shows the branch and what waits to be pushed, pulled or committed; Ctrl+Shift+S commits, pulls with a rebase and pushes, as `daftar-cli sync` does. It pulls at launch (`git.pull_on_launch`), syncs every `git.sync_interval` minutes when that is set, and shortly after a task is ticked.
 - **Back and Forward:** Ctrl+[ and Ctrl+], or Alt+Left and Alt+Right. Ctrl+= and Ctrl+- set the text size, Ctrl+0 resets it.
 - **Command line:** `daftar-cli`, below.
 - **Core:** the parser, the link resolver, the task lines, the vault index, the quick switcher's ranking, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
 
-Next come the meetings on the Today page, the task board, file actions (new, rename, move, delete), bookmarks, the graph and the Neovim mode.
+Next come file actions (new, rename, move, delete), bookmarks, the graph and the Neovim mode.
 
 ## Command line
 

@@ -11,6 +11,7 @@ use gtk::{gio, glib};
 
 use daftar_core::{SearchIndex, Value, Vault};
 
+use crate::board::{self, Board};
 use crate::editor::{Editor, Saved};
 use crate::palette::{self, Mode};
 use crate::reader::{Reader, Request};
@@ -18,6 +19,7 @@ use crate::settings::AppSettings;
 use crate::sidebar::Sidebar;
 use crate::store::VaultStore;
 use crate::sync::{GitSync, Run};
+use crate::task_edit;
 use crate::today::Today;
 use crate::watcher::FileWatcher;
 
@@ -36,6 +38,7 @@ pub struct Window {
     sidebar: Rc<Sidebar>,
     git: Rc<GitSync>,
     today: Rc<Today>,
+    board: Rc<Board>,
     editor: Rc<Editor>,
     store: Rc<RefCell<Option<Rc<VaultStore>>>>,
     watcher: Rc<RefCell<Option<FileWatcher>>>,
@@ -80,7 +83,7 @@ impl Window {
         let go_forward =
             gtk::Button::builder().icon_name("go-next-symbolic").tooltip_text("Forward (Ctrl+])").action_name("win.forward").build();
         let today = {
-            let (open, toggle) = (opener.clone(), opener.clone());
+            let (open, toggle, edit) = (opener.clone(), opener.clone(), opener.clone());
             Today::new(
                 move |path, line| {
                     if let Some(window) = open.borrow().as_ref() {
@@ -92,7 +95,37 @@ impl Window {
                         window.toggle_task(path, line, status);
                     }
                 },
+                move |path, line| {
+                    if let Some(window) = edit.borrow().as_ref() {
+                        window.edit_task(path, line);
+                    }
+                },
             )
+        };
+        let board = {
+            let (open, toggle, edit, moved) = (opener.clone(), opener.clone(), opener.clone(), opener.clone());
+            Board::new(board::Handlers {
+                open: Rc::new(move |path, line| {
+                    if let Some(window) = open.borrow().as_ref() {
+                        window.open_line(path, line);
+                    }
+                }),
+                toggle: Rc::new(move |path, line, status| {
+                    if let Some(window) = toggle.borrow().as_ref() {
+                        window.toggle_task(path, line, status);
+                    }
+                }),
+                edit: Rc::new(move |path, line| {
+                    if let Some(window) = edit.borrow().as_ref() {
+                        window.edit_task(path, line);
+                    }
+                }),
+                moved: Rc::new(move |task, drop| {
+                    if let Some(window) = moved.borrow().as_ref() {
+                        window.move_task(task, drop);
+                    }
+                }),
+            })
         };
         let editor = {
             let (notices, conflicts, opener) = (toasts.clone(), toasts.clone(), opener.clone());
@@ -121,6 +154,7 @@ impl Window {
             sidebar: sidebar.clone(),
             git: git.clone(),
             today: today.clone(),
+            board: board.clone(),
             editor: editor.clone(),
             store: Rc::new(RefCell::new(None)),
             watcher: Rc::new(RefCell::new(None)),
@@ -137,6 +171,10 @@ impl Window {
         {
             let this = this.clone();
             reader.connect_notice(move |text| this.toasts.add_toast(adw::Toast::new(text)));
+        }
+        {
+            let this = this.clone();
+            reader.connect_edit_task(move |path, line| this.edit_task(path, line));
         }
 
         // The sidebar.
@@ -186,6 +224,7 @@ impl Window {
         );
         stack.add_named(&reader.view, Some("reader"));
         stack.add_named(&today.widget, Some("today"));
+        stack.add_named(&board.widget, Some("board"));
         stack.add_named(&editor.widget, Some("editor"));
         stack.add_named(&this.choose_page(), Some("choose"));
         let content = adw::ToolbarView::new();
@@ -375,14 +414,53 @@ impl Window {
         self.split.set_show_content(true);
     }
 
+    /// Ctrl+2: the task board, drawn from the index as it is now.
+    fn show_board(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        if !self.leave_editor() {
+            return;
+        }
+        self.board.show(store);
+        self.title.set_title("Board");
+        self.title.set_subtitle("");
+        self.stack.set_visible_child_name("board");
+        self.split.set_show_content(true);
+    }
+
     /// Ticks a task from a page drawn by the window, not the reader.
     fn toggle_task(&self, path: &str, line: usize, status: char) {
         let Some(store) = self.store.borrow().clone() else { return };
         if let Err(failure) = store.toggle_task(path, line, status) {
             self.toasts.add_toast(adw::Toast::new(&failure.to_string()));
         }
-        if self.stack.visible_child_name().as_deref() == Some("today") {
-            self.show_today();
+        self.redraw_page();
+    }
+
+    /// A card dropped on a board column, or moved from its menu.
+    fn move_task(&self, task: &daftar_core::VaultTask, drop: &daftar_core::BoardDrop) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        if store.move_task(task, drop).is_err() {
+            let text = crate::today::plain(&task.task.text);
+            self.toasts.add_toast(adw::Toast::new(&format!("“{text}” changed in its note before the move. Nothing was written.")));
+        }
+        self.redraw_page();
+    }
+
+    /// The Edit Task dialog on the task at [line] of [path], from the reader,
+    /// Today or the board.
+    fn edit_task(&self, path: &str, line: usize) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let this = self.clone();
+        task_edit::present(&self.window, store, path, line, move || this.redraw_page());
+    }
+
+    /// The page on screen drawn again after the app wrote a task.
+    fn redraw_page(&self) {
+        match self.stack.visible_child_name().as_deref() {
+            Some("today") => self.show_today(),
+            Some("board") => self.show_board(),
+            Some("reader") => self.reader.reload(),
+            _ => {}
         }
     }
 
@@ -473,6 +551,11 @@ impl Window {
             self.show_today();
             return;
         }
+        if self.stack.visible_child_name().as_deref() == Some("board") {
+            drop(index);
+            self.show_board();
+            return;
+        }
         if self.editing() {
             if self.editor.path().is_some_and(|path| changed.contains(&path)) {
                 self.editor.changed_on_disk();
@@ -500,6 +583,7 @@ impl Window {
             command("Quick Open", "Go", "win.quick-open", "Ctrl+P"),
             command("Search the Notes", "Go", "win.search", "Ctrl+Shift+F"),
             command("Today", "Go", "win.today", "Ctrl+1"),
+            command("Task Board", "Go", "win.board", "Ctrl+2"),
             command("Back", "Go", "win.back", "Ctrl+["),
             command("Forward", "Go", "win.forward", "Ctrl+]"),
             command("Edit or Read the Note", "Note", "win.edit", "Ctrl+E"),
@@ -567,6 +651,10 @@ impl Window {
             editor.save();
         });
         self.window.add_action(&save);
+        let board = gio::SimpleAction::new("board", None);
+        let this = self.clone();
+        board.connect_activate(move |_, _| this.show_board());
+        self.window.add_action(&board);
         let today = gio::SimpleAction::new("today", None);
         let this = self.clone();
         today.connect_activate(move |_, _| this.show_today());
