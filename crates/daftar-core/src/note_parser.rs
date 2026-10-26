@@ -45,6 +45,8 @@ pub struct Link {
 static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$").unwrap());
 static WIKILINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(!?)\[\[([^\]\n]+?)\]\]").unwrap());
 static MARKDOWN_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(!?)\[[^\]\n]*\]\(<?([^)>\s]+)>?\)").unwrap());
+// A URL with a scheme (`https:`, `mailto:`, `data:`, `live:`) leaves the vault.
+static SCHEME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:").unwrap());
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|\s)#([\p{L}\p{N}_/-]+)").unwrap());
 static INLINE_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`[^`\n]*`").unwrap());
 static FENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:>\s*)*(```+|~~~+)").unwrap());
@@ -110,7 +112,7 @@ impl NoteParser {
             }
             for caps in MARKDOWN_LINK.captures_iter(&code) {
                 let url = &caps[2];
-                if url.contains("://") || url.starts_with("mailto:") || url.starts_with('#') {
+                if SCHEME.is_match(url) || url.starts_with('#') {
                     continue;
                 }
                 let decoded = percent_decode_str(url).decode_utf8().map(|d| d.into_owned()).unwrap_or_else(|_| url.to_string());
@@ -300,6 +302,13 @@ A link to [[Inbox#Today|today]] and ![[diagram.png|300]], a [doc](Notes/Other%20
         assert_eq!(note.links[0].anchor.as_deref(), Some("Today"));
         assert!(note.links[1].embed);
         assert_eq!(note.links[0].line, 7);
+    }
+
+    #[test]
+    fn urls_with_a_scheme_are_not_notes() {
+        let text = "[a](https://example.com) [b](mailto:a@example.com) ![c](data:image/png;base64,AAAA) [d](live:.cid.1) [e](Notes/E.md)";
+        let targets: Vec<String> = NoteParser::parse(text).links.into_iter().map(|l| l.target).collect();
+        assert_eq!(targets, ["Notes/E.md"]);
     }
 
     #[test]
