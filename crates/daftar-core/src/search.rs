@@ -5,6 +5,7 @@
 //! step with the files after that, so it has no schema to migrate and cannot
 //! disagree with the files for longer than one change.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use rusqlite::{Connection, params};
@@ -18,6 +19,10 @@ pub struct Hit {
 
 pub struct SearchIndex {
     db: Mutex<Connection>,
+    /// Each note's row. `path` is not indexed in FTS5, so a row is found and
+    /// removed by its rowid: a `WHERE path = ?` would read the whole table,
+    /// and the first index of a large vault would take seconds.
+    rows: Mutex<HashMap<String, i64>>,
 }
 
 impl Default for SearchIndex {
@@ -36,18 +41,25 @@ impl SearchIndex {
             )",
         )
         .expect("SQLite with FTS5");
-        SearchIndex { db: Mutex::new(db) }
+        SearchIndex { db: Mutex::new(db), rows: Mutex::new(HashMap::new()) }
     }
 
     pub fn put(&self, path: &str, title: &str, body: &str) {
         let db = self.db.lock().unwrap();
-        let _ = db.execute("DELETE FROM note_fts WHERE path = ?1", params![path]);
-        let _ = db.execute("INSERT INTO note_fts (path, title, body) VALUES (?1, ?2, ?3)", params![path, title, body]);
+        let mut rows = self.rows.lock().unwrap();
+        if let Some(row) = rows.remove(path) {
+            let _ = db.execute("DELETE FROM note_fts WHERE rowid = ?1", params![row]);
+        }
+        if db.execute("INSERT INTO note_fts (path, title, body) VALUES (?1, ?2, ?3)", params![path, title, body]).is_ok() {
+            rows.insert(path.to_string(), db.last_insert_rowid());
+        }
     }
 
     pub fn remove(&self, path: &str) {
         let db = self.db.lock().unwrap();
-        let _ = db.execute("DELETE FROM note_fts WHERE path = ?1", params![path]);
+        if let Some(row) = self.rows.lock().unwrap().remove(path) {
+            let _ = db.execute("DELETE FROM note_fts WHERE rowid = ?1", params![row]);
+        }
     }
 
     /// Runs [work] in one transaction, which makes the first index of a large
