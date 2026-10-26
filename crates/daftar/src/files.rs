@@ -1,4 +1,5 @@
-//! New notes and folders, renames, moves and the Trash, as on the Mac
+//! New notes and folders, renames, moves, the Trash and extracting a
+//! selection to a new note, as on the Mac
 //! (`FileActionSheet`, `VaultStore`): each in a dialog that says what will
 //! happen to the links before anything is written. A move goes through
 //! `VaultMoves`, so every link to what moved follows it, and the bookmarks,
@@ -14,18 +15,33 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use daftar_core::text::slugs;
-use daftar_core::{Iconic, MoveFailure, Vault, VaultIndex, VaultMoves};
+use daftar_core::{EditorCommands, Iconic, MoveFailure, Vault, VaultIndex, VaultMoves};
 
 use crate::store::{VaultStore, file_in};
 
 /// What a file command does, and to what.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    NewNote { folder: String },
-    NewFolder { parent: String },
-    Rename { path: String },
-    Move { path: String },
-    Trash { path: String },
+    NewNote {
+        folder: String,
+    },
+    NewFolder {
+        parent: String,
+    },
+    Rename {
+        path: String,
+    },
+    Move {
+        path: String,
+    },
+    Trash {
+        path: String,
+    },
+    /// The editor's selection, [text], to a new note in [folder].
+    Extract {
+        folder: String,
+        text: String,
+    },
 }
 
 /// What a command changed: the paths to read again, where each file went,
@@ -35,12 +51,14 @@ pub struct Done {
     pub changed: BTreeSet<String>,
     pub moves: BTreeMap<String, String>,
     pub open: Option<String>,
+    /// After an extract: the link that takes the selection's place.
+    pub link: Option<String>,
 }
 
 // The work, with no window
 
-/// A new, empty note named [name] in [folder]; its vault path.
-pub fn create_note(root: &Path, index: &VaultIndex, name: &str, folder: &str) -> Result<String, MoveFailure> {
+/// A new note named [name] in [folder], holding [text]; its vault path.
+pub fn create_note(root: &Path, index: &VaultIndex, name: &str, folder: &str, text: &str) -> Result<String, MoveFailure> {
     if !VaultMoves::is_valid_name(name) {
         return Err(MoveFailure::BadName(name.into()));
     }
@@ -53,11 +71,20 @@ pub fn create_note(root: &Path, index: &VaultIndex, name: &str, folder: &str) ->
         fs::create_dir_all(parent)?;
     }
     // `create_new`: never over a file another app made meanwhile.
-    fs::OpenOptions::new().write(true).create_new(true).open(&file).map_err(|e| match e.kind() {
+    let mut new = fs::OpenOptions::new().write(true).create_new(true).open(&file).map_err(|e| match e.kind() {
         std::io::ErrorKind::AlreadyExists => MoveFailure::Exists(path.clone()),
         _ => e.into(),
     })?;
+    std::io::Write::write_all(&mut new, text.as_bytes())?;
     Ok(path)
+}
+
+/// The link an extracted note gets where the selection was: its bare name
+/// when no other note in [files] has it, else its path, as on the Mac.
+pub fn extract_link(path: &str, files: &BTreeSet<String>) -> String {
+    let title = Vault::title(path);
+    let taken = files.iter().any(|f| f != path && Vault::is_note(f) && Vault::title(f).to_lowercase() == title.to_lowercase());
+    format!("[[{}]]", if taken { path.strip_suffix(".md").unwrap_or(path) } else { &title })
 }
 
 /// A new folder named [name] in [parent]; its vault path.
@@ -148,7 +175,7 @@ pub fn move_path(store: &VaultStore, from: &str, to: &str) -> Result<Done, MoveF
     }
     store.places.moved(&moves);
     let open = moves.get(from).cloned();
-    Ok(Done { changed, moves, open })
+    Ok(Done { changed, moves, open, link: None })
 }
 
 /// Moves [path] to the Trash, where it can be taken back.
@@ -220,6 +247,9 @@ pub fn present(
             (kind.into(), path.clone(), "Rename", adw::ResponseAppearance::Suggested)
         }
         Action::Move { path } => (format!("Move “{}”", short_name(path)), path.clone(), "Move", adw::ResponseAppearance::Suggested),
+        Action::Extract { folder, .. } => {
+            ("Extract to a New Note".into(), format!("In {}", place(folder)), "Extract", adw::ResponseAppearance::Suggested)
+        }
         Action::Trash { path } => (
             format!("Move “{}” to the Trash?", short_name(path)),
             "The Trash keeps it, so it can come back, and git keeps every version that was committed.".into(),
@@ -256,6 +286,12 @@ pub fn present(
     match &action {
         Action::NewNote { folder } => {
             let free = VaultMoves::free_name("Untitled", "md", folder, &store.index().files);
+            entry.set_text(&short_name(&free));
+            extra.append(&entry);
+        }
+        Action::Extract { folder, text } => {
+            let name = EditorCommands::extract_name(text);
+            let free = VaultMoves::free_name(&name, "md", folder, &store.index().files);
             entry.set_text(&short_name(&free));
             extra.append(&entry);
         }
@@ -302,9 +338,20 @@ pub fn present(
         }
         let name = entry.text().to_string();
         let result: Result<Done, String> = match &action {
-            Action::NewNote { folder } => create_note(&store.root, &store.index(), &name, folder)
+            Action::NewNote { folder } => create_note(&store.root, &store.index(), &name, folder, "")
                 .map(|path| Done { changed: BTreeSet::from([path.clone()]), open: Some(path), ..Done::default() })
                 .map_err(|e| e.to_string()),
+            Action::Extract { folder, text } => {
+                let created = create_note(&store.root, &store.index(), &name, folder, &EditorCommands::extract_body(text));
+                created
+                    .map(|path| {
+                        let mut files = store.index().files.clone();
+                        files.insert(path.clone());
+                        let link = extract_link(&path, &files);
+                        Done { changed: BTreeSet::from([path]), link: Some(link), ..Done::default() }
+                    })
+                    .map_err(|e| e.to_string())
+            }
             Action::NewFolder { parent } => create_folder(&store.root, &name, parent)
                 .map(|path| Done { changed: BTreeSet::from([path]), ..Done::default() })
                 .map_err(|e| e.to_string()),
@@ -425,12 +472,30 @@ mod tests {
     #[test]
     fn a_new_note_never_takes_a_taken_name() {
         let (root, index) = vault();
-        assert_eq!(create_note(root.path(), &index, "Idea", "Projects").unwrap(), "Projects/Idea.md");
+        assert_eq!(create_note(root.path(), &index, "Idea", "Projects", "").unwrap(), "Projects/Idea.md");
         assert!(root.path().join("Projects/Idea.md").exists());
-        assert_eq!(create_note(root.path(), &index, "inbox", ""), Err(MoveFailure::Exists("inbox.md".into())));
-        assert!(matches!(create_note(root.path(), &index, "a/b", ""), Err(MoveFailure::BadName(_))));
+        assert_eq!(create_note(root.path(), &index, "inbox", "", ""), Err(MoveFailure::Exists("inbox.md".into())));
+        assert!(matches!(create_note(root.path(), &index, "a/b", "", ""), Err(MoveFailure::BadName(_))));
         assert_eq!(create_folder(root.path(), "Notes", "Projects").unwrap(), "Projects/Notes");
         assert_eq!(create_folder(root.path(), "Notes", "Projects"), Err(MoveFailure::Exists("Projects/Notes".into())));
+    }
+
+    #[test]
+    fn an_extract_writes_the_selection_and_links_by_the_shortest_name() {
+        let (root, index) = vault();
+        let text = "## Rollout\n\nShip it on Monday.";
+        let name = EditorCommands::extract_name(text);
+        assert_eq!(name, "Rollout");
+        let path = create_note(root.path(), &index, &name, "Projects", &EditorCommands::extract_body(text)).unwrap();
+        assert_eq!(fs::read_to_string(root.path().join(&path)).unwrap(), "Ship it on Monday.");
+        let mut files = index.files.clone();
+        files.insert(path.clone());
+        assert_eq!(extract_link(&path, &files), "[[Rollout]]");
+        // Another note has the name: the link says the path.
+        files.insert("Old/rollout.md".into());
+        assert_eq!(extract_link(&path, &files), "[[Projects/Rollout]]");
+        // A name another note has gets a free one.
+        assert_eq!(VaultMoves::free_name("Plan", "md", "Projects/Alpha", &files), "Projects/Alpha/Plan 1.md");
     }
 
     #[test]

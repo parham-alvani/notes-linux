@@ -53,6 +53,7 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.new-folder::", &["<Ctrl><Shift>n"]);
     app.set_accels_for_action("win.rename::", &["F2", "<Ctrl>r"]);
     app.set_accels_for_action("win.bookmark::", &["<Ctrl>d"]);
+    app.set_accels_for_action("win.extract", &["<Ctrl><Alt>x"]);
     app.set_accels_for_action("win.inspector", &["<Ctrl><Alt>i"]);
     app.set_accels_for_action("win.commands", &["<Ctrl><Shift>p"]);
     app.set_accels_for_action("win.preferences", &["<Ctrl>comma"]);

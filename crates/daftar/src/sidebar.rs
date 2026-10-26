@@ -26,6 +26,8 @@ pub struct Sidebar {
 struct Shared {
     iconic: RefCell<Iconic>,
     bookmarked: RefCell<HashSet<String>>,
+    /// The vault's folder, for the file a dragged row carries.
+    root: RefCell<Option<std::path::PathBuf>>,
 }
 
 fn node_of(item: &glib::Object) -> Option<TreeNode> {
@@ -104,7 +106,7 @@ impl Sidebar {
                 item.set_child(Some(&expander));
                 // A right click: the file commands for this row.
                 let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
-                let (weak, shared) = (item.downgrade(), shared.clone());
+                let (weak, marks) = (item.downgrade(), shared.clone());
                 click.connect_pressed(move |gesture, _, x, y| {
                     let Some(item) = weak.upgrade() else { return };
                     let Some(node) = item.item().and_downcast::<gtk::TreeListRow>().and_then(|row| row.item()).as_ref().and_then(node_of)
@@ -112,10 +114,21 @@ impl Sidebar {
                         return;
                     };
                     let Some(widget) = gesture.widget() else { return };
-                    let bookmarked = shared.bookmarked.borrow().contains(&node.path);
+                    let bookmarked = marks.bookmarked.borrow().contains(&node.path);
                     popup(&widget, &menu(&node.path, node.is_folder(), bookmarked), x, y);
                 });
                 expander.add_controller(click);
+                // A drag: the row's file, which the editor takes as a link
+                // and another app as the file.
+                let drag = gtk::DragSource::builder().actions(gdk::DragAction::COPY).build();
+                let (weak, shared) = (item.downgrade(), shared.clone());
+                drag.connect_prepare(move |_, _, _| {
+                    let item = weak.upgrade()?;
+                    let node = item.item().and_downcast::<gtk::TreeListRow>().and_then(|row| row.item()).as_ref().and_then(node_of)?;
+                    let file = gio::File::for_path(shared.root.borrow().as_ref()?.join(&node.path));
+                    Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(&[file]).to_value()))
+                });
+                expander.add_controller(drag);
             });
         }
         {
@@ -208,6 +221,11 @@ impl Sidebar {
             }
             at += 1;
         }
+    }
+
+    /// The vault's folder, for dragging a row out.
+    pub fn set_root(&self, root: std::path::PathBuf) {
+        *self.shared.root.borrow_mut() = Some(root);
     }
 
     /// The Iconic icons, for the rows drawn from now on; [set_tree] redraws.
