@@ -5,10 +5,13 @@ mod board;
 mod editor;
 mod editor_popup;
 mod editor_style;
+mod files;
 mod graph;
+mod inspector;
 mod neovim_session;
 mod notifier;
 mod palette;
+mod places;
 mod preferences;
 mod reader;
 mod settings;
@@ -45,6 +48,12 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.open-vault", &["<Ctrl><Shift>o"]);
     app.set_accels_for_action("win.today", &["<Ctrl>1"]);
     app.set_accels_for_action("win.board", &["<Ctrl>2"]);
+    // The file commands act on the note on screen: an empty target.
+    app.set_accels_for_action("win.new-note::", &["<Ctrl>n"]);
+    app.set_accels_for_action("win.new-folder::", &["<Ctrl><Shift>n"]);
+    app.set_accels_for_action("win.rename::", &["F2", "<Ctrl>r"]);
+    app.set_accels_for_action("win.bookmark::", &["<Ctrl>d"]);
+    app.set_accels_for_action("win.inspector", &["<Ctrl><Alt>i"]);
     app.set_accels_for_action("win.commands", &["<Ctrl><Shift>p"]);
     app.set_accels_for_action("win.preferences", &["<Ctrl>comma"]);
     app.set_accels_for_action("win.graph", &["<Ctrl><Alt>g"]);

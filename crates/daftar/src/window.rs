@@ -13,6 +13,7 @@ use daftar_core::{SearchIndex, Value, Vault};
 
 use crate::board::{self, Board};
 use crate::editor::{Editor, Saved};
+use crate::inspector::Inspector;
 use crate::notifier::{Notifier, Wanted};
 use crate::palette::{self, Mode};
 use crate::reader::{Reader, Request};
@@ -24,6 +25,8 @@ use crate::task_edit;
 use crate::terminal::TerminalPane;
 use crate::today::Today;
 use crate::watcher::FileWatcher;
+
+mod file_actions;
 
 /// How many notes the quick switcher remembers as opened lately.
 const RECENT: usize = 20;
@@ -44,6 +47,9 @@ pub struct Window {
     editor: Rc<Editor>,
     terminal: Rc<TerminalPane>,
     notifier: Rc<Notifier>,
+    /// Backlinks and unlinked mentions, at the right of the note.
+    inspector: Rc<Inspector>,
+    inspector_split: adw::OverlaySplitView,
     store: Rc<RefCell<Option<Rc<VaultStore>>>>,
     watcher: Rc<RefCell<Option<FileWatcher>>>,
     /// The notes opened lately, the last first.
@@ -156,6 +162,19 @@ impl Window {
                 settings.file.int("terminal.font_size").unwrap_or(13),
             )
         };
+        let inspector = {
+            let (open, notices) = (opener.clone(), toasts.clone());
+            Inspector::new(
+                move |path, line| {
+                    if let Some(window) = open.borrow().as_ref() {
+                        window.open_line(path, line);
+                    }
+                },
+                move |text| notices.add_toast(adw::Toast::new(text)),
+            )
+        };
+        let inspector_split =
+            adw::OverlaySplitView::builder().sidebar_position(gtk::PackType::End).show_sidebar(false).sidebar(&inspector.widget).build();
         let this = Window {
             window: window.clone(),
             settings,
@@ -171,6 +190,8 @@ impl Window {
             editor: editor.clone(),
             terminal: terminal.clone(),
             notifier: Notifier::new(),
+            inspector,
+            inspector_split: inspector_split.clone(),
             store: Rc::new(RefCell::new(None)),
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
@@ -228,6 +249,13 @@ impl Window {
         let edit =
             gtk::ToggleButton::builder().icon_name("document-edit-symbolic").tooltip_text("Edit (Ctrl+E)").action_name("win.edit").build();
         header.pack_end(&edit);
+        header.pack_end(
+            &gtk::ToggleButton::builder()
+                .icon_name("sidebar-show-right-symbolic")
+                .tooltip_text("Inspector (Ctrl+Alt+I)")
+                .action_name("win.inspector")
+                .build(),
+        );
         stack.add_named(
             &adw::StatusPage::builder()
                 .icon_name("text-x-generic-symbolic")
@@ -262,7 +290,8 @@ impl Window {
             .build();
         panes.set_position(560);
         content.set_content(Some(&panes));
-        toasts.set_child(Some(&content));
+        inspector_split.set_content(Some(&content));
+        toasts.set_child(Some(&inspector_split));
         split.set_content(Some(&adw::NavigationPage::builder().title("Note").child(&toasts).build()));
 
         // A narrow window shows one pane at a time.
@@ -361,8 +390,9 @@ impl Window {
             };
             this.git.attach(folder.clone(), pull, interval);
             this.terminal.set_folder(folder.clone());
+            *this.store.borrow_mut() = Some(store.clone());
+            this.after_load(&store);
             this.plan_notifications();
-            *this.store.borrow_mut() = Some(store);
             let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if let Some(page) = this.split.sidebar() {
                 page.set_title(&name);
@@ -525,8 +555,11 @@ impl Window {
         self.title.set_subtitle(folder);
         self.stack.set_visible_child_name("reader");
         self.split.set_show_content(true);
+        // A note opens where it was being read, unless a link names a place in it.
+        let line = line.or_else(|| anchor.is_none().then(|| self.place(path)).flatten());
         self.reader.show(Request { path: path.to_string(), heading: anchor.map(String::from), line }, false);
         self.update_history();
+        self.refresh_inspector();
     }
 
     /// Back when [backward], else Forward: the notes that are gone are skipped.
@@ -578,10 +611,19 @@ impl Window {
         store.refresh(&changed.iter().cloned().collect::<Vec<_>>());
         self.git.refresh();
         self.plan_notifications();
-        let index = store.index();
-        if index.files != files || index.empty_folders != folders {
-            self.sidebar.set_tree(index.tree());
+        self.refresh_inspector();
+        let moved = {
+            let index = store.index();
+            let moved = index.files != files || index.empty_folders != folders;
+            if moved {
+                self.sidebar.set_tree(index.tree());
+            }
+            moved
+        };
+        if moved {
+            self.refresh_marks();
         }
+        let index = store.index();
         if self.stack.visible_child_name().as_deref() == Some("today") {
             drop(index);
             self.show_today();
@@ -624,6 +666,13 @@ impl Window {
             command("Forward", "Go", "win.forward", "Ctrl+]"),
             command("Edit or Read the Note", "Note", "win.edit", "Ctrl+E"),
             command("Show the Graph", "View", "win.graph", "Ctrl+Alt+G"),
+            command("Show or Hide the Inspector", "View", "win.inspector", "Ctrl+Alt+I"),
+            command("New Note", "File", "win.new-note::", "Ctrl+N"),
+            command("New Folder", "File", "win.new-folder::", "Ctrl+Shift+N"),
+            command("Rename", "File", "win.rename::", "F2"),
+            command("Move to…", "File", "win.move::", ""),
+            command("Move to Trash", "File", "win.trash::", ""),
+            command("Bookmark or Remove the Bookmark", "File", "win.bookmark::", "Ctrl+D"),
             command("Show or Hide the Terminal", "View", "win.terminal", "Ctrl+`"),
             command("Find in the Note", "Note", "win.find", "Ctrl+F"),
             command("Bigger Text", "View", "win.bigger-text", "Ctrl+="),
@@ -640,8 +689,14 @@ impl Window {
         commands.push(command("Quit", "App", "app.quit", "Ctrl+Q"));
         let window = self.window.clone();
         palette::present_commands(&self.window, commands, move |action| {
-            if let Some((group, name)) = action.split_once('.') {
-                let _ = WidgetExt::activate_action(&window, &format!("{group}.{name}"), None);
+            // `win.rename::` is an action with an empty string target: the note on screen.
+            match action.strip_suffix("::") {
+                Some(name) => {
+                    let _ = WidgetExt::activate_action(&window, name, Some(&"".to_variant()));
+                }
+                None => {
+                    let _ = WidgetExt::activate_action(&window, action, None);
+                }
             }
         });
     }
@@ -686,6 +741,7 @@ impl Window {
     }
 
     fn add_actions(&self) {
+        self.add_file_actions();
         let quick_open = gio::SimpleAction::new("quick-open", None);
         let this = self.clone();
         quick_open.connect_activate(move |_, _| this.palette(Mode::Files));

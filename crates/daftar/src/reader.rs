@@ -46,6 +46,7 @@ pub struct Request {
 type OpenHandler = Box<dyn Fn(&str, Option<&str>)>;
 type NoticeHandler = Box<dyn Fn(&str)>;
 type EditTaskHandler = Box<dyn Fn(&str, usize)>;
+type CursorHandler = Box<dyn Fn(&str, usize)>;
 
 struct State {
     ready: bool,
@@ -54,6 +55,7 @@ struct State {
     on_open: Option<OpenHandler>,
     on_notice: Option<NoticeHandler>,
     on_edit_task: Option<EditTaskHandler>,
+    on_cursor: Option<CursorHandler>,
 }
 
 #[derive(Clone)]
@@ -84,6 +86,7 @@ impl Reader {
                 on_open: None,
                 on_notice: None,
                 on_edit_task: None,
+                on_cursor: None,
             })),
         };
         reader.connect_messages();
@@ -108,6 +111,11 @@ impl Reader {
     /// A right click on a task: the note and the line to edit.
     pub fn connect_edit_task(&self, handler: impl Fn(&str, usize) + 'static) {
         self.state.borrow_mut().on_edit_task = Some(Box::new(handler));
+    }
+
+    /// The reading cursor moved: the note and its source line.
+    pub fn connect_cursor(&self, handler: impl Fn(&str, usize) + 'static) {
+        self.state.borrow_mut().on_cursor = Some(Box::new(handler));
     }
 
     pub fn shown(&self) -> Option<Request> {
@@ -221,7 +229,11 @@ impl Reader {
         match body.get("kind").and_then(Value::as_str).unwrap_or("") {
             "ready" => {
                 self.state.borrow_mut().ready = true;
-                self.reload();
+                // The first note, asked for before the page was there: at
+                // its heading or its line, not where a page never scrolled.
+                if let Some(request) = self.shown() {
+                    self.show(request, false);
+                }
             }
             "toggleTask" => {
                 let (Some(shown), Some(line), Some(status)) =
@@ -265,6 +277,12 @@ impl Reader {
                 let path = Some(text("path")).filter(|p| !p.is_empty()).unwrap_or(shown.path);
                 if let Some(handler) = &self.state.borrow().on_edit_task {
                     handler(&path, line as usize);
+                }
+            }
+            "cursor" => {
+                let (Some(shown), Some(line)) = (self.shown(), body.get("line").and_then(Value::as_u64)) else { return };
+                if let Some(handler) = &self.state.borrow().on_cursor {
+                    handler(&shown.path, line as usize);
                 }
             }
             "copy" => self.view.clipboard().set_text(&text("text")),

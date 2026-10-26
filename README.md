@@ -17,7 +17,10 @@ This is the first part of the port. It has:
 - **Tasks:** a click on a checkbox completes a task as the Tasks plugin does, a repeating one too, and refuses when the line changed on disk.
 - **Tasks queries:** a ` ```tasks ` block lists the tasks it asks for, as the Tasks plugin does: filters on status, dates (`due before next week`, `scheduled on or before this week`), path, folder, heading, text and tags, joined with `AND`, `OR` and `NOT`; `filter by function` and `group by function` with the small part of JavaScript such lines use; `group by`, `sort by` and `limit`. A line it cannot answer is shown above the list, never dropped in silence.
 - **Bases:** a `.base` file, a ` ```base ` block and `![[file.base]]` show their views as Obsidian Bases does: filters with `and`, `or` and `not`, formulas, the expression language with its functions and methods (dates, durations, lists, strings, regular expressions, `file.*`), `sort`, `groupBy` and `limit`, and the property types in `.obsidian/types.json`. A filter or a formula it cannot read is listed, never applied in silence.
-- **Sidebar:** the folder tree with folder notes; a folder's note opens with the folder.
+- **Sidebar:** the folder tree with folder notes; a folder's note opens with the folder. The Iconic plugin's colors and emoji show on its rows, and its Lucide icons as the nearest icon GTK's theme has. Above the tree, the vault's bookmarks (`.obsidian/bookmarks.json`); Ctrl+D bookmarks the note.
+- **Files:** Ctrl+N makes a note in the current folder and opens it in the editor, Ctrl+Shift+N a folder, F2 or Ctrl+R renames, and a right click in the sidebar also moves to another folder and to the Trash. A rename or a move rewrites every link to what moved, as Obsidian's "always update links" does, and the dialog says first how many notes link there. Bookmarks and reading places follow.
+- **Reading places:** a note opens where it was read last, kept in `$XDG_STATE_HOME/daftar`.
+- **Inspector:** Ctrl+Alt+I, the notes that link to the open one, and the unlinked mentions, where other notes write its name or an alias without a link, each with a Link button.
 - **Quick open:** Ctrl+P finds a note or a file by name as Obsidian's quick switcher does: words in any order, letters that skip, aliases, and `comp/acme` for a path. Ctrl+Shift+F searches the text of every note.
 - **Follows the disk:** a note changed by another app, by Neovim or by `git pull` is read again, and the one on screen is drawn again where you were reading.
 - **Find:** Ctrl+F in the note, Ctrl+G and Ctrl+Shift+G for the next and the previous match.
@@ -36,7 +39,6 @@ This is the first part of the port. It has:
 - **Command line:** `daftar-cli`, below.
 - **Core:** the parser, the link resolver, the task lines, the vault index, the quick switcher's ranking, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
 
-Next come file actions (new, rename, move, delete) and bookmarks.
 
 ## Command line
 
