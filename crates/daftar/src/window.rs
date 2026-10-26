@@ -37,6 +37,9 @@ pub struct Window {
     watcher: Rc<RefCell<Option<FileWatcher>>>,
     /// The notes opened lately, the last first.
     recent: Rc<RefCell<Vec<String>>>,
+    /// Where Back and Forward go, the nearest last.
+    back: Rc<RefCell<Vec<String>>>,
+    forward: Rc<RefCell<Vec<String>>>,
 }
 
 impl Window {
@@ -67,6 +70,10 @@ impl Window {
             let toasts = toasts.clone();
             GitSync::new(move |text| toasts.add_toast(adw::Toast::new(text)))
         };
+        let go_back =
+            gtk::Button::builder().icon_name("go-previous-symbolic").tooltip_text("Back (Ctrl+[)").action_name("win.back").build();
+        let go_forward =
+            gtk::Button::builder().icon_name("go-next-symbolic").tooltip_text("Forward (Ctrl+])").action_name("win.forward").build();
         let this = Window {
             window: window.clone(),
             settings,
@@ -80,6 +87,8 @@ impl Window {
             store: Rc::new(RefCell::new(None)),
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
+            back: Rc::new(RefCell::new(Vec::new())),
+            forward: Rc::new(RefCell::new(Vec::new())),
         };
         *opener.borrow_mut() = Some(this.clone());
 
@@ -109,6 +118,10 @@ impl Window {
         // The note.
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&title));
+        let history = gtk::Box::builder().css_classes(["linked"]).build();
+        history.append(&go_back);
+        history.append(&go_forward);
+        header.pack_start(&history);
         stack.add_named(
             &adw::StatusPage::builder()
                 .icon_name("text-x-generic-symbolic")
@@ -203,6 +216,8 @@ impl Window {
                 Err(error) => this.toasts.add_toast(adw::Toast::new(&format!("Changes on disk are not followed: {error}"))),
             }
             this.recent.borrow_mut().clear();
+            this.back.borrow_mut().clear();
+            this.forward.borrow_mut().clear();
             this.sidebar.set_tree(store.index().tree());
             this.reader.set_store(store.clone());
             {
@@ -232,6 +247,11 @@ impl Window {
     /// Opens a note or a base in the reader, and any other file in the app
     /// the system gives it to.
     pub fn open(&self, path: &str, anchor: Option<&str>) {
+        self.go(path, anchor, true);
+    }
+
+    /// Opens [path]; with [record], the note it leaves is one Back away.
+    fn go(&self, path: &str, anchor: Option<&str>, record: bool) {
         let Some(store) = self.store.borrow().clone() else { return };
         if !Vault::opens_in_app(path) {
             let file = gio::File::for_path(store.root.join(path));
@@ -244,12 +264,54 @@ impl Window {
             recent.insert(0, path.to_string());
             recent.truncate(RECENT);
         }
+        if record && let Some(shown) = self.reader.shown().filter(|shown| shown.path != path) {
+            self.back.borrow_mut().push(shown.path);
+            self.forward.borrow_mut().clear();
+        }
         let folder = path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("");
         self.title.set_title(&Vault::title(path));
         self.title.set_subtitle(folder);
         self.stack.set_visible_child_name("reader");
         self.split.set_show_content(true);
         self.reader.show(Request { path: path.to_string(), heading: anchor.map(String::from), line: None }, false);
+        self.update_history();
+    }
+
+    /// Back when [backward], else Forward: the notes that are gone are skipped.
+    fn travel(&self, backward: bool) {
+        let (from, to) = if backward { (&self.back, &self.forward) } else { (&self.forward, &self.back) };
+        let Some(store) = self.store.borrow().clone() else { return };
+        loop {
+            let Some(path) = from.borrow_mut().pop() else { break };
+            if !store.index().files.contains(&path) {
+                continue;
+            }
+            if let Some(shown) = self.reader.shown() {
+                to.borrow_mut().push(shown.path);
+            }
+            self.go(&path, None, false);
+            return;
+        }
+        self.update_history();
+    }
+
+    fn update_history(&self) {
+        if let Some(action) = self.window.lookup_action("back").and_downcast::<gio::SimpleAction>() {
+            action.set_enabled(!self.back.borrow().is_empty());
+        }
+        if let Some(action) = self.window.lookup_action("forward").and_downcast::<gio::SimpleAction>() {
+            action.set_enabled(!self.forward.borrow().is_empty());
+        }
+    }
+
+    /// The reader's text size one [step] bigger or smaller, or 14 again for
+    /// 0, kept in the config as the Mac keeps it: 10 to 28.
+    fn text_size(&self, step: i64) {
+        let next = if step == 0 { 14 } else { (self.settings.borrow().text_size() + step).clamp(10, 28) };
+        if let Err(error) = self.settings.borrow_mut().set("appearance.text_size", Value::Int(next)) {
+            self.toasts.add_toast(adw::Toast::new(&format!("The settings were not saved: {error}")));
+        }
+        self.reader.reload();
     }
 
     /// Files changed on disk, by another app, `git` or this one: the index
@@ -312,6 +374,19 @@ impl Window {
         let this = self.clone();
         open_vault.connect_activate(move |_, _| this.choose_vault());
         self.window.add_action(&open_vault);
+        for (name, backward) in [("back", true), ("forward", false)] {
+            let action = gio::SimpleAction::new(name, None);
+            action.set_enabled(false);
+            let this = self.clone();
+            action.connect_activate(move |_, _| this.travel(backward));
+            self.window.add_action(&action);
+        }
+        for (name, step) in [("bigger-text", 1), ("smaller-text", -1), ("actual-size", 0)] {
+            let action = gio::SimpleAction::new(name, None);
+            let this = self.clone();
+            action.connect_activate(move |_, _| this.text_size(step));
+            self.window.add_action(&action);
+        }
         for (name, kind) in [("sync", Run::Sync), ("pull", Run::Pull)] {
             let action = gio::SimpleAction::new(name, None);
             let git = self.git.clone();

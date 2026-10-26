@@ -32,6 +32,11 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.search", &["<Ctrl><Shift>f"]);
     app.set_accels_for_action("win.open-vault", &["<Ctrl><Shift>o"]);
     app.set_accels_for_action("win.sync", &["<Ctrl><Shift>s"]);
+    app.set_accels_for_action("win.back", &["<Ctrl>bracketleft", "<Alt>Left"]);
+    app.set_accels_for_action("win.forward", &["<Ctrl>bracketright", "<Alt>Right"]);
+    app.set_accels_for_action("win.bigger-text", &["<Ctrl>plus", "<Ctrl>equal"]);
+    app.set_accels_for_action("win.smaller-text", &["<Ctrl>minus"]);
+    app.set_accels_for_action("win.actual-size", &["<Ctrl>0"]);
     let quit = gtk::gio::SimpleAction::new("quit", None);
     let handle = app.clone();
     quit.connect_activate(move |_, _| handle.quit());
