@@ -1,14 +1,17 @@
-//! Today, as on the Mac: the date, a line of chips that sum the day up, and
-//! cards of the open tasks that are overdue, due today, in progress and due
-//! in the next seven days. A task's box ticks it; its text opens its note at
-//! its line.
+//! Today, as on the Mac: the date, a line of chips that sum the day up, the
+//! meetings from the phone's week note in `Calendar/` with the free time
+//! between them, and cards of the open tasks that are overdue, due today, in
+//! progress and due in the next seven days. A task's box ticks it; its text
+//! opens its note at its line; a right click edits it.
 
 use std::rc::Rc;
+
+use chrono::{DateTime, Local, Utc};
 
 use adw::prelude::*;
 
 use daftar_core::text::direction;
-use daftar_core::{Day, Vault, VaultTask};
+use daftar_core::{CalendarWeek, Day, Meeting, Vault, VaultTask};
 
 use crate::store::VaultStore;
 
@@ -51,17 +54,24 @@ impl TaskGroups {
 
 type Open = dyn Fn(&str, usize);
 type Toggle = dyn Fn(&str, usize, char);
+type Edit = dyn Fn(&str, usize);
 
 pub struct Today {
     pub widget: gtk::ScrolledWindow,
     content: gtk::Box,
     open: Box<Open>,
     toggle: Box<Toggle>,
+    edit: Box<Edit>,
 }
 
 impl Today {
-    /// [open] opens a note at a line; [toggle] ticks the task on one.
-    pub fn new(open: impl Fn(&str, usize) + 'static, toggle: impl Fn(&str, usize, char) + 'static) -> Rc<Today> {
+    /// [open] opens a note at a line; [toggle] ticks the task on one; [edit]
+    /// opens the Edit Task dialog on one.
+    pub fn new(
+        open: impl Fn(&str, usize) + 'static,
+        toggle: impl Fn(&str, usize, char) + 'static,
+        edit: impl Fn(&str, usize) + 'static,
+    ) -> Rc<Today> {
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(24)
@@ -73,7 +83,7 @@ impl Today {
         let clamp = adw::Clamp::builder().maximum_size(760).child(&content).build();
         let widget =
             gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&clamp).css_classes(["daftar-page"]).build();
-        Rc::new(Today { widget, content, open: Box::new(open), toggle: Box::new(toggle) })
+        Rc::new(Today { widget, content, open: Box::new(open), toggle: Box::new(toggle), edit: Box::new(edit) })
     }
 
     /// Draws the page again from the index.
@@ -83,6 +93,9 @@ impl Today {
         }
         let today = Day::today();
         let groups = TaskGroups::new(store.index().tasks(), today, 7);
+        let days = store.calendar_days(today, 2);
+        let day = days.iter().find(|d| d.day == today);
+        let tomorrow = days.iter().find(|d| d.day == today.adding_days(1));
 
         let head = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(10).build();
         let date = chrono::Local::now().format("%A %-d %B").to_string();
@@ -94,6 +107,11 @@ impl Today {
             row.append(&gtk::Label::new(Some(&text)));
             chips.insert(&row, -1);
         };
+        let meetings = day.map_or(0, |d| d.meetings.len());
+        chip(format!("{meetings} {}", if meetings == 1 { "meeting" } else { "meetings" }), "x-office-calendar-symbolic", "t-blue");
+        if let Some(free) = day.and_then(|d| d.free.as_deref()) {
+            chip(format!("free {free}"), "alarm-symbolic", "t-green");
+        }
         chip(format!("{} due", groups.today.len()), "weather-clear-symbolic", "t-accent");
         if !groups.overdue.is_empty() {
             chip(format!("{} overdue", groups.overdue.len()), "dialog-warning-symbolic", "t-red");
@@ -106,6 +124,26 @@ impl Today {
         }
         head.append(&chips);
         self.content.append(&head);
+
+        let meetings_card = card("Meetings", "x-office-calendar-symbolic", "t-blue", None);
+        let now = Utc::now();
+        match day {
+            Some(day) if day.meetings.is_empty() => meetings_card.append(&muted("No meetings today.")),
+            Some(day) => {
+                for meeting in &day.meetings {
+                    meetings_card.append(&meeting_row(meeting, now));
+                }
+            }
+            None => meetings_card
+                .append(&muted(&format!("There is no week note for today in {}/. Daftar on the phone writes it.", CalendarWeek::FOLDER))),
+        }
+        if let Some(first) = tomorrow.and_then(|d| d.meetings.iter().find(|m| !m.all_day()))
+            && let Some(start) = first.start
+        {
+            meetings_card.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            meetings_card.append(&muted(&format!("Tomorrow starts at {}: {}", clock(start), first.title)));
+        }
+        self.content.append(&meetings_card);
 
         let cards = [
             ("Overdue", "dialog-warning-symbolic", &groups.overdue, "t-red"),
@@ -127,7 +165,7 @@ impl Today {
         }
         if !any {
             let card = card("Nothing due", "emblem-ok-symbolic", "t-green", None);
-            card.append(&gtk::Label::builder().label("No open task is due this week.").xalign(0.0).css_classes(["daftar-muted"]).build());
+            card.append(&muted("No open task is due this week."));
             self.content.append(&card);
         }
     }
@@ -181,8 +219,120 @@ impl Today {
             button.connect_clicked(move |_| (this.open)(&path, line));
         }
         row.append(&button);
+        let menu = gtk::GestureClick::builder().button(gtk::gdk::BUTTON_SECONDARY).build();
+        {
+            let (this, path, line) = (self.clone(), task.path.clone(), t.line);
+            menu.connect_pressed(move |gesture, _, _, _| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                (this.edit)(&path, line);
+            });
+        }
+        row.add_controller(menu);
         row
     }
+}
+
+fn muted(text: &str) -> gtk::Label {
+    gtk::Label::builder().label(text).xalign(0.0).wrap(true).css_classes(["daftar-muted"]).build()
+}
+
+/// `09:30` on this computer's clock.
+fn clock(at: DateTime<Utc>) -> String {
+    at.with_timezone(&Local).format("%H:%M").to_string()
+}
+
+/// Where a meeting is from [now]: over, going on, or still to come.
+#[derive(Debug, PartialEq, Eq)]
+pub enum When {
+    Past,
+    Now,
+    Next,
+}
+
+pub fn when(meeting: &Meeting, now: DateTime<Utc>) -> When {
+    match (meeting.start, meeting.end) {
+        (_, Some(end)) if end < now => When::Past,
+        (Some(start), _) if start <= now => When::Now,
+        _ => When::Next,
+    }
+}
+
+/// `09:30–10:00`, or `All day`.
+pub fn time_range(meeting: &Meeting) -> String {
+    match (meeting.start, meeting.end) {
+        (Some(start), Some(end)) => format!("{}–{}", clock(start), clock(end)),
+        _ => "All day".into(),
+    }
+}
+
+/// A meeting: a bar in its state, the time, the title with `now` or `maybe`,
+/// an overlap warning, and Join while it is not over.
+fn meeting_row(meeting: &Meeting, now: DateTime<Utc>) -> gtk::Box {
+    let state = when(meeting, now);
+    let tint = match state {
+        When::Now => "t-accent",
+        When::Past => "t-muted",
+        When::Next => "t-blue",
+    };
+    let row = gtk::Box::builder().spacing(10).css_classes(["daftar-meeting", tint]).build();
+    if state == When::Past {
+        row.add_css_class("is-past");
+    }
+    row.append(&gtk::Box::builder().width_request(4).css_classes(["meeting-bar"]).build());
+    row.append(
+        &gtk::Label::builder()
+            .label(time_range(meeting))
+            .width_chars(13)
+            .xalign(0.0)
+            .valign(gtk::Align::Start)
+            .css_classes(["tint", "numeric"])
+            .build(),
+    );
+    let lines = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).hexpand(true).build();
+    let title = gtk::Box::builder().spacing(6).build();
+    let name = gtk::Label::builder().label(&meeting.title).xalign(0.0).wrap(true).build();
+    if meeting.busy_only || state == When::Past {
+        name.add_css_class("daftar-muted");
+    }
+    if state == When::Now {
+        name.add_css_class("heading");
+    }
+    title.append(&name);
+    if state == When::Now {
+        title.append(&gtk::Label::builder().label("now").css_classes(["daftar-badge"]).build());
+    }
+    if meeting.tentative {
+        title.append(&gtk::Label::builder().label("maybe").css_classes(["daftar-day", "t-purple"]).build());
+    }
+    lines.append(&title);
+    if let Some(overlaps) = &meeting.overlaps {
+        lines.append(
+            &gtk::Label::builder().label(format!("⚠ Overlaps {overlaps}")).xalign(0.0).css_classes(["caption", "meeting-warning"]).build(),
+        );
+    }
+    row.append(&lines);
+    if let Some(join) = meeting.join.clone().filter(|url| joinable(url))
+        && state != When::Past
+    {
+        let button = gtk::Button::builder()
+            .label("Join")
+            .valign(gtk::Align::Center)
+            .css_classes(["pill", if state == When::Now { "daftar-join-now" } else { "daftar-join" }])
+            .tooltip_text(&join)
+            .build();
+        button.connect_clicked(move |button| {
+            let window = button.root().and_downcast::<gtk::Window>();
+            gtk::UriLauncher::new(&join).launch(window.as_ref(), gtk::gio::Cancellable::NONE, |_| {});
+        });
+        row.append(&button);
+    }
+    row
+}
+
+/// A join link the app opens: web links only, as every link that leaves it.
+fn joinable(url: &str) -> bool {
+    let scheme = url.split(':').next().unwrap_or("").to_lowercase();
+    scheme == "https" || scheme == "http"
 }
 
 /// A rounded group in its own color: a tinted icon, the title and a count.
@@ -199,7 +349,7 @@ fn card(title: &str, icon: &str, tint: &str, count: Option<usize>) -> gtk::Box {
 }
 
 /// The Tasks plugin's priority emoji as a mark and its color.
-fn priority(emoji: &str) -> Option<(&'static str, &'static str)> {
+pub fn priority(emoji: &str) -> Option<(&'static str, &'static str)> {
     Some(match emoji {
         "🔺" | "⏫" => ("⇈", "t-red"),
         "🔼" => ("↑", "t-accent"),
@@ -251,6 +401,30 @@ mod tests {
         assert_eq!(texts(&groups.today), ["Now"]);
         assert_eq!(texts(&groups.upcoming), ["Soon"]);
         assert_eq!(texts(&groups.in_progress), ["Doing"]);
+    }
+
+    #[test]
+    fn a_meeting_is_past_now_or_next() {
+        use chrono::TimeZone;
+        let at = |h: u32| Utc.with_ymd_and_hms(2026, 10, 26, h, 0, 0).unwrap();
+        let meeting = Meeting {
+            day: Day::parse("2026-10-26").unwrap(),
+            start: Some(at(10)),
+            end: Some(at(11)),
+            title: "Planning".into(),
+            calendars: vec![],
+            join: Some("https://meet.example.com/a".into()),
+            tentative: false,
+            busy_only: false,
+            overlaps: None,
+        };
+        assert_eq!(when(&meeting, at(9)), When::Next);
+        assert_eq!(when(&meeting, at(10)), When::Now);
+        assert_eq!(when(&meeting, at(12)), When::Past);
+        let all_day = Meeting { start: None, end: None, ..meeting };
+        assert_eq!(when(&all_day, at(12)), When::Next);
+        assert_eq!(time_range(&all_day), "All day");
+        assert!(joinable("https://meet.example.com/a") && !joinable("file:///etc/passwd") && !joinable("zoommtg://x"));
     }
 
     #[test]

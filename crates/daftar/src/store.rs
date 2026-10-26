@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use daftar_core::{Day, Failure, SearchIndex, Vault, VaultEdits, VaultIndex};
+use daftar_core::{BoardDrop, CalendarDay, CalendarWeek, Day, Failure, SearchIndex, TaskFields, Vault, VaultEdits, VaultIndex, VaultTask};
 
 pub struct VaultStore {
     pub root: PathBuf,
@@ -47,6 +47,52 @@ impl VaultStore {
             wrote();
         }
         Ok(())
+    }
+
+    /// A task dropped on a board column. The card's task must still be on its
+    /// line, with the same status and words, or nothing is written.
+    pub fn move_task(&self, task: &VaultTask, drop: &BoardDrop) -> Result<(), Failure> {
+        self.write(&task.path, |text| VaultEdits::move_task(text, task.task.line, &task.task, drop, Day::today()))
+    }
+
+    /// The Edit Task dialog's save: refused when the line is no longer [before].
+    pub fn edit_task(&self, path: &str, line: usize, before: &TaskFields, fields: &TaskFields) -> Result<(), Failure> {
+        self.write(path, |text| VaultEdits::edit_task(text, line, before, fields))
+    }
+
+    /// One edit of a note in the index, through `VaultEdits::apply`; the index
+    /// reads the note again either way, so a refused edit shows what is there.
+    fn write(&self, path: &str, edit: impl FnOnce(&str) -> Result<String, Failure>) -> Result<(), Failure> {
+        if !self.index().notes.contains_key(path) || file_in(path, &self.root).is_none() {
+            return Err(Failure::Unreadable);
+        }
+        let result = VaultEdits::apply(path, &self.root, edit);
+        self.refresh(&[path.to_string()]);
+        if result.is_ok()
+            && let Some(wrote) = self.wrote.borrow().as_ref()
+        {
+            wrote();
+        }
+        result
+    }
+
+    /// The days from [start], [count] of them, in the phone's week notes.
+    pub fn calendar_days(&self, start: Day, count: i64) -> Vec<CalendarDay> {
+        let mut paths: Vec<String> = Vec::new();
+        for offset in 0..count {
+            let path = CalendarWeek::path(start.adding_days(offset));
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        let end = start.adding_days(count);
+        paths
+            .iter()
+            .filter(|path| self.index().files.contains(*path))
+            .filter_map(|path| self.text(path).map(|text| CalendarWeek::parse(&text, path)))
+            .flatten()
+            .filter(|day| day.day >= start && day.day < end)
+            .collect()
     }
 
     /// Reads the files at [paths] again.

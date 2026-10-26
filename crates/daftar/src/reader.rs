@@ -45,6 +45,7 @@ pub struct Request {
 
 type OpenHandler = Box<dyn Fn(&str, Option<&str>)>;
 type NoticeHandler = Box<dyn Fn(&str)>;
+type EditTaskHandler = Box<dyn Fn(&str, usize)>;
 
 struct State {
     ready: bool,
@@ -52,6 +53,7 @@ struct State {
     store: Option<Rc<VaultStore>>,
     on_open: Option<OpenHandler>,
     on_notice: Option<NoticeHandler>,
+    on_edit_task: Option<EditTaskHandler>,
 }
 
 #[derive(Clone)]
@@ -75,7 +77,14 @@ impl Reader {
         let reader = Reader {
             view,
             settings,
-            state: Rc::new(RefCell::new(State { ready: false, shown: None, store: None, on_open: None, on_notice: None })),
+            state: Rc::new(RefCell::new(State {
+                ready: false,
+                shown: None,
+                store: None,
+                on_open: None,
+                on_notice: None,
+                on_edit_task: None,
+            })),
         };
         reader.connect_messages();
         reader.connect_policy();
@@ -94,6 +103,11 @@ impl Reader {
 
     pub fn connect_notice(&self, handler: impl Fn(&str) + 'static) {
         self.state.borrow_mut().on_notice = Some(Box::new(handler));
+    }
+
+    /// A right click on a task: the note and the line to edit.
+    pub fn connect_edit_task(&self, handler: impl Fn(&str, usize) + 'static) {
+        self.state.borrow_mut().on_edit_task = Some(Box::new(handler));
     }
 
     pub fn shown(&self) -> Option<Request> {
@@ -243,6 +257,14 @@ impl Reader {
                         }
                     }
                     None => self.notice(&format!("“{target}” is not in the vault yet.")),
+                }
+            }
+            "editTask" => {
+                let (Some(shown), Some(line)) = (self.shown(), body.get("line").and_then(Value::as_u64)) else { return };
+                // A task in a query result is in its own note.
+                let path = Some(text("path")).filter(|p| !p.is_empty()).unwrap_or(shown.path);
+                if let Some(handler) = &self.state.borrow().on_edit_task {
+                    handler(&path, line as usize);
                 }
             }
             "copy" => self.view.clipboard().set_text(&text("text")),
