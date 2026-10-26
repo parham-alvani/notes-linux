@@ -16,6 +16,7 @@ This is the first part of the port. It has:
 - **Reader:** Obsidian's markdown with wikilinks, embeds, callouts, highlights, tags, footnotes, math (KaTeX), Mermaid diagrams and colored code, from `web/`, the Mac app's renderer. Each paragraph takes its own direction, so Persian text reads right to left with no plugin. Pictures, videos and sounds from the vault play in the note.
 - **Tasks:** a click on a checkbox completes a task as the Tasks plugin does, a repeating one too, and refuses when the line changed on disk.
 - **Tasks queries:** a ` ```tasks ` block lists the tasks it asks for, as the Tasks plugin does: filters on status, dates (`due before next week`, `scheduled on or before this week`), path, folder, heading, text and tags, joined with `AND`, `OR` and `NOT`; `filter by function` and `group by function` with the small part of JavaScript such lines use; `group by`, `sort by` and `limit`. A line it cannot answer is shown above the list, never dropped in silence.
+- **Bases:** a `.base` file, a ` ```base ` block and `![[file.base]]` show their views as Obsidian Bases does: filters with `and`, `or` and `not`, formulas, the expression language with its functions and methods (dates, durations, lists, strings, regular expressions, `file.*`), `sort`, `groupBy` and `limit`, and the property types in `.obsidian/types.json`. A filter or a formula it cannot read is listed, never applied in silence.
 - **Sidebar:** the folder tree with folder notes; a folder's note opens with the folder.
 - **Quick open:** Ctrl+P finds a note or a file by name as Obsidian's quick switcher does: words in any order, letters that skip, aliases, and `comp/acme` for a path. Ctrl+Shift+F searches the text of every note.
 - **Follows the disk:** a note changed by another app, by Neovim or by `git pull` is read again, and the one on screen is drawn again where you were reading.
@@ -23,7 +24,7 @@ This is the first part of the port. It has:
 - **Command line:** `daftar-cli`, below.
 - **Core:** the parser, the link resolver, the task lines, the vault index, the quick switcher's ranking, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
 
-Next come Bases, the Today page, Git sync, the editor and the Neovim mode.
+Next come the Today page, Git sync, the editor and the Neovim mode.
 
 ## Command line
 

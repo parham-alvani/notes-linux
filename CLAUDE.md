@@ -41,6 +41,8 @@ Keep logic in `daftar-core`: its tests run in a second and need no display. Each
 
 The host's side of the protocol, in `reader.rs`: the app calls `daftar.show(note)` with `{path, title, text, links, properties, keepScroll, textSize, fontText, fontCode}` and `heading` or `line`; the page posts `ready`, `open`, `toggleTask`, `tag`, `copy`, `external`, `editTask` and `cursor` to `daftar`, and asks `embed`, `tasks` and `base`, which answer with a reply.
 
+Bases are `yaml.rs`, `base_expression.rs` and `bases.rs` (`YAML.swift`, `BaseExpression.swift`, `Bases.swift`). A `BaseEngine` is for one run; `BaseEngine::on_disk` reads `.obsidian/types.json` and the files' dates from the vault, and a creation date the file system does not keep is the change date. A regular expression is the `regex` crate's, which has no lookaround: one that does not compile makes its statement a listed problem, never a crash. Sorting goes through `safe_sort`, which cannot panic on an order that mixes kinds.
+
 ## Toolchain traps
 
 - **The machine this was started on has no GTK.** The app is built and run in a container from `tools/Containerfile` (`podman build -t daftar-dev tools/`): Arch with GTK 4, libadwaita, WebKitGTK, Xvfb and ImageMagick. Drive it with `xdotool` (`xdotool key ctrl+p`, `xdotool mousemove X Y click 1`); keep it running in a detached container (`podman run -d`) and `podman exec` each step, and stop it with `pkill -x daftar`, not `pkill -f`, which matches the shell that runs it. Run the app under `Xvfb` with `GDK_BACKEND=x11 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 WEBKIT_DISABLE_DMABUF_RENDERER=1` and `dbus-run-session`, and look at it with `import -window root shot.png`. The sandbox variable is for the container only, never for the app.

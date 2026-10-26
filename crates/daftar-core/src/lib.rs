@@ -6,6 +6,8 @@
 //! and on Android (`notes-droid`). The three apps share no code; when a rule
 //! changes in one, change it in the others.
 
+pub mod base_expression;
+pub mod bases;
 pub mod config;
 pub mod day;
 pub mod fuzzy;
@@ -21,7 +23,10 @@ pub mod tasks_query;
 pub mod text;
 pub mod vault;
 pub mod vault_edits;
+pub mod yaml;
 
+pub use base_expression::{BaseExpr, BaseParseError, BaseParser, BaseSpan, BaseValue};
+pub use bases::{Base, BaseCell, BaseEngine, BaseFilter, BaseGroup, BaseRow, BaseTable, BaseView, CellPart, Stat};
 pub use config::{ConfigFile, Value};
 pub use day::Day;
 pub use fuzzy::{Fuzzy, Match};
@@ -36,3 +41,4 @@ pub use task_line::{Meta, Recurrence, TaskFields, TaskLine, TaskMetadata};
 pub use tasks_query::{DateRange, QueryTask, TaskState, TasksQuery};
 pub use vault::{Backlink, ExcludedFiles, NoteEntry, TreeNode, Vault, VaultIndex, VaultTask};
 pub use vault_edits::{Failure, VaultEdits};
+pub use yaml::{Yaml, YamlNode};

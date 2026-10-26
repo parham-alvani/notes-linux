@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use webkit6::prelude::*;
 use webkit6::{NavigationPolicyDecision, PolicyDecisionType, URISchemeRequest, URISchemeResponse, WebView};
 
-use daftar_core::{Day, NoteParser, QueryTask, TasksQuery, Vault};
+use daftar_core::{Base, BaseCell, BaseEngine, Day, NoteParser, QueryTask, TasksQuery, Vault};
 
 use crate::settings::AppSettings;
 use crate::store::{VaultStore, file_in};
@@ -114,10 +114,10 @@ impl Reader {
         let settings = self.settings.borrow();
         let (font_text, font_code) = settings.font_css();
         let mut note = if Vault::is_base(&request.path) {
-            // Bases come with the next port of the core.
+            // A `.base` file: its views in place of a note's text.
             json!({
                 "path": request.path, "title": Vault::title(&request.path), "text": "", "links": {}, "properties": [],
-                "base": { "views": [], "problems": ["Daftar for Linux does not read bases yet."] },
+                "base": run_base(&store, &text, &request.path),
             })
         } else {
             let parsed = NoteParser::parse(&text);
@@ -271,7 +271,21 @@ impl Reader {
                 let path = body.get("path").and_then(Value::as_str);
                 run_query(&store, source, path)
             }
-            "base" => json!({ "views": [], "problems": ["Daftar for Linux does not read bases yet."] }),
+            // ` ```base ` in a note, or `![[file.base]]`; `this` is the note.
+            "base" => {
+                let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
+                let context = body.get("context").and_then(Value::as_str).unwrap_or("");
+                match body.get("path").and_then(Value::as_str).filter(|p| !p.is_empty()) {
+                    Some(path) => {
+                        if !store.index().files.contains(path) {
+                            return Value::Null;
+                        }
+                        let Some(source) = store.text(path) else { return Value::Null };
+                        run_base(&store, &source, context)
+                    }
+                    None => run_base(&store, body.get("source").and_then(Value::as_str).unwrap_or(""), context),
+                }
+            }
             _ => {
                 let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
                 let path = body.get("path").and_then(Value::as_str).unwrap_or("");
@@ -431,6 +445,53 @@ fn run_query(store: &VaultStore, source: &str, path: Option<&str>) -> Value {
         })
         .collect();
     json!({ "tasks": rows, "notUnderstood": query.not_understood, "links": links })
+}
+
+/// Every view of a base, as the page draws it. [context] is the file `this`
+/// names: the base, or the note that embeds it.
+fn run_base(store: &VaultStore, source: &str, context: &str) -> Value {
+    let index = store.index();
+    let mut engine = BaseEngine::on_disk(&index, &store.root);
+    let tables = engine.run(&Base::parse(source), context);
+    let views: Vec<Value> = tables
+        .iter()
+        .map(|table| {
+            let groups: Vec<Value> = table
+                .groups
+                .iter()
+                .map(|group| {
+                    let rows: Vec<Value> = group
+                        .rows
+                        .iter()
+                        .map(|row| json!({ "path": row.path, "cells": row.cells.iter().map(cell_json).collect::<Vec<_>>() }))
+                        .collect();
+                    let mut out = json!({ "rows": rows });
+                    if let Some(name) = &group.name {
+                        out["name"] = json!(name);
+                    }
+                    out
+                })
+                .collect();
+            json!({ "name": table.name, "type": table.kind, "columns": table.columns, "count": table.count, "groups": groups })
+        })
+        .collect();
+    json!({ "views": views, "problems": engine.problems })
+}
+
+fn cell_json(cell: &BaseCell) -> Value {
+    let parts: Vec<Value> = cell
+        .parts
+        .iter()
+        .map(|part| match &part.path {
+            Some(path) => json!({ "text": part.text, "path": path }),
+            None => json!({ "text": part.text }),
+        })
+        .collect();
+    let mut out = json!({ "parts": parts, "numeric": cell.numeric });
+    if let Some(check) = cell.check {
+        out["check"] = json!(check);
+    }
+    out
 }
 
 #[cfg(test)]
