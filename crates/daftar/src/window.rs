@@ -803,7 +803,9 @@ impl Window {
         let this = self.clone();
         board.connect_activate(move |_, _| {
             this.show_board();
-            this.board.focus_cards();
+            // Once the new cards are on screen, which a focus needs.
+            let board = this.board.clone();
+            glib::idle_add_local_once(move || board.focus_cards());
         });
         self.window.add_action(&board);
         let today = gio::SimpleAction::new("today", None);

@@ -161,6 +161,7 @@ impl Board {
             .child(&columns)
             .css_classes(["daftar-page"])
             .build();
+        follow_focus(&scroller);
         let empty = adw::StatusPage::builder()
             .icon_name("checkbox-checked-symbolic")
             .title("No tasks")
@@ -412,7 +413,9 @@ impl Board {
         for (row, task) in column.tasks.iter().enumerate() {
             cards.append(&self.card(task, &tint, targets, (at, row)));
         }
-        outer.append(&gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&cards).build());
+        let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&cards).build();
+        follow_focus(&scroller);
+        outer.append(&scroller);
 
         // A card dropped here: its id is `path:line`, found again in [tasks].
         if let Some(drop) = column.drop.clone() {
@@ -607,6 +610,14 @@ pub fn shown(tasks: Vec<VaultTask>, file: Option<&str>, query: &str) -> Vec<Vaul
         .filter(|t| file.is_none_or(|f| t.path == f))
         .filter(|t| needle.is_empty() || slugs::fold(&format!("{} {} {}", t.task.text, t.task.section, t.path)).contains(&needle))
         .collect()
+}
+
+/// A focused card scrolls into view: the viewport a scroller wraps around a
+/// box does not follow the focus unless told to.
+fn follow_focus(scroller: &gtk::ScrolledWindow) {
+    if let Some(viewport) = scroller.child().and_downcast::<gtk::Viewport>() {
+        viewport.set_scroll_to_focus(true);
+    }
 }
 
 /// A column's color, as the Mac gives it.

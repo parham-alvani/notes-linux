@@ -91,7 +91,7 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-column .column-dot { border-radius: 999px; min-width: 9px; min-height: 9px; }\n\
          .board-card { background-color: @daftar_panel; border-radius: 11px; padding: 10px; border: 1px solid alpha(@daftar_text, 0.06); }\n\
          .board-card.is-closed .board-text { color: @daftar_muted; text-decoration: line-through; }\n\
-         .board-card:focus-visible { outline: 2px solid @daftar_accent; outline-offset: 2px; background-color: alpha(@daftar_accent, 0.08); }\n\
+         .board-card:focus-visible { box-shadow: inset 0 0 0 2px @daftar_accent; background-color: alpha(@daftar_accent, 0.08); }\n\
          .daftar-board-head { padding: 10px 16px; }\n\
          .daftar-board-icon { border-radius: 8px; color: white; min-width: 30px; min-height: 30px; background-image: linear-gradient(135deg, @daftar_purple, @daftar_accent); }\n\
          .daftar-pill { border-radius: 999px; padding: 4px 9px; }\n",
