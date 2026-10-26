@@ -209,6 +209,13 @@ digest_time = "09:00"
 # Empty is the login shell in $SHELL.
 shell = ""
 font_size = 13
+
+[home]
+# The picture behind the home page, which a tab with no note shows: an
+# absolute path, a ~ path or a path in the vault, of a PNG, JPEG or WebP
+# file. Empty is no picture. The rest of the page follows Obsidian's
+# Beautitab plugin settings in the vault.
+image = ""
 "#;
 }
 

@@ -46,6 +46,12 @@ impl ReadingPlaces {
         }
     }
 
+    /// The notes whose place was set last, newest first, up to [limit]: the
+    /// notes read last.
+    pub fn recently_read(&self, limit: usize) -> Vec<String> {
+        self.order.iter().rev().take(limit).cloned().collect()
+    }
+
     /// After a move or a rename: [moves] maps each file's old path to its new one.
     pub fn moved(&mut self, moves: &BTreeMap<String, String>) {
         if !moves.keys().any(|k| self.lines.contains_key(k)) {
@@ -118,6 +124,17 @@ mod tests {
         assert_eq!(places.get("Note 0.md"), None);
         assert_eq!(places.get("Note 5.md"), Some(1));
         assert_eq!(places.get("Note 6.md"), None);
+    }
+
+    #[test]
+    fn reading_places_list_the_notes_read_last() {
+        let mut places = ReadingPlaces::new();
+        places.set("Old.md", 1);
+        places.set("New.md", 2);
+        places.set("Old.md", 9);
+        assert_eq!(places.recently_read(10), vec!["Old.md", "New.md"]);
+        assert_eq!(places.recently_read(1), vec!["Old.md"]);
+        assert_eq!(ReadingPlaces::from_data(&places.data()).recently_read(10), places.recently_read(10));
     }
 
     #[test]
