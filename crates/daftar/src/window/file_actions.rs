@@ -122,6 +122,16 @@ impl Window {
         self.refresh_marks();
     }
 
+    /// The inspector again, for the note on screen, while it is open.
+    pub(super) fn refresh_inspector(&self) {
+        if !self.inspector_split.shows_sidebar() {
+            return;
+        }
+        let Some(store) = self.store.borrow().clone() else { return };
+        let path = self.current().or_else(|| self.reader.shown().map(|shown| shown.path));
+        self.inspector.show(&store, path.as_deref());
+    }
+
     pub(super) fn add_file_actions(&self) {
         for name in ["new-note", "new-folder", "rename", "move", "trash"] {
             let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
@@ -136,6 +146,15 @@ impl Window {
         let this = self.clone();
         bookmark.connect_activate(move |_, target| this.bookmark(target.and_then(|t| t.get::<String>()).unwrap_or_default()));
         self.window.add_action(&bookmark);
+        let inspector = gio::SimpleAction::new_stateful("inspector", None, &false.to_variant());
+        let this = self.clone();
+        inspector.connect_activate(move |action, _| {
+            let on = !action.state().and_then(|s| s.get::<bool>()).unwrap_or(false);
+            action.set_state(&on.to_variant());
+            this.inspector_split.set_show_sidebar(on);
+            this.refresh_inspector();
+        });
+        self.window.add_action(&inspector);
         // The places are written before the window goes.
         let store = self.store.clone();
         self.window.connect_close_request(move |_| {

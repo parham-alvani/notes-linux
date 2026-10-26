@@ -12,6 +12,7 @@ use gtk::{gio, glib};
 use daftar_core::{SearchIndex, Value, Vault};
 
 use crate::editor::{Editor, Saved};
+use crate::inspector::Inspector;
 use crate::palette::{self, Mode};
 use crate::reader::{Reader, Request};
 use crate::settings::AppSettings;
@@ -39,6 +40,9 @@ pub struct Window {
     git: Rc<GitSync>,
     today: Rc<Today>,
     editor: Rc<Editor>,
+    /// Backlinks and unlinked mentions, at the right of the note.
+    inspector: Rc<Inspector>,
+    inspector_split: adw::OverlaySplitView,
     store: Rc<RefCell<Option<Rc<VaultStore>>>>,
     watcher: Rc<RefCell<Option<FileWatcher>>>,
     /// The notes opened lately, the last first.
@@ -112,6 +116,19 @@ impl Window {
                 },
             )
         };
+        let inspector = {
+            let (open, notices) = (opener.clone(), toasts.clone());
+            Inspector::new(
+                move |path, line| {
+                    if let Some(window) = open.borrow().as_ref() {
+                        window.open_line(path, line);
+                    }
+                },
+                move |text| notices.add_toast(adw::Toast::new(text)),
+            )
+        };
+        let inspector_split =
+            adw::OverlaySplitView::builder().sidebar_position(gtk::PackType::End).show_sidebar(false).sidebar(&inspector.widget).build();
         let this = Window {
             window: window.clone(),
             settings,
@@ -124,6 +141,8 @@ impl Window {
             git: git.clone(),
             today: today.clone(),
             editor: editor.clone(),
+            inspector,
+            inspector_split: inspector_split.clone(),
             store: Rc::new(RefCell::new(None)),
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
@@ -168,6 +187,13 @@ impl Window {
         let edit =
             gtk::ToggleButton::builder().icon_name("document-edit-symbolic").tooltip_text("Edit (Ctrl+E)").action_name("win.edit").build();
         header.pack_end(&edit);
+        header.pack_end(
+            &gtk::ToggleButton::builder()
+                .icon_name("sidebar-show-right-symbolic")
+                .tooltip_text("Inspector (Ctrl+Alt+I)")
+                .action_name("win.inspector")
+                .build(),
+        );
         stack.add_named(
             &adw::StatusPage::builder()
                 .icon_name("text-x-generic-symbolic")
@@ -193,7 +219,8 @@ impl Window {
         let content = adw::ToolbarView::new();
         content.add_top_bar(&header);
         content.set_content(Some(&stack));
-        toasts.set_child(Some(&content));
+        inspector_split.set_content(Some(&content));
+        toasts.set_child(Some(&inspector_split));
         split.set_content(Some(&adw::NavigationPage::builder().title("Note").child(&toasts).build()));
 
         // A narrow window shows one pane at a time.
@@ -419,6 +446,7 @@ impl Window {
         let line = line.or_else(|| anchor.is_none().then(|| self.place(path)).flatten());
         self.reader.show(Request { path: path.to_string(), heading: anchor.map(String::from), line }, false);
         self.update_history();
+        self.refresh_inspector();
     }
 
     /// Back when [backward], else Forward: the notes that are gone are skipped.
@@ -469,6 +497,7 @@ impl Window {
         };
         store.refresh(&changed.iter().cloned().collect::<Vec<_>>());
         self.git.refresh();
+        self.refresh_inspector();
         let moved = {
             let index = store.index();
             let moved = index.files != files || index.empty_folders != folders;
