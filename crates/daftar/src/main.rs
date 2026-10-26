@@ -1,6 +1,7 @@
 //! Daftar for Linux: a native app for an Obsidian vault kept in a Git
 //! repository. The sister of Daftar for macOS and Daftar for Android.
 
+mod editor;
 mod palette;
 mod reader;
 mod settings;
@@ -34,6 +35,8 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.search", &["<Ctrl><Shift>f"]);
     app.set_accels_for_action("win.open-vault", &["<Ctrl><Shift>o"]);
     app.set_accels_for_action("win.today", &["<Ctrl>1"]);
+    app.set_accels_for_action("win.edit", &["<Ctrl>e"]);
+    app.set_accels_for_action("win.save", &["<Ctrl>s"]);
     app.set_accels_for_action("win.sync", &["<Ctrl><Shift>s"]);
     app.set_accels_for_action("win.back", &["<Ctrl>bracketleft", "<Alt>Left"]);
     app.set_accels_for_action("win.forward", &["<Ctrl>bracketright", "<Alt>Right"]);

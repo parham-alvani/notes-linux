@@ -60,10 +60,10 @@ Every setting is in one file, `~/.config/daftar/config.toml`. The app makes it o
 
 ## Build
 
-The build needs Rust, GTK 4, libadwaita, WebKitGTK 6.0, Node.js and [just](https://github.com/casey/just). On Arch Linux:
+The build needs Rust, GTK 4, libadwaita, WebKitGTK 6.0, GtkSourceView 5, Node.js and [just](https://github.com/casey/just). On Arch Linux:
 
 ```bash
-pacman -S rust gtk4 libadwaita webkitgtk-6.0 nodejs npm just
+pacman -S rust gtk4 libadwaita webkitgtk-6.0 gtksourceview5 nodejs npm just
 ```
 
 ```bash

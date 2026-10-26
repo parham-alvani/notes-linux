@@ -71,7 +71,8 @@ impl Today {
             .margin_end(24)
             .build();
         let clamp = adw::Clamp::builder().maximum_size(760).child(&content).build();
-        let widget = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&clamp).build();
+        let widget =
+            gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&clamp).css_classes(["daftar-page"]).build();
         Rc::new(Today { widget, content, open: Box::new(open), toggle: Box::new(toggle) })
     }
 

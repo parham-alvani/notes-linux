@@ -11,6 +11,7 @@ use gtk::{gio, glib};
 
 use daftar_core::{SearchIndex, Value, Vault};
 
+use crate::editor::{Editor, Saved};
 use crate::palette::{self, Mode};
 use crate::reader::{Reader, Request};
 use crate::settings::AppSettings;
@@ -35,6 +36,7 @@ pub struct Window {
     sidebar: Rc<Sidebar>,
     git: Rc<GitSync>,
     today: Rc<Today>,
+    editor: Rc<Editor>,
     store: Rc<RefCell<Option<Rc<VaultStore>>>>,
     watcher: Rc<RefCell<Option<FileWatcher>>>,
     /// The notes opened lately, the last first.
@@ -92,6 +94,22 @@ impl Window {
                 },
             )
         };
+        let editor = {
+            let (notices, conflicts, opener) = (toasts.clone(), toasts.clone(), opener.clone());
+            Editor::new(
+                move |text| notices.add_toast(adw::Toast::new(text)),
+                move |text| {
+                    let toast = adw::Toast::builder().title(text).button_label("Reload").timeout(0).build();
+                    let opener = opener.clone();
+                    toast.connect_button_clicked(move |_| {
+                        if let Some(window) = opener.borrow().as_ref() {
+                            window.editor.reload();
+                        }
+                    });
+                    conflicts.add_toast(toast);
+                },
+            )
+        };
         let this = Window {
             window: window.clone(),
             settings,
@@ -103,6 +121,7 @@ impl Window {
             sidebar: sidebar.clone(),
             git: git.clone(),
             today: today.clone(),
+            editor: editor.clone(),
             store: Rc::new(RefCell::new(None)),
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
@@ -144,6 +163,9 @@ impl Window {
         history.append(&go_back);
         history.append(&go_forward);
         header.pack_start(&history);
+        let edit =
+            gtk::ToggleButton::builder().icon_name("document-edit-symbolic").tooltip_text("Edit (Ctrl+E)").action_name("win.edit").build();
+        header.pack_end(&edit);
         stack.add_named(
             &adw::StatusPage::builder()
                 .icon_name("text-x-generic-symbolic")
@@ -164,6 +186,7 @@ impl Window {
         );
         stack.add_named(&reader.view, Some("reader"));
         stack.add_named(&today.widget, Some("today"));
+        stack.add_named(&editor.widget, Some("editor"));
         stack.add_named(&this.choose_page(), Some("choose"));
         let content = adw::ToolbarView::new();
         content.add_top_bar(&header);
@@ -176,6 +199,13 @@ impl Window {
         breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
         window.add_breakpoint(breakpoint);
         window.set_content(Some(&split));
+        {
+            let editor = editor.clone();
+            window.connect_close_request(move |_| {
+                editor.save();
+                glib::Propagation::Proceed
+            });
+        }
         this.add_actions();
         window.present();
 
@@ -215,6 +245,9 @@ impl Window {
         if !root.is_dir() {
             self.stack.set_visible_child_name("choose");
             self.toasts.add_toast(adw::Toast::new(&format!("{} is not a folder.", root.display())));
+            return;
+        }
+        if !self.leave_editor() {
             return;
         }
         self.stack.set_visible_child_name("loading");
@@ -278,9 +311,63 @@ impl Window {
         self.go(path, None, Some(line), true);
     }
 
+    fn editing(&self) -> bool {
+        self.stack.visible_child_name().as_deref() == Some("editor")
+    }
+
+    /// Saves and closes the editor; false when the save was refused, and the
+    /// editor stays so the person's text is not lost.
+    fn leave_editor(&self) -> bool {
+        if !self.editing() {
+            return true;
+        }
+        if self.editor.close() == Saved::ChangedOnDisk {
+            return false;
+        }
+        self.set_edit_state(false);
+        true
+    }
+
+    /// Ctrl+E: the note on screen in the editor, at the line read last; again,
+    /// back to reading it where the cursor is.
+    fn toggle_edit(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        if self.editing() {
+            let line = self.editor.line();
+            let Some(path) = self.editor.path() else { return };
+            if !self.leave_editor() {
+                return;
+            }
+            self.stack.set_visible_child_name("reader");
+            self.reader.show(Request { path, heading: None, line: Some(line) }, false);
+            return;
+        }
+        let Some(shown) = self.reader.shown().filter(|_| self.stack.visible_child_name().as_deref() == Some("reader")) else { return };
+        if !Vault::is_note(&shown.path) {
+            self.toasts.add_toast(adw::Toast::new("Only a note can be edited here."));
+            return;
+        }
+        if !self.editor.load(&store.root, &shown.path, shown.line) {
+            self.toasts.add_toast(adw::Toast::new(&format!("{} could not be read.", shown.path)));
+            return;
+        }
+        self.stack.set_visible_child_name("editor");
+        self.set_edit_state(true);
+    }
+
+    fn set_edit_state(&self, on: bool) {
+        if let Some(action) = self.window.lookup_action("edit").and_downcast::<gio::SimpleAction>() {
+            action.set_state(&on.to_variant());
+        }
+        self.title.set_subtitle(if on { "Editing" } else { "" });
+    }
+
     /// The Today page, drawn from the index as it is now.
     fn show_today(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
+        if !self.leave_editor() {
+            return;
+        }
         self.today.show(&store);
         self.title.set_title("Today");
         self.title.set_subtitle("");
@@ -302,6 +389,9 @@ impl Window {
     /// Opens [path]; with [record], the note it leaves is one Back away.
     fn go(&self, path: &str, anchor: Option<&str>, line: Option<usize>, record: bool) {
         let Some(store) = self.store.borrow().clone() else { return };
+        if !self.leave_editor() {
+            return;
+        }
         if !Vault::opens_in_app(path) {
             let file = gio::File::for_path(store.root.join(path));
             gtk::FileLauncher::new(Some(&file)).launch(Some(&self.window), gio::Cancellable::NONE, |_| {});
@@ -383,6 +473,12 @@ impl Window {
             self.show_today();
             return;
         }
+        if self.editing() {
+            if self.editor.path().is_some_and(|path| changed.contains(&path)) {
+                self.editor.changed_on_disk();
+            }
+            return;
+        }
         let Some(shown) = self.reader.shown() else { return };
         if !index.files.contains(&shown.path) {
             self.title.set_title("Daftar");
@@ -428,6 +524,16 @@ impl Window {
         let this = self.clone();
         open_vault.connect_activate(move |_, _| this.choose_vault());
         self.window.add_action(&open_vault);
+        let edit = gio::SimpleAction::new_stateful("edit", None, &false.to_variant());
+        let this = self.clone();
+        edit.connect_activate(move |_, _| this.toggle_edit());
+        self.window.add_action(&edit);
+        let save = gio::SimpleAction::new("save", None);
+        let editor = self.editor.clone();
+        save.connect_activate(move |_, _| {
+            editor.save();
+        });
+        self.window.add_action(&save);
         let today = gio::SimpleAction::new("today", None);
         let this = self.clone();
         today.connect_activate(move |_, _| this.show_today());
