@@ -493,6 +493,35 @@ impl Window {
         }
     }
 
+    /// Ctrl+Shift+P: every command of the window, by name.
+    fn commands(&self) {
+        let command = |title, group, action, keys| palette::Command { title, group, action, keys };
+        let mut commands = vec![
+            command("Quick Open", "Go", "win.quick-open", "Ctrl+P"),
+            command("Search the Notes", "Go", "win.search", "Ctrl+Shift+F"),
+            command("Today", "Go", "win.today", "Ctrl+1"),
+            command("Back", "Go", "win.back", "Ctrl+["),
+            command("Forward", "Go", "win.forward", "Ctrl+]"),
+            command("Edit or Read the Note", "Note", "win.edit", "Ctrl+E"),
+            command("Find in the Note", "Note", "win.find", "Ctrl+F"),
+            command("Bigger Text", "View", "win.bigger-text", "Ctrl+="),
+            command("Smaller Text", "View", "win.smaller-text", "Ctrl+-"),
+            command("Actual Size", "View", "win.actual-size", "Ctrl+0"),
+            command("Open Vault…", "File", "win.open-vault", "Ctrl+Shift+O"),
+        ];
+        if self.git.button.is_visible() {
+            commands.push(command("Sync Now", "Git", "win.sync", "Ctrl+Shift+S"));
+            commands.push(command("Pull", "Git", "win.pull", ""));
+        }
+        commands.push(command("Quit", "App", "app.quit", "Ctrl+Q"));
+        let window = self.window.clone();
+        palette::present_commands(&self.window, commands, move |action| {
+            if let Some((group, name)) = action.split_once('.') {
+                let _ = WidgetExt::activate_action(&window, &format!("{group}.{name}"), None);
+            }
+        });
+    }
+
     fn palette(&self, mode: Mode) {
         let Some(store) = self.store.borrow().clone() else { return };
         let this = self.clone();
@@ -524,6 +553,10 @@ impl Window {
         let this = self.clone();
         open_vault.connect_activate(move |_, _| this.choose_vault());
         self.window.add_action(&open_vault);
+        let commands = gio::SimpleAction::new("commands", None);
+        let this = self.clone();
+        commands.connect_activate(move |_, _| this.commands());
+        self.window.add_action(&commands);
         let edit = gio::SimpleAction::new_stateful("edit", None, &false.to_variant());
         let this = self.clone();
         edit.connect_activate(move |_, _| this.toggle_edit());

@@ -1,6 +1,6 @@
-//! The quick switcher (Ctrl+P) and the vault's search (Ctrl+Shift+F): a field
-//! and a list under it, as on the Mac. Up and Down move in the list, Enter
-//! opens, Escape closes.
+//! The quick switcher (Ctrl+P), the vault's search (Ctrl+Shift+F) and the
+//! command palette (Ctrl+Shift+P): a field and a list under it, as on the
+//! Mac. Up and Down move in the list, Enter opens or runs, Escape closes.
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -9,7 +9,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 
-use daftar_core::{Candidate, QuickSwitcher, Vault};
+use daftar_core::{Candidate, Fuzzy, QuickSwitcher, Vault};
 
 use crate::store::VaultStore;
 
@@ -21,11 +21,19 @@ pub enum Mode {
     Text,
 }
 
-/// One row: what it opens, and how it shows.
+/// One row: what it opens or runs, and how it shows, as markup.
 struct Row {
     path: String,
     title: String,
     subtitle: String,
+}
+
+/// A command of the palette: the window action it runs, as `win.sync`.
+pub struct Command {
+    pub title: &'static str,
+    pub group: &'static str,
+    pub action: &'static str,
+    pub keys: &'static str,
 }
 
 const LIMIT: usize = 50;
@@ -50,6 +58,60 @@ pub fn present(parent: &impl IsA<gtk::Widget>, mode: Mode, store: Rc<VaultStore>
         Mode::Files => "Open a note or a file",
         Mode::Text => "Search the notes",
     };
+    let find = move |query: &str| -> Vec<Row> {
+        match mode {
+            Mode::Files => QuickSwitcher::rank(query, &candidates, &recent, LIMIT)
+                .into_iter()
+                .map(|path| {
+                    let folder = QuickSwitcher::folder(&path);
+                    let title = Vault::title(&path);
+                    let (in_title, in_folder) = QuickSwitcher::highlights(query, &title, &folder);
+                    Row { title: marked(&title, &in_title), subtitle: marked(&folder, &in_folder), path }
+                })
+                .collect(),
+            Mode::Text => store
+                .search
+                .search(query, LIMIT)
+                .into_iter()
+                .map(|hit| Row {
+                    title: glib::markup_escape_text(&Vault::title(&hit.path)).into(),
+                    subtitle: snippet(&hit.snippet),
+                    path: hit.path,
+                })
+                .collect(),
+        }
+    };
+    show(parent, placeholder, find, on_open);
+}
+
+/// The command palette: [commands] ranked by how well their names match.
+pub fn present_commands(parent: &impl IsA<gtk::Widget>, commands: Vec<Command>, on_run: impl Fn(&str) + 'static) {
+    let find = move |query: &str| -> Vec<Row> {
+        let mut found: Vec<(i64, usize, Row)> = commands
+            .iter()
+            .enumerate()
+            .filter_map(|(at, command)| {
+                let hit = Fuzzy::matches(query, command.title)?;
+                let positions = hit.positions.iter().copied().collect();
+                let subtitle =
+                    if command.keys.is_empty() { command.group.to_string() } else { format!("{} · {}", command.group, command.keys) };
+                let row = Row {
+                    title: marked(command.title, &positions),
+                    subtitle: glib::markup_escape_text(&subtitle).into(),
+                    path: command.action.to_string(),
+                };
+                Some((hit.score, at, row))
+            })
+            .collect();
+        // The best match first; with no query, the palette's own order.
+        found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        found.into_iter().map(|(_, _, row)| row).collect()
+    };
+    show(parent, "Run a command", find, on_run);
+}
+
+/// The dialog: a field, and the rows [find] gives for what is typed in it.
+fn show(parent: &impl IsA<gtk::Widget>, placeholder: &str, find: impl Fn(&str) -> Vec<Row> + 'static, on_open: impl Fn(&str) + 'static) {
     let entry = gtk::SearchEntry::builder().placeholder_text(placeholder).hexpand(true).build();
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Browse).css_classes(["navigation-sidebar"]).build();
     let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&list).build();
@@ -69,27 +131,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, mode: Mode, store: Rc<VaultStore>
     let fill = {
         let (list, rows) = (list.clone(), rows.clone());
         move |query: &str| {
-            let found: Vec<Row> = match mode {
-                Mode::Files => QuickSwitcher::rank(query, &candidates, &recent, LIMIT)
-                    .into_iter()
-                    .map(|path| {
-                        let folder = QuickSwitcher::folder(&path);
-                        let title = Vault::title(&path);
-                        let (in_title, in_folder) = QuickSwitcher::highlights(query, &title, &folder);
-                        Row { title: marked(&title, &in_title), subtitle: marked(&folder, &in_folder), path }
-                    })
-                    .collect(),
-                Mode::Text => store
-                    .search
-                    .search(query, LIMIT)
-                    .into_iter()
-                    .map(|hit| Row {
-                        title: glib::markup_escape_text(&Vault::title(&hit.path)).into(),
-                        subtitle: snippet(&hit.snippet),
-                        path: hit.path,
-                    })
-                    .collect(),
-            };
+            let found = find(query);
             list.remove_all();
             for row in &found {
                 let title =
