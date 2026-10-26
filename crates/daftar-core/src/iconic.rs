@@ -102,36 +102,42 @@ impl Iconic {
     }
 
     /// Iconic's file after files and folders moved: each entry under its new
-    /// path, where it was in the file. `None` when no entry moved.
+    /// path, where it was in the file, in `fileIcons` and in the older
+    /// `folderIcons` alike, so a folder's icon and the icons of the folders in
+    /// it follow the folder. `None` when no entry moved.
     pub fn moving(moves: &BTreeMap<String, String>, folder: Option<(&str, &str)>, data: &str) -> Result<Option<String>, JsonFailure> {
         let mut json = OrderedJson::parse(data)?;
-        let Some(OrderedJson::Object(members)) = json.get("fileIcons") else { return Ok(None) };
         let mut changed = false;
-        let renamed: Vec<(String, OrderedJson)> = members
-            .iter()
-            .map(|(key, value)| {
-                let mut new = moves.get(key).cloned();
-                if new.is_none()
-                    && let Some((from, to)) = folder
-                    && (key == from || key.starts_with(&format!("{from}/")))
-                {
-                    new = Some(format!("{to}{}", &key[from.len()..]));
-                }
-                match new {
-                    Some(new) if new != *key => {
-                        changed = true;
+        for key in ["fileIcons", "folderIcons"] {
+            let Some(OrderedJson::Object(members)) = json.get(key) else { continue };
+            let mut moved = false;
+            let renamed: Vec<(String, OrderedJson)> = members
+                .iter()
+                .map(|(path, value)| match moved_path(path, moves, folder) {
+                    Some(new) if new != *path => {
+                        moved = true;
                         (new, value.clone())
                     }
-                    _ => (key.clone(), value.clone()),
-                }
-            })
-            .collect();
-        if !changed {
-            return Ok(None);
+                    _ => (path.clone(), value.clone()),
+                })
+                .collect();
+            if moved {
+                changed = true;
+                json.set(key, Some(OrderedJson::Object(renamed)));
+            }
         }
-        json.set("fileIcons", Some(OrderedJson::Object(renamed)));
-        Ok(Some(json.text()))
+        Ok(changed.then(|| json.text()))
     }
+}
+
+/// Where [path] is after the move: a file's own move, else the moved folder's
+/// path in place of its old one, for the folder itself and anything in it.
+fn moved_path(path: &str, moves: &BTreeMap<String, String>, folder: Option<(&str, &str)>) -> Option<String> {
+    if let Some(new) = moves.get(path) {
+        return Some(new.clone());
+    }
+    let (from, to) = folder?;
+    (path == from || path.starts_with(&format!("{from}/"))).then(|| format!("{to}{}", &path[from.len()..]))
 }
 
 fn icon_of(value: &Value) -> Icon {
@@ -242,5 +248,30 @@ mod tests {
         assert_eq!(json.get("fileIcons").unwrap().keys(), ["Money/Banking", "Money/Banking/Exchanges.md"]);
         let other = BTreeMap::from([("Other.md".to_string(), "New.md".to_string())]);
         assert_eq!(Iconic::moving(&other, None, FILE).unwrap(), None);
+    }
+
+    #[test]
+    fn folder_icons_follow_a_move() {
+        let data = r#"{"fileIcons": {"Work/Acme.md": {"icon": "lucide-building"}},
+            "folderIcons": {"Work": {"icon": "lucide-briefcase"}, "Work/Team": {"color": "cyan"}, "Workshop": {"icon": "lucide-hammer"}}}"#;
+        let moves = BTreeMap::from([("Work/Acme.md".to_string(), "Jobs/Work/Acme.md".to_string())]);
+        let moved = Iconic::moving(&moves, Some(("Work", "Jobs/Work")), data).unwrap().unwrap();
+        let json = OrderedJson::parse(&moved).unwrap();
+        assert_eq!(json.get("fileIcons").unwrap().keys(), ["Jobs/Work/Acme.md"]);
+        // The folder, a folder in it, and not a folder whose name only starts the same.
+        assert_eq!(json.get("folderIcons").unwrap().keys(), ["Jobs/Work", "Jobs/Work/Team", "Workshop"]);
+        let iconic = Iconic::parse(&moved);
+        assert_eq!(iconic.icon("Jobs/Work", true).unwrap().name.as_deref(), Some("lucide-briefcase"));
+        assert_eq!(iconic.icon("Jobs/Work/Team", true).unwrap().color.as_deref(), Some("cyan"));
+        assert_eq!(iconic.icon("Work", true), None);
+    }
+
+    #[test]
+    fn a_folder_icon_alone_follows_a_rename() {
+        // An empty folder moves no file, and only folderIcons has it.
+        let data = r#"{"folderIcons": {"Ideas": {"icon": "lucide-lightbulb"}}}"#;
+        let moved = Iconic::moving(&BTreeMap::new(), Some(("Ideas", "Thoughts")), data).unwrap().unwrap();
+        assert_eq!(OrderedJson::parse(&moved).unwrap().get("folderIcons").unwrap().keys(), ["Thoughts"]);
+        assert_eq!(Iconic::moving(&BTreeMap::new(), Some(("Other", "Else")), data).unwrap(), None);
     }
 }
