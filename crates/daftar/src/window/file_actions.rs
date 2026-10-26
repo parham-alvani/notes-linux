@@ -15,6 +15,7 @@ impl Window {
     /// After a vault is open: its icons and bookmarks in the sidebar, and the
     /// reading cursor kept as the note's place.
     pub(super) fn after_load(&self, store: &Rc<VaultStore>) {
+        self.sidebar.set_root(store.root.clone());
         self.sidebar.set_iconic(store.iconic.borrow().clone());
         self.sidebar.set_tree(store.index().tree());
         self.refresh_marks();
@@ -75,6 +76,40 @@ impl Window {
             action,
             store,
             move |done| this.files_done(done),
+            move |error| toasts.add_toast(adw::Toast::new(&error)),
+        );
+    }
+
+    /// Ctrl+Alt+X: the editor's selection goes to a new note, in the open
+    /// note's folder, and a link to it takes its place.
+    fn extract(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let Some(path) = self.editor.path().filter(|_| self.stack.visible_child_name().as_deref() == Some("editor")) else {
+            self.toasts.add_toast(adw::Toast::new("Extract works in the editor: select the text there first."));
+            return;
+        };
+        let (range, text) = match self.editor.extract_selection() {
+            Ok(found) => found,
+            Err(why) => {
+                self.toasts.add_toast(adw::Toast::new(why));
+                return;
+            }
+        };
+        let folder = files::parent(&path).to_string();
+        let (this, toasts) = (self.clone(), self.toasts.clone());
+        let action = Action::Extract { folder, text: text.clone() };
+        files::present(
+            &self.window,
+            action,
+            store,
+            move |done| {
+                if let Some(link) = &done.link
+                    && !this.editor.replace_extracted(range.clone(), &text, link)
+                {
+                    this.toasts.add_toast(adw::Toast::new("The note changed, so the link was not put in. The new note is made."));
+                }
+                this.files_changed(done.changed.clone());
+            },
             move |error| toasts.add_toast(adw::Toast::new(&error)),
         );
     }
@@ -142,6 +177,10 @@ impl Window {
             });
             self.window.add_action(&action);
         }
+        let extract = gio::SimpleAction::new("extract", None);
+        let this = self.clone();
+        extract.connect_activate(move |_, _| this.extract());
+        self.window.add_action(&extract);
         let bookmark = gio::SimpleAction::new("bookmark", Some(glib::VariantTy::STRING));
         let this = self.clone();
         bookmark.connect_activate(move |_, target| this.bookmark(target.and_then(|t| t.get::<String>()).unwrap_or_default()));

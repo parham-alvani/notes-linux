@@ -4,7 +4,9 @@
 //! go to the next cell of a table, Ctrl+B, Ctrl+I and Ctrl+Shift+H mark the
 //! selection, Ctrl+K links it, Ctrl+Return ticks the task on the line,
 //! Alt+Up and Alt+Down move lines, `[[` offers notes and `/` snippets, and a
-//! pasted picture is saved in the vault's attachment folder.
+//! pasted picture is saved in the vault's attachment folder. The pictures a
+//! line embeds are drawn under it, and a dropped file becomes a link
+//! (`editor_media.rs`); Ctrl+Alt+X extracts the selection to a new note.
 //!
 //! The file is the record: what the editor loaded is kept, and a save goes
 //! through only while the file on disk is still that text, so a change made
@@ -27,6 +29,9 @@ use gtk::{gdk, glib};
 use sourceview5::prelude::*;
 
 use daftar_core::{BufferMirror, Candidate, Day, EditorCommands, Fuzzy, MarkdownTable, QuickSwitcher, Return, Snippet, Vault, VaultMoves};
+
+#[path = "editor_media.rs"]
+mod media;
 
 use crate::editor_popup::{Choice, Popup};
 use crate::editor_style::Styler;
@@ -107,6 +112,7 @@ pub struct Editor {
     message: gtk::Label,
     counts: gtk::Label,
     on_mode: RefCell<Option<ModeListener>>,
+    pictures: media::Pictures,
     notice: Box<dyn Fn(&str)>,
     conflict: Box<dyn Fn(&str)>,
 }
@@ -182,6 +188,7 @@ impl Editor {
             message,
             counts,
             on_mode: RefCell::new(None),
+            pictures: media::Pictures::default(),
             notice: Box::new(notice),
             conflict: Box::new(conflict),
         });
@@ -189,6 +196,8 @@ impl Editor {
         editor.connect_buffer();
         editor.connect_keys();
         editor.connect_clicks();
+        editor.connect_drop();
+        editor.connect_pictures();
         editor
     }
 
@@ -231,6 +240,31 @@ impl Editor {
             self.mode_label.set_visible(false);
             self.tell_mode(None);
         }
+        true
+    }
+
+    /// Ctrl+Alt+X: the selection to extract to a new note and where it is,
+    /// or why there is none.
+    pub fn extract_selection(&self) -> Result<(Range<usize>, String), &'static str> {
+        if self.vim.borrow().is_some() {
+            return Err("Extract works in the editor without Neovim mode.");
+        }
+        let range = self.selection();
+        if range.is_empty() {
+            return Err("Select the text to extract first.");
+        }
+        Ok((range.clone(), self.slice(range)))
+    }
+
+    /// Puts [link] where [text] was extracted from, while it is still there;
+    /// false when the note changed meanwhile.
+    pub fn replace_extracted(&self, range: Range<usize>, text: &str, link: &str) -> bool {
+        if self.vim.borrow().is_some() || range.end > self.buffer.char_count() as usize || self.slice(range.clone()) != text {
+            return false;
+        }
+        let at = range.start + link.chars().count();
+        self.replace(range, link, Some(at..at));
+        self.view.grab_focus();
         true
     }
 
@@ -277,6 +311,7 @@ impl Editor {
         if saved != Saved::ChangedOnDisk {
             self.stop_vim();
             self.popup.close();
+            self.clear_pictures();
             *self.open.borrow_mut() = None;
         }
         saved
@@ -476,6 +511,7 @@ impl Editor {
             }
             this.update_counts();
             this.follow_completion();
+            this.refresh_pictures();
         });
     }
 
@@ -1030,8 +1066,11 @@ impl Editor {
 
     // Saving
 
+    /// A save a second from now. The buffer is not marked modified yet when
+    /// `changed` runs, so the save looks at the mark when it runs instead:
+    /// a single edit after a save, as a drop is, is saved too.
     fn schedule_save(self: &Rc<Self>) {
-        if self.open.borrow().is_none() || !self.buffer.is_modified() {
+        if self.open.borrow().is_none() {
             return;
         }
         self.cancel_pending();

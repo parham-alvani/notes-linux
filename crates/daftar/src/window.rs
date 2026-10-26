@@ -670,6 +670,7 @@ impl Window {
             command("New Note", "File", "win.new-note::", "Ctrl+N"),
             command("New Folder", "File", "win.new-folder::", "Ctrl+Shift+N"),
             command("Rename", "File", "win.rename::", "F2"),
+            command("Extract Selection to New Note", "Note", "win.extract", "Ctrl+Alt+X"),
             command("Move to…", "File", "win.move::", ""),
             command("Move to Trash", "File", "win.trash::", ""),
             command("Bookmark or Remove the Bookmark", "File", "win.bookmark::", "Ctrl+D"),
