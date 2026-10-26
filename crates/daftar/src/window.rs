@@ -1,18 +1,21 @@
-//! A Daftar window: the tree on the side, the note in the reader.
+//! A Daftar window: the tree on the side, and tabs of notes, each in its
+//! own reader, as the Mac's window tabs have them.
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
+use serde_json::json;
 
 use daftar_core::{SearchIndex, Value, Vault};
 
 use crate::board::{self, Board};
 use crate::editor::{Editor, Saved};
+use crate::home::{self, HomePage};
 use crate::inspector::Inspector;
 use crate::notifier::{Notifier, Wanted};
 use crate::palette::{self, Mode};
@@ -27,6 +30,9 @@ use crate::today::Today;
 use crate::watcher::FileWatcher;
 
 mod file_actions;
+mod tab;
+
+pub(crate) use tab::Tab;
 
 /// How many notes the quick switcher remembers as opened lately.
 const RECENT: usize = 20;
@@ -35,16 +41,14 @@ const RECENT: usize = 20;
 pub struct Window {
     window: adw::ApplicationWindow,
     settings: Rc<RefCell<AppSettings>>,
-    stack: gtk::Stack,
     title: adw::WindowTitle,
     toasts: adw::ToastOverlay,
     split: adw::NavigationSplitView,
-    reader: Reader,
+    tab_view: adw::TabView,
+    /// Never empty: closing the last tab closes the window instead.
+    tabs: Rc<RefCell<Vec<Rc<Tab>>>>,
     sidebar: Rc<Sidebar>,
     git: Rc<GitSync>,
-    today: Rc<Today>,
-    board: Rc<Board>,
-    editor: Rc<Editor>,
     terminal: Rc<TerminalPane>,
     notifier: Rc<Notifier>,
     /// Backlinks and unlinked mentions, at the right of the note.
@@ -52,11 +56,8 @@ pub struct Window {
     inspector_split: adw::OverlaySplitView,
     store: Rc<RefCell<Option<Rc<VaultStore>>>>,
     watcher: Rc<RefCell<Option<FileWatcher>>>,
-    /// The notes opened lately, the last first.
+    /// The notes opened lately in any tab, the last first.
     recent: Rc<RefCell<Vec<String>>>,
-    /// Where Back and Forward go, the nearest last.
-    back: Rc<RefCell<Vec<String>>>,
-    forward: Rc<RefCell<Vec<String>>>,
 }
 
 impl Window {
@@ -67,13 +68,11 @@ impl Window {
         crate::style::install();
 
         let window = adw::ApplicationWindow::builder().application(app).title("Daftar").default_width(1200).default_height(800).build();
-        let reader = Reader::new(settings.clone());
         let title = adw::WindowTitle::new("Daftar", "");
-        let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).build();
         let toasts = adw::ToastOverlay::new();
         let split = adw::NavigationSplitView::new();
 
-        // The open note's path, filled in once the sidebar exists.
+        // The window, filled in once the sidebar exists.
         let opener: Rc<RefCell<Option<Window>>> = Rc::new(RefCell::new(None));
         let sidebar = {
             let opener = opener.clone();
@@ -92,68 +91,6 @@ impl Window {
             gtk::Button::builder().icon_name("go-previous-symbolic").tooltip_text("Back (Ctrl+[)").action_name("win.back").build();
         let go_forward =
             gtk::Button::builder().icon_name("go-next-symbolic").tooltip_text("Forward (Ctrl+])").action_name("win.forward").build();
-        let today = {
-            let (open, toggle, edit) = (opener.clone(), opener.clone(), opener.clone());
-            Today::new(
-                move |path, line| {
-                    if let Some(window) = open.borrow().as_ref() {
-                        window.open_line(path, line);
-                    }
-                },
-                move |path, line, status| {
-                    if let Some(window) = toggle.borrow().as_ref() {
-                        window.toggle_task(path, line, status);
-                    }
-                },
-                move |path, line| {
-                    if let Some(window) = edit.borrow().as_ref() {
-                        window.edit_task(path, line);
-                    }
-                },
-            )
-        };
-        let board = {
-            let (open, toggle, edit, moved) = (opener.clone(), opener.clone(), opener.clone(), opener.clone());
-            Board::new(board::Handlers {
-                open: Rc::new(move |path, line| {
-                    if let Some(window) = open.borrow().as_ref() {
-                        window.open_line(path, line);
-                    }
-                }),
-                toggle: Rc::new(move |path, line, status| {
-                    if let Some(window) = toggle.borrow().as_ref() {
-                        window.toggle_task(path, line, status);
-                    }
-                }),
-                edit: Rc::new(move |path, line| {
-                    if let Some(window) = edit.borrow().as_ref() {
-                        window.edit_task(path, line);
-                    }
-                }),
-                moved: Rc::new(move |task, drop| {
-                    if let Some(window) = moved.borrow().as_ref() {
-                        window.move_task(task, drop);
-                    }
-                }),
-            })
-        };
-        let editor = {
-            let (notices, conflicts, opener) = (toasts.clone(), toasts.clone(), opener.clone());
-            Editor::new(
-                settings.clone(),
-                move |text| notices.add_toast(adw::Toast::new(text)),
-                move |text| {
-                    let toast = adw::Toast::builder().title(text).button_label("Reload").timeout(0).build();
-                    let opener = opener.clone();
-                    toast.connect_button_clicked(move |_| {
-                        if let Some(window) = opener.borrow().as_ref() {
-                            window.editor.reload();
-                        }
-                    });
-                    conflicts.add_toast(toast);
-                },
-            )
-        };
         let terminal = {
             let settings = settings.borrow();
             TerminalPane::new(
@@ -175,19 +112,17 @@ impl Window {
         };
         let inspector_split =
             adw::OverlaySplitView::builder().sidebar_position(gtk::PackType::End).show_sidebar(false).sidebar(&inspector.widget).build();
+        let tab_view = adw::TabView::new();
         let this = Window {
             window: window.clone(),
             settings,
-            stack: stack.clone(),
             title: title.clone(),
             toasts: toasts.clone(),
             split: split.clone(),
-            reader: reader.clone(),
+            tab_view: tab_view.clone(),
+            tabs: Rc::new(RefCell::new(Vec::new())),
             sidebar: sidebar.clone(),
             git: git.clone(),
-            today: today.clone(),
-            board: board.clone(),
-            editor: editor.clone(),
             terminal: terminal.clone(),
             notifier: Notifier::new(),
             inspector,
@@ -195,32 +130,8 @@ impl Window {
             store: Rc::new(RefCell::new(None)),
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
-            back: Rc::new(RefCell::new(Vec::new())),
-            forward: Rc::new(RefCell::new(Vec::new())),
         };
         *opener.borrow_mut() = Some(this.clone());
-        {
-            // Neovim's mode beside "Editing", while the editor is on screen.
-            let (title, stack) = (title.clone(), stack.clone());
-            editor.connect_mode(move |mode| {
-                if stack.visible_child_name().as_deref() == Some("editor") {
-                    title.set_subtitle(&mode.map_or("Editing".to_string(), |mode| format!("Editing · {mode}")));
-                }
-            });
-        }
-
-        {
-            let this = this.clone();
-            reader.connect_open(move |path, anchor| this.open(path, anchor));
-        }
-        {
-            let this = this.clone();
-            reader.connect_notice(move |text| this.toasts.add_toast(adw::Toast::new(text)));
-        }
-        {
-            let this = this.clone();
-            reader.connect_edit_task(move |path, line| this.edit_task(path, line));
-        }
 
         // The sidebar.
         let side_header = adw::HeaderBar::new();
@@ -239,13 +150,16 @@ impl Window {
         side.set_content(Some(&sidebar.widget));
         split.set_sidebar(Some(&adw::NavigationPage::builder().title("Daftar").child(&side).build()));
 
-        // The note.
+        // The notes, in tabs.
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&title));
         let history = gtk::Box::builder().css_classes(["linked"]).build();
         history.append(&go_back);
         history.append(&go_forward);
         header.pack_start(&history);
+        header.pack_start(
+            &gtk::Button::builder().icon_name("tab-new-symbolic").tooltip_text("New Tab (Ctrl+T)").action_name("win.new-tab").build(),
+        );
         let edit =
             gtk::ToggleButton::builder().icon_name("document-edit-symbolic").tooltip_text("Edit (Ctrl+E)").action_name("win.edit").build();
         header.pack_end(&edit);
@@ -256,34 +170,13 @@ impl Window {
                 .action_name("win.inspector")
                 .build(),
         );
-        stack.add_named(
-            &adw::StatusPage::builder()
-                .icon_name("text-x-generic-symbolic")
-                .title("No Note Open")
-                .description("Pick a note in the sidebar.")
-                .build(),
-            Some("empty"),
-        );
-        stack.add_named(
-            &gtk::Spinner::builder()
-                .spinning(true)
-                .width_request(32)
-                .height_request(32)
-                .halign(gtk::Align::Center)
-                .valign(gtk::Align::Center)
-                .build(),
-            Some("loading"),
-        );
-        stack.add_named(&reader.view, Some("reader"));
-        stack.add_named(&today.widget, Some("today"));
-        stack.add_named(&board.widget, Some("board"));
-        stack.add_named(&editor.widget, Some("editor"));
-        stack.add_named(&this.choose_page(), Some("choose"));
+        let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(true).build();
         let content = adw::ToolbarView::new();
         content.add_top_bar(&header);
+        content.add_top_bar(&tab_bar);
         let panes = gtk::Paned::builder()
             .orientation(gtk::Orientation::Vertical)
-            .start_child(&stack)
+            .start_child(&tab_view)
             .end_child(&terminal.widget)
             .resize_end_child(false)
             .shrink_end_child(false)
@@ -300,18 +193,247 @@ impl Window {
         window.add_breakpoint(breakpoint);
         window.set_content(Some(&split));
         {
-            let editor = editor.clone();
+            let this = this.clone();
+            tab_view.connect_selected_page_notify(move |_| this.tab_selected());
+        }
+        {
+            let this = this.clone();
+            tab_view.connect_close_page(move |_, page| this.close_page(page));
+        }
+        {
+            let this = this.clone();
             window.connect_close_request(move |_| {
-                editor.save();
+                this.save_tabs();
+                let tabs = this.tabs.borrow().clone();
+                for tab in &tabs {
+                    tab.editor.save();
+                }
                 glib::Propagation::Proceed
             });
         }
         this.add_actions();
+        let first = this.new_tab();
         window.present();
 
         match this.settings.borrow().vault() {
             Some(root) => this.load(root, open),
-            None => this.stack.set_visible_child_name("choose"),
+            None => first.stack.set_visible_child_name("choose"),
+        }
+    }
+
+    /// A tab, at the end and chosen, on the home page once a vault is open.
+    fn new_tab(&self) -> Rc<Tab> {
+        let tab = Rc::new_cyclic(|weak: &Weak<Tab>| {
+            let reader = Reader::new(self.settings.clone());
+            let editor = {
+                let (notices, conflicts, weak) = (self.toasts.clone(), self.toasts.clone(), weak.clone());
+                Editor::new(
+                    self.settings.clone(),
+                    move |text| notices.add_toast(adw::Toast::new(text)),
+                    move |text| {
+                        let toast = adw::Toast::builder().title(text).button_label("Reload").timeout(0).build();
+                        let weak = weak.clone();
+                        toast.connect_button_clicked(move |_| {
+                            if let Some(tab) = weak.upgrade() {
+                                tab.editor.reload();
+                            }
+                        });
+                        conflicts.add_toast(toast);
+                    },
+                )
+            };
+            let today = {
+                let (open, toggle, edit) = (self.clone(), self.clone(), self.clone());
+                Today::new(
+                    move |path, line| open.open_line(path, line),
+                    move |path, line, status| toggle.toggle_task(path, line, status),
+                    move |path, line| edit.edit_task(path, line),
+                )
+            };
+            let board = {
+                let (open, toggle, edit, moved) = (self.clone(), self.clone(), self.clone(), self.clone());
+                Board::new(board::Handlers {
+                    open: Rc::new(move |path, line| open.open_line(path, line)),
+                    toggle: Rc::new(move |path, line, status| toggle.toggle_task(path, line, status)),
+                    edit: Rc::new(move |path, line| edit.edit_task(path, line)),
+                    moved: Rc::new(move |task, drop| moved.move_task(task, drop)),
+                })
+            };
+            let home = {
+                let (open, search) = (self.clone(), self.clone());
+                HomePage::new(home::Handlers {
+                    open: Box::new(move |path| open.open(path, None)),
+                    search: Box::new(move |text| search.home_search(text)),
+                })
+            };
+            let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).build();
+            stack.add_named(&home.widget, Some("empty"));
+            stack.add_named(
+                &gtk::Spinner::builder()
+                    .spinning(true)
+                    .width_request(32)
+                    .height_request(32)
+                    .halign(gtk::Align::Center)
+                    .valign(gtk::Align::Center)
+                    .build(),
+                Some("loading"),
+            );
+            stack.add_named(&reader.view, Some("reader"));
+            stack.add_named(&today.widget, Some("today"));
+            stack.add_named(&board.widget, Some("board"));
+            stack.add_named(&editor.widget, Some("editor"));
+            stack.add_named(&self.choose_page(), Some("choose"));
+            Tab {
+                stack,
+                reader,
+                editor,
+                today,
+                board,
+                home,
+                back: RefCell::new(Vec::new()),
+                forward: RefCell::new(Vec::new()),
+                title: RefCell::new(("Home".into(), String::new())),
+                page: RefCell::new(None),
+            }
+        });
+        {
+            let this = self.clone();
+            tab.reader.connect_open(move |path, anchor, new_tab| {
+                if new_tab {
+                    this.open_in_new_tab(path, anchor);
+                } else {
+                    this.open(path, anchor);
+                }
+            });
+        }
+        {
+            let toasts = self.toasts.clone();
+            tab.reader.connect_notice(move |text| toasts.add_toast(adw::Toast::new(text)));
+        }
+        {
+            let this = self.clone();
+            tab.reader.connect_edit_task(move |path, line| this.edit_task(path, line));
+        }
+        {
+            // The reading cursor is kept as the note's place.
+            let store = self.store.clone();
+            tab.reader.connect_cursor(move |path, line| {
+                if let Some(store) = store.borrow().as_ref() {
+                    store.places.set(path, line);
+                }
+            });
+        }
+        {
+            // Neovim's mode beside "Editing", while the editor is on screen.
+            let (this, weak) = (self.clone(), Rc::downgrade(&tab));
+            tab.editor.connect_mode(move |mode| {
+                if let Some(tab) = weak.upgrade().filter(|tab| tab.editing()) {
+                    this.set_subtitle(&tab, &mode.map_or("Editing".to_string(), |mode| format!("Editing · {mode}")));
+                }
+            });
+        }
+        let store = self.store.borrow().clone();
+        if let Some(store) = &store {
+            tab.reader.set_store(store.clone());
+            tab.editor.set_store(store.clone());
+        }
+        // Chosen at once, so it is in the list before the view tells of it.
+        self.tabs.borrow_mut().push(tab.clone());
+        let page = self.tab_view.append(&tab.stack);
+        page.set_title("Home");
+        *tab.page.borrow_mut() = Some(page.clone());
+        self.tab_view.set_selected_page(&page);
+        match store {
+            Some(_) => self.show_home(&tab),
+            None if self.settings.borrow().vault().is_some() => tab.stack.set_visible_child_name("loading"),
+            None => tab.stack.set_visible_child_name("choose"),
+        }
+        tab
+    }
+
+    /// The chosen tab.
+    fn tab(&self) -> Rc<Tab> {
+        let tabs = self.tabs.borrow();
+        let chosen = self.tab_view.selected_page().map(|page| page.child());
+        tabs.iter()
+            .find(|tab| chosen.as_ref() == Some(tab.stack.upcast_ref::<gtk::Widget>()))
+            .or_else(|| tabs.first())
+            .cloned()
+            .expect("a window has a tab")
+    }
+
+    fn is_chosen(&self, tab: &Tab) -> bool {
+        self.tab_view.selected_page().is_some_and(|page| &page.child() == tab.stack.upcast_ref::<gtk::Widget>())
+    }
+
+    /// The tabs in the order the bar shows them.
+    fn tabs_in_order(&self) -> Vec<Rc<Tab>> {
+        let tabs = self.tabs.borrow();
+        (0..self.tab_view.n_pages())
+            .filter_map(|at| {
+                let child = self.tab_view.nth_page(at).child();
+                tabs.iter().find(|tab| &child == tab.stack.upcast_ref::<gtk::Widget>()).cloned()
+            })
+            .collect()
+    }
+
+    /// Another tab is chosen: the header, the history and the inspector follow it.
+    fn tab_selected(&self) {
+        if self.tabs.borrow().is_empty() {
+            return;
+        }
+        let tab = self.tab();
+        let (title, subtitle) = tab.title.borrow().clone();
+        self.title.set_title(&title);
+        self.title.set_subtitle(&subtitle);
+        if let Some(action) = self.window.lookup_action("edit").and_downcast::<gio::SimpleAction>() {
+            action.set_state(&tab.editing().to_variant());
+        }
+        self.update_history();
+        self.refresh_inspector();
+    }
+
+    /// A tab's close button, Ctrl+W or a middle click: the editor saves
+    /// first, and the last tab closes the window.
+    fn close_page(&self, page: &adw::TabPage) -> glib::Propagation {
+        let child = page.child();
+        let Some(tab) = self.tabs.borrow().iter().find(|tab| &child == tab.stack.upcast_ref::<gtk::Widget>()).cloned() else {
+            return glib::Propagation::Proceed;
+        };
+        if self.tabs.borrow().len() <= 1 {
+            self.tab_view.close_page_finish(page, false);
+            self.window.close();
+            return glib::Propagation::Stop;
+        }
+        if tab.editing() && tab.editor.close() == Saved::ChangedOnDisk {
+            self.tab_view.close_page_finish(page, false);
+            self.toasts.add_toast(adw::Toast::new("The note changed on disk; the tab stays open so the text is not lost."));
+            return glib::Propagation::Stop;
+        }
+        self.tabs.borrow_mut().retain(|other| !Rc::ptr_eq(other, &tab));
+        glib::Propagation::Proceed
+    }
+
+    /// The title and the subtitle of [tab], in its tab and, while it is
+    /// chosen, in the header.
+    fn set_titles(&self, tab: &Tab, title: &str, subtitle: &str) {
+        *tab.title.borrow_mut() = (title.to_string(), subtitle.to_string());
+        if let Some(page) = tab.page.borrow().as_ref() {
+            page.set_title(title);
+            page.set_tooltip(&glib::markup_escape_text(if subtitle.is_empty() { title } else { subtitle }));
+        }
+        if self.is_chosen(tab) {
+            self.title.set_title(title);
+            self.title.set_subtitle(subtitle);
+        }
+    }
+
+    fn set_subtitle(&self, tab: &Tab, subtitle: &str) {
+        let title = tab.title.borrow().0.clone();
+        tab.title.borrow_mut().1 = subtitle.to_string();
+        if self.is_chosen(tab) {
+            self.title.set_title(&title);
+            self.title.set_subtitle(subtitle);
         }
     }
 
@@ -342,15 +464,20 @@ impl Window {
 
     /// Indexes the vault at [root] away from the window, then shows it.
     fn load(&self, root: PathBuf, open: Option<String>) {
+        let tabs = self.tabs.borrow().clone();
         if !root.is_dir() {
-            self.stack.set_visible_child_name("choose");
+            for tab in &tabs {
+                tab.stack.set_visible_child_name("choose");
+            }
             self.toasts.add_toast(adw::Toast::new(&format!("{} is not a folder.", root.display())));
             return;
         }
-        if !self.leave_editor() {
+        if !tabs.iter().all(|tab| self.leave_editor_in(tab)) {
             return;
         }
-        self.stack.set_visible_child_name("loading");
+        for tab in &tabs {
+            tab.stack.set_visible_child_name("loading");
+        }
         let this = self.clone();
         glib::spawn_future_local(async move {
             let search = Arc::new(SearchIndex::new());
@@ -372,11 +499,7 @@ impl Window {
                 Err(error) => this.toasts.add_toast(adw::Toast::new(&format!("Changes on disk are not followed: {error}"))),
             }
             this.recent.borrow_mut().clear();
-            this.back.borrow_mut().clear();
-            this.forward.borrow_mut().clear();
             this.sidebar.set_tree(store.index().tree());
-            this.reader.set_store(store.clone());
-            this.editor.set_store(store.clone());
             {
                 let git = this.git.clone();
                 store.connect_wrote(move || git.edited());
@@ -397,15 +520,53 @@ impl Window {
             if let Some(page) = this.split.sidebar() {
                 page.set_title(&name);
             }
-            this.stack.set_visible_child_name("empty");
-            if let Some(path) = open.filter(|p| this.store.borrow().as_ref().is_some_and(|s| s.index().files.contains(p))) {
-                this.open(&path, None);
+            let tabs = this.tabs.borrow().clone();
+            for tab in tabs {
+                tab.reader.set_store(store.clone());
+                tab.editor.set_store(store.clone());
+                tab.back.borrow_mut().clear();
+                tab.forward.borrow_mut().clear();
+                this.show_home(&tab);
+            }
+            match open.filter(|p| store.index().files.contains(p)) {
+                Some(path) => this.open(&path, None),
+                // The tabs the last window had, when this is the only one.
+                None if this.window.application().is_some_and(|app| app.windows().len() == 1) => this.restore_tabs(&store),
+                None => {}
             }
         });
     }
 
-    /// Opens a note or a base in the reader, and any other file in the app
-    /// the system gives it to.
+    /// The home page in [tab]: the time, a field, the notes read last.
+    fn show_home(&self, tab: &Rc<Tab>) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let image = self.settings.borrow().file.string("home.image").unwrap_or_default();
+        tab.home.refresh(&store, &image, &self.recent.borrow());
+        tab.stack.set_visible_child_name("empty");
+        self.set_titles(tab, "Home", "");
+        if self.is_chosen(tab) {
+            self.update_history();
+            self.refresh_inspector();
+        }
+    }
+
+    /// Return in the home page's field: the best match opens here; with no
+    /// text, or no match, Quick Open takes over with the text.
+    fn home_search(&self, text: &str) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        // Out of the borrow before the note opens, which adds to the list.
+        let recent = self.recent.borrow().clone();
+        if !text.is_empty()
+            && let Some(best) = palette::best(&store, text, &recent)
+        {
+            self.open(&best, None);
+            return;
+        }
+        self.palette(Mode::Files, text);
+    }
+
+    /// Opens a note or a base in the reader of the chosen tab, and any other
+    /// file in the app the system gives it to.
     pub fn open(&self, path: &str, anchor: Option<&str>) {
         self.go(path, anchor, None, true);
     }
@@ -415,24 +576,49 @@ impl Window {
         self.go(path, None, Some(line), true);
     }
 
-    fn editing(&self) -> bool {
-        self.stack.visible_child_name().as_deref() == Some("editor")
+    /// A link Ctrl+clicked or middle-clicked, or "Open in New Tab".
+    fn open_in_new_tab(&self, path: &str, anchor: Option<&str>) {
+        if self.store.borrow().is_none() {
+            return;
+        }
+        if !Vault::opens_in_app(path) {
+            self.open(path, anchor);
+            return;
+        }
+        let tab = self.new_tab();
+        self.go_in(&tab, path, anchor, None, false);
     }
 
-    /// Saves and closes the editor; false when the save was refused, and the
-    /// editor stays so the person's text is not lost.
+    /// Ctrl+T: a tab on the note on screen, or on the home page, as on the Mac.
+    fn new_tab_here(&self) {
+        let current = self.tab().current();
+        let tab = self.new_tab();
+        match current {
+            Some(path) => self.go_in(&tab, &path, None, None, false),
+            None => tab.home.focus(),
+        }
+    }
+
+    /// Saves and closes the chosen tab's editor; false when the save was
+    /// refused, and the editor stays so the person's text is not lost.
     fn leave_editor(&self) -> bool {
-        if !self.editing() {
+        self.leave_editor_in(&self.tab())
+    }
+
+    fn leave_editor_in(&self, tab: &Rc<Tab>) -> bool {
+        if !tab.editing() {
             return true;
         }
-        let path = self.editor.path();
-        if self.editor.close() == Saved::ChangedOnDisk {
+        let path = tab.editor.path();
+        if tab.editor.close() == Saved::ChangedOnDisk {
             return false;
         }
-        self.set_edit_state(false);
+        if self.is_chosen(tab) {
+            self.set_edit_state(false);
+        }
         // Back to the note's folder under its title, as reading shows it.
-        if let Some(path) = path.or_else(|| self.reader.shown().map(|shown| shown.path)) {
-            self.title.set_subtitle(folder_of(&path));
+        if let Some(path) = path.or_else(|| tab.reader.shown().map(|shown| shown.path)) {
+            self.set_subtitle(tab, folder_of(&path));
         }
         true
     }
@@ -441,26 +627,27 @@ impl Window {
     /// back to reading it where the cursor is.
     fn toggle_edit(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
-        if self.editing() {
-            let line = self.editor.line();
-            let Some(path) = self.editor.path() else { return };
-            if !self.leave_editor() {
+        let tab = self.tab();
+        if tab.editing() {
+            let line = tab.editor.line();
+            let Some(path) = tab.editor.path() else { return };
+            if !self.leave_editor_in(&tab) {
                 return;
             }
-            self.stack.set_visible_child_name("reader");
-            self.reader.show(Request { path, heading: None, line: Some(line) }, false);
+            tab.stack.set_visible_child_name("reader");
+            tab.reader.show(Request { path, heading: None, line: Some(line) }, false);
             return;
         }
-        let Some(shown) = self.reader.shown().filter(|_| self.stack.visible_child_name().as_deref() == Some("reader")) else { return };
+        let Some(shown) = tab.reader.shown().filter(|_| tab.showing().as_deref() == Some("reader")) else { return };
         if !Vault::is_note(&shown.path) {
             self.toasts.add_toast(adw::Toast::new("Only a note can be edited here."));
             return;
         }
-        if !self.editor.load(&store.root, &shown.path, shown.line) {
+        if !tab.editor.load(&store.root, &shown.path, shown.line) {
             self.toasts.add_toast(adw::Toast::new(&format!("{} could not be read.", shown.path)));
             return;
         }
-        self.stack.set_visible_child_name("editor");
+        tab.stack.set_visible_child_name("editor");
         self.set_edit_state(true);
     }
 
@@ -470,7 +657,7 @@ impl Window {
             action.set_state(&on.to_variant());
         }
         if on {
-            self.title.set_subtitle("Editing");
+            self.set_subtitle(&self.tab(), "Editing");
         }
     }
 
@@ -480,10 +667,10 @@ impl Window {
         if !self.leave_editor() {
             return;
         }
-        self.today.show(&store);
-        self.title.set_title("Today");
-        self.title.set_subtitle("");
-        self.stack.set_visible_child_name("today");
+        let tab = self.tab();
+        tab.today.show(&store);
+        self.set_titles(&tab, "Today", "");
+        tab.stack.set_visible_child_name("today");
         self.split.set_show_content(true);
     }
 
@@ -493,10 +680,10 @@ impl Window {
         if !self.leave_editor() {
             return;
         }
-        self.board.show(store);
-        self.title.set_title("Board");
-        self.title.set_subtitle("");
-        self.stack.set_visible_child_name("board");
+        let tab = self.tab();
+        tab.board.show(store);
+        self.set_titles(&tab, "Board", "");
+        tab.stack.set_visible_child_name("board");
         self.split.set_show_content(true);
     }
 
@@ -529,18 +716,24 @@ impl Window {
 
     /// The page on screen drawn again after the app wrote a task.
     fn redraw_page(&self) {
-        match self.stack.visible_child_name().as_deref() {
+        let tab = self.tab();
+        match tab.showing().as_deref() {
             Some("today") => self.show_today(),
             Some("board") => self.show_board(),
-            Some("reader") => self.reader.reload(),
+            Some("reader") => tab.reader.reload(),
             _ => {}
         }
     }
 
-    /// Opens [path]; with [record], the note it leaves is one Back away.
+    /// Opens [path] in the chosen tab; with [record], the note it leaves is
+    /// one Back away.
     fn go(&self, path: &str, anchor: Option<&str>, line: Option<usize>, record: bool) {
+        self.go_in(&self.tab(), path, anchor, line, record);
+    }
+
+    fn go_in(&self, tab: &Rc<Tab>, path: &str, anchor: Option<&str>, line: Option<usize>, record: bool) {
         let Some(store) = self.store.borrow().clone() else { return };
-        if !self.leave_editor() {
+        if !self.leave_editor_in(tab) {
             return;
         }
         if !Vault::opens_in_app(path) {
@@ -554,45 +747,66 @@ impl Window {
             recent.insert(0, path.to_string());
             recent.truncate(RECENT);
         }
-        if record && let Some(shown) = self.reader.shown().filter(|shown| shown.path != path) {
-            self.back.borrow_mut().push(shown.path);
-            self.forward.borrow_mut().clear();
+        if record && let Some(current) = tab.current().filter(|current| current != path) {
+            tab.back.borrow_mut().push(current);
+            tab.forward.borrow_mut().clear();
         }
-        self.title.set_title(&Vault::title(path));
-        self.title.set_subtitle(folder_of(path));
-        self.stack.set_visible_child_name("reader");
+        self.set_titles(tab, &Vault::title(path), folder_of(path));
+        tab.stack.set_visible_child_name("reader");
         self.split.set_show_content(true);
         // A note opens where it was being read, unless a link names a place in it.
         let line = line.or_else(|| anchor.is_none().then(|| self.place(path)).flatten());
-        self.reader.show(Request { path: path.to_string(), heading: anchor.map(String::from), line }, false);
-        self.update_history();
-        self.refresh_inspector();
+        tab.reader.show(Request { path: path.to_string(), heading: anchor.map(String::from), line }, false);
+        if self.is_chosen(tab) {
+            self.update_history();
+            self.refresh_inspector();
+        }
     }
 
     /// Back when [backward], else Forward: the notes that are gone are skipped.
     fn travel(&self, backward: bool) {
-        let (from, to) = if backward { (&self.back, &self.forward) } else { (&self.forward, &self.back) };
+        let tab = self.tab();
+        let (from, to) = if backward { (&tab.back, &tab.forward) } else { (&tab.forward, &tab.back) };
         let Some(store) = self.store.borrow().clone() else { return };
         loop {
             let Some(path) = from.borrow_mut().pop() else { break };
             if !store.index().files.contains(&path) {
                 continue;
             }
-            if let Some(shown) = self.reader.shown() {
-                to.borrow_mut().push(shown.path);
+            if let Some(current) = tab.current() {
+                to.borrow_mut().push(current);
             }
-            self.go(&path, None, None, false);
+            self.go_in(&tab, &path, None, None, false);
             return;
         }
         self.update_history();
     }
 
     fn update_history(&self) {
+        let tab = self.tab();
         if let Some(action) = self.window.lookup_action("back").and_downcast::<gio::SimpleAction>() {
-            action.set_enabled(!self.back.borrow().is_empty());
+            action.set_enabled(!tab.back.borrow().is_empty());
         }
         if let Some(action) = self.window.lookup_action("forward").and_downcast::<gio::SimpleAction>() {
-            action.set_enabled(!self.forward.borrow().is_empty());
+            action.set_enabled(!tab.forward.borrow().is_empty());
+        }
+    }
+
+    /// Every tab's reader drawn again, as a new text size or font asks.
+    fn reload_readers(&self) {
+        let tabs = self.tabs.borrow().clone();
+        for tab in &tabs {
+            tab.reader.reload();
+        }
+    }
+
+    /// Every home page drawn again, as a new picture asks.
+    fn refresh_homes(&self) {
+        let tabs = self.tabs.borrow().clone();
+        for tab in tabs {
+            if tab.showing().as_deref() == Some("empty") {
+                self.show_home(&tab);
+            }
         }
     }
 
@@ -603,12 +817,12 @@ impl Window {
         if let Err(error) = self.settings.borrow_mut().set("appearance.text_size", Value::Int(next)) {
             self.toasts.add_toast(adw::Toast::new(&format!("The settings were not saved: {error}")));
         }
-        self.reader.reload();
+        self.reload_readers();
     }
 
     /// Files changed on disk, by another app, `git` or this one: the index
-    /// learns them, and the note on screen is drawn again when it, or a
-    /// note it links to or embeds, is one of them.
+    /// learns them, and each tab's page is drawn again when it, or a note it
+    /// links to or embeds, is one of them.
     fn files_changed(&self, changed: BTreeSet<String>) {
         let Some(store) = self.store.borrow().clone() else { return };
         let (files, folders) = {
@@ -630,34 +844,39 @@ impl Window {
         if moved {
             self.refresh_marks();
         }
-        let index = store.index();
-        if self.stack.visible_child_name().as_deref() == Some("today") {
-            drop(index);
-            self.show_today();
-            return;
+        let tabs = self.tabs.borrow().clone();
+        for tab in tabs {
+            self.follow_disk(&tab, &store, &changed);
         }
-        if self.stack.visible_child_name().as_deref() == Some("board") {
-            drop(index);
-            self.show_board();
-            return;
-        }
-        if self.editing() {
-            if self.editor.path().is_some_and(|path| changed.contains(&path)) {
-                self.editor.changed_on_disk();
+    }
+
+    /// [tab]'s page after [changed] files changed on disk.
+    fn follow_disk(&self, tab: &Rc<Tab>, store: &Rc<VaultStore>, changed: &BTreeSet<String>) {
+        match tab.showing().as_deref() {
+            Some("today") => tab.today.show(store),
+            Some("board") => tab.board.show(store.clone()),
+            Some("empty") => self.show_home(tab),
+            Some("editor") => {
+                if tab.editor.path().is_some_and(|path| changed.contains(&path)) {
+                    tab.editor.changed_on_disk();
+                }
             }
-            return;
-        }
-        let Some(shown) = self.reader.shown() else { return };
-        if !index.files.contains(&shown.path) {
-            self.title.set_title("Daftar");
-            self.title.set_subtitle("");
-            self.stack.set_visible_child_name("empty");
-            return;
-        }
-        let touched = changed.contains(&shown.path) || index.resolved_links(&shown.path).values().any(|target| changed.contains(target));
-        drop(index);
-        if touched {
-            self.reader.reload();
+            Some("reader") => {
+                let Some(shown) = tab.reader.shown() else { return };
+                let index = store.index();
+                if !index.files.contains(&shown.path) {
+                    drop(index);
+                    self.show_home(tab);
+                    return;
+                }
+                let touched =
+                    changed.contains(&shown.path) || index.resolved_links(&shown.path).values().any(|target| changed.contains(target));
+                drop(index);
+                if touched {
+                    tab.reader.reload();
+                }
+            }
+            _ => {}
         }
     }
 
@@ -669,8 +888,11 @@ impl Window {
             command("Search the Notes", "Go", "win.search", "Ctrl+Shift+F"),
             command("Today", "Go", "win.today", "Ctrl+1"),
             command("Task Board", "Go", "win.board", "Ctrl+2"),
+            command("Home", "Go", "win.home", ""),
             command("Back", "Go", "win.back", "Ctrl+["),
             command("Forward", "Go", "win.forward", "Ctrl+]"),
+            command("New Tab", "Tab", "win.new-tab", "Ctrl+T"),
+            command("Close Tab", "Tab", "win.close-tab", "Ctrl+W"),
             command("Edit or Read the Note", "Note", "win.edit", "Ctrl+E"),
             command("Show the Graph", "View", "win.graph", "Ctrl+Alt+G"),
             command("Show or Hide the Inspector", "View", "win.inspector", "Ctrl+Alt+I"),
@@ -711,7 +933,7 @@ impl Window {
 
     fn graph(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
-        let center = self.reader.shown().map(|shown| shown.path).filter(|p| Vault::is_note(p));
+        let center = self.tab().reader.shown().map(|shown| shown.path).filter(|p| Vault::is_note(p));
         let this = self.clone();
         crate::graph::present(&self.window, store, center, move |path| this.open(path, None));
     }
@@ -727,8 +949,12 @@ impl Window {
         let hooks = crate::preferences::Hooks {
             theme: Box::new(apply_theme),
             reader: Box::new({
-                let reader = self.reader.clone();
-                move || reader.reload()
+                let this = self.clone();
+                move || this.reload_readers()
+            }),
+            home: Box::new({
+                let this = self.clone();
+                move || this.refresh_homes()
             }),
             git: Box::new({
                 let git = self.git.clone();
@@ -739,37 +965,70 @@ impl Window {
                 move |text| toasts.add_toast(adw::Toast::new(text))
             }),
         };
-        crate::preferences::present(&self.window, self.settings.clone(), Rc::new(hooks));
+        let root = self.store.borrow().as_ref().map(|store| store.root.clone());
+        crate::preferences::present(&self.window, self.settings.clone(), root, Rc::new(hooks));
     }
 
-    fn palette(&self, mode: Mode) {
+    fn palette(&self, mode: Mode, query: &str) {
         let Some(store) = self.store.borrow().clone() else { return };
         let this = self.clone();
-        palette::present(&self.window, mode, store, self.recent.borrow().clone(), move |path| this.open(path, None));
+        palette::present(&self.window, mode, store, self.recent.borrow().clone(), query, move |path| this.open(path, None));
+    }
+
+    /// The tabs' notes, kept for the next launch: `tabs-<hash>.json` beside
+    /// the reading places, the chosen one marked.
+    fn save_tabs(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let tabs = self.tabs_in_order();
+        let chosen = self.tab();
+        let paths: Vec<String> = tabs.iter().map(|tab| tab.current().unwrap_or_default()).collect();
+        let at = tabs.iter().position(|tab| Rc::ptr_eq(tab, &chosen)).unwrap_or(0);
+        let file = crate::places::state_file(&store.root, "tabs");
+        if let Some(folder) = file.parent() {
+            let _ = std::fs::create_dir_all(folder);
+        }
+        let _ = std::fs::write(&file, json!({ "tabs": paths, "chosen": at }).to_string());
+    }
+
+    /// The tabs [save_tabs] kept, each on its note while it is still there.
+    fn restore_tabs(&self, store: &Rc<VaultStore>) {
+        let Ok(text) = std::fs::read_to_string(crate::places::state_file(&store.root, "tabs")) else { return };
+        let Ok(saved) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+        let paths: Vec<String> = saved
+            .get("tabs")
+            .and_then(|t| t.as_array())
+            .map(|t| t.iter().filter_map(|p| p.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let chosen = saved.get("chosen").and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+        for (at, path) in paths.iter().enumerate().take(20) {
+            let tab = if at == 0 { self.tab() } else { self.new_tab() };
+            if store.index().files.contains(path) {
+                self.go_in(&tab, path, None, None, false);
+            }
+        }
+        if let Some(tab) = self.tabs_in_order().get(chosen)
+            && let Some(page) = tab.page.borrow().as_ref()
+        {
+            self.tab_view.set_selected_page(page);
+        }
     }
 
     fn add_actions(&self) {
         self.add_file_actions();
         let quick_open = gio::SimpleAction::new("quick-open", None);
         let this = self.clone();
-        quick_open.connect_activate(move |_, _| this.palette(Mode::Files));
+        quick_open.connect_activate(move |_, _| this.palette(Mode::Files, ""));
         self.window.add_action(&quick_open);
         let search = gio::SimpleAction::new("search", None);
         let this = self.clone();
-        search.connect_activate(move |_, _| this.palette(Mode::Text));
+        search.connect_activate(move |_, _| this.palette(Mode::Text, ""));
         self.window.add_action(&search);
-        let find = gio::SimpleAction::new("find", None);
-        let reader = self.reader.clone();
-        find.connect_activate(move |_, _| reader.find("open"));
-        self.window.add_action(&find);
-        let next = gio::SimpleAction::new("find-next", None);
-        let reader = self.reader.clone();
-        next.connect_activate(move |_, _| reader.find("next"));
-        self.window.add_action(&next);
-        let previous = gio::SimpleAction::new("find-previous", None);
-        let reader = self.reader.clone();
-        previous.connect_activate(move |_, _| reader.find("previous"));
-        self.window.add_action(&previous);
+        for (name, action) in [("find", "open"), ("find-next", "next"), ("find-previous", "previous")] {
+            let find = gio::SimpleAction::new(name, None);
+            let this = self.clone();
+            find.connect_activate(move |_, _| this.tab().reader.find(action));
+            self.window.add_action(&find);
+        }
         let open_vault = gio::SimpleAction::new("open-vault", None);
         let this = self.clone();
         open_vault.connect_activate(move |_, _| this.choose_vault());
@@ -795,9 +1054,9 @@ impl Window {
         edit.connect_activate(move |_, _| this.toggle_edit());
         self.window.add_action(&edit);
         let save = gio::SimpleAction::new("save", None);
-        let editor = self.editor.clone();
+        let this = self.clone();
         save.connect_activate(move |_, _| {
-            editor.save();
+            this.tab().editor.save();
         });
         self.window.add_action(&save);
         let board = gio::SimpleAction::new("board", None);
@@ -805,7 +1064,7 @@ impl Window {
         board.connect_activate(move |_, _| {
             this.show_board();
             // Once the new cards are on screen, which a focus needs.
-            let board = this.board.clone();
+            let board = this.tab().board.clone();
             glib::idle_add_local_once(move || board.focus_cards());
         });
         self.window.add_action(&board);
@@ -813,6 +1072,36 @@ impl Window {
         let this = self.clone();
         today.connect_activate(move |_, _| this.show_today());
         self.window.add_action(&today);
+        let home = gio::SimpleAction::new("home", None);
+        let this = self.clone();
+        home.connect_activate(move |_, _| {
+            if this.leave_editor() {
+                let tab = this.tab();
+                this.show_home(&tab);
+                tab.home.focus();
+            }
+        });
+        self.window.add_action(&home);
+        let new_tab = gio::SimpleAction::new("new-tab", None);
+        let this = self.clone();
+        new_tab.connect_activate(move |_, _| this.new_tab_here());
+        self.window.add_action(&new_tab);
+        let open_tab = gio::SimpleAction::new("open-tab", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        open_tab.connect_activate(move |_, target| {
+            if let Some(path) = target.and_then(|t| t.get::<String>()) {
+                this.open_in_new_tab(&path, None);
+            }
+        });
+        self.window.add_action(&open_tab);
+        let close_tab = gio::SimpleAction::new("close-tab", None);
+        let this = self.clone();
+        close_tab.connect_activate(move |_, _| {
+            if let Some(page) = this.tab_view.selected_page() {
+                this.tab_view.close_page(&page);
+            }
+        });
+        self.window.add_action(&close_tab);
         for (name, backward) in [("back", true), ("forward", false)] {
             let action = gio::SimpleAction::new(name, None);
             action.set_enabled(false);

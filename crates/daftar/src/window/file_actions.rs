@@ -19,8 +19,6 @@ impl Window {
         self.sidebar.set_iconic(store.iconic.borrow().clone());
         self.sidebar.set_tree(store.index().tree());
         self.refresh_marks();
-        let places = store.places.clone();
-        self.reader.connect_cursor(move |path, line| places.set(path, line));
     }
 
     /// The bookmarks again, as the files are now.
@@ -37,11 +35,7 @@ impl Window {
 
     /// The note on screen, in the reader or the editor.
     fn current(&self) -> Option<String> {
-        match self.stack.visible_child_name().as_deref() {
-            Some("reader") => self.reader.shown().map(|shown| shown.path),
-            Some("editor") => self.editor.path(),
-            _ => None,
-        }
+        self.tab().current()
     }
 
     /// A file command, on [target] or else the note on screen.
@@ -84,11 +78,12 @@ impl Window {
     /// note's folder, and a link to it takes its place.
     fn extract(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
-        let Some(path) = self.editor.path().filter(|_| self.stack.visible_child_name().as_deref() == Some("editor")) else {
+        let tab = self.tab();
+        let Some(path) = tab.editor.path().filter(|_| tab.editing()) else {
             self.toasts.add_toast(adw::Toast::new("Extract works in the editor: select the text there first."));
             return;
         };
-        let (range, text) = match self.editor.extract_selection() {
+        let (range, text) = match tab.editor.extract_selection() {
             Ok(found) => found,
             Err(why) => {
                 self.toasts.add_toast(adw::Toast::new(why));
@@ -104,7 +99,7 @@ impl Window {
             store,
             move |done| {
                 if let Some(link) = &done.link
-                    && !this.editor.replace_extracted(range.clone(), &text, link)
+                    && !tab.editor.replace_extracted(range.clone(), &text, link)
                 {
                     this.toasts.add_toast(adw::Toast::new("The note changed, so the link was not put in. The new note is made."));
                 }
@@ -118,7 +113,8 @@ impl Window {
     /// new note opens in the editor, as on the Mac.
     fn files_done(&self, done: Done) {
         let Some(store) = self.store.borrow().clone() else { return };
-        let shown = self.reader.shown().map(|shown| shown.path);
+        // Each tab's note, before a move takes it from the index.
+        let shown: Vec<_> = self.tabs.borrow().iter().filter_map(|tab| tab.current().map(|path| (tab.clone(), path))).collect();
         self.sidebar.set_iconic(store.iconic.borrow().clone());
         self.files_changed(done.changed.clone());
         self.refresh_marks();
@@ -129,9 +125,11 @@ impl Window {
             }
             return;
         }
-        // The note on screen moved: it stays on screen, under its new name.
-        if let Some(moved) = shown.and_then(|path| done.moves.get(&path).cloned()) {
-            self.go(&moved, None, None, false);
+        // A note on screen moved: it stays on screen, under its new name.
+        for (tab, path) in shown {
+            if let Some(moved) = done.moves.get(&path) {
+                self.go_in(&tab, moved, None, None, false);
+            }
         }
         if done.moves.len() > 1 {
             self.toasts.add_toast(adw::Toast::new(&format!("Moved {} files; the links to them follow.", done.moves.len())));
@@ -163,7 +161,11 @@ impl Window {
             return;
         }
         let Some(store) = self.store.borrow().clone() else { return };
-        let path = self.current().or_else(|| self.reader.shown().map(|shown| shown.path));
+        let tab = self.tab();
+        // Today and the board keep the note read before them; home has none.
+        let path = tab
+            .current()
+            .or_else(|| (tab.showing().as_deref() != Some("empty")).then(|| tab.reader.shown().map(|shown| shown.path)).flatten());
         self.inspector.show(&store, path.as_deref());
     }
 

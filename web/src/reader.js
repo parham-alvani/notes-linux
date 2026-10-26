@@ -680,7 +680,7 @@ document.addEventListener("click", (event) => {
       window.daftar.scrollTo(link.dataset.anchor);
       return;
     }
-    post({ kind: "open", path, target: link.dataset.target ?? "", anchor: link.dataset.anchor ?? "", newTab: event.metaKey });
+    post({ kind: "open", path, target: link.dataset.target ?? "", anchor: link.dataset.anchor ?? "", newTab: event.metaKey || event.ctrlKey });
     return;
   }
   const href = link.getAttribute("href") ?? "";
@@ -698,10 +698,24 @@ document.addEventListener("click", (event) => {
   // `[x](Notes/a.md)`: a note in the vault, by its path.
   if (!/^[a-z][a-z0-9+.-]*:/i.test(href)) {
     const [path, anchor = ""] = href.split("#");
-    post({ kind: "open", path: "", target: decoded(path).replace(/^\.\//, ""), anchor: decoded(anchor), newTab: event.metaKey });
+    post({ kind: "open", path: "", target: decoded(path).replace(/^\.\//, ""), anchor: decoded(anchor), newTab: event.metaKey || event.ctrlKey });
     return;
   }
   post({ kind: "external", url: link.href });
+});
+
+// A middle click on a note's link opens it in a new tab, as a browser does;
+// its press would paste the selection or start scrolling.
+document.addEventListener("mousedown", (event) => {
+  if (event.button === 1 && event.target.closest?.("a.internal-link")) event.preventDefault();
+});
+document.addEventListener("auxclick", (event) => {
+  const link = event.button === 1 && event.target.closest?.("a.internal-link");
+  if (!link) return;
+  event.preventDefault();
+  preview.card?.classList.remove("is-open");
+  preview.link = null;
+  post({ kind: "open", path: link.dataset.path, target: link.dataset.target ?? "", anchor: link.dataset.anchor ?? "", newTab: true });
 });
 
 /**

@@ -45,7 +45,7 @@ pub struct Request {
 
 // Shared, so a handler is taken out of the state before it runs: one that
 // shows a note borrows the state again.
-type OpenHandler = Rc<dyn Fn(&str, Option<&str>)>;
+type OpenHandler = Rc<dyn Fn(&str, Option<&str>, bool)>;
 type NoticeHandler = Rc<dyn Fn(&str)>;
 type EditTaskHandler = Rc<dyn Fn(&str, usize)>;
 type CursorHandler = Rc<dyn Fn(&str, usize)>;
@@ -105,7 +105,8 @@ impl Reader {
         self.state.borrow_mut().store = Some(store);
     }
 
-    pub fn connect_open(&self, handler: impl Fn(&str, Option<&str>) + 'static) {
+    /// A link followed: the path, the heading it names, and whether it asked for a new tab.
+    pub fn connect_open(&self, handler: impl Fn(&str, Option<&str>, bool) + 'static) {
         self.state.borrow_mut().on_open = Some(Rc::new(handler));
     }
 
@@ -287,6 +288,7 @@ impl Reader {
             "open" => {
                 let (path, target) = (text("path"), text("target"));
                 let anchor = Some(text("anchor")).filter(|a| !a.is_empty());
+                let new_tab = body.get("newTab").and_then(Value::as_bool).unwrap_or(false);
                 let Some(store) = self.state.borrow().store.clone() else { return };
                 // A markdown link, `[x](Notes/a.md)`, names its note by path.
                 let found = if path.is_empty() {
@@ -298,7 +300,7 @@ impl Reader {
                     Some(found) => {
                         let handler = self.state.borrow().on_open.clone();
                         if let Some(handler) = handler {
-                            handler(&found, anchor.as_deref());
+                            handler(&found, anchor.as_deref(), new_tab);
                         }
                     }
                     None => self.notice(&format!("“{target}” is not in the vault yet.")),

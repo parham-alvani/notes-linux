@@ -38,20 +38,37 @@ pub struct Command {
 
 const LIMIT: usize = 50;
 
-/// Shows the palette over [parent]; [on_open] gets the path picked.
-pub fn present(parent: &impl IsA<gtk::Widget>, mode: Mode, store: Rc<VaultStore>, recent: Vec<String>, on_open: impl Fn(&str) + 'static) {
+/// Every file of the vault as the quick switcher ranks it.
+fn candidates(store: &VaultStore) -> Vec<Candidate> {
+    let index = store.index();
+    index
+        .files
+        .iter()
+        .map(|path| {
+            let aliases = index.notes.get(path).map(|n| n.parsed.aliases.clone()).unwrap_or_default();
+            Candidate::new(path, &Vault::title(path), &aliases)
+        })
+        .collect()
+}
+
+/// The file the quick switcher ranks first for [query], as the home page's
+/// field opens it.
+pub fn best(store: &VaultStore, query: &str, recent: &[String]) -> Option<String> {
+    QuickSwitcher::rank(query, &candidates(store), recent, 1).into_iter().next()
+}
+
+/// Shows the palette over [parent], with [query] in its field; [on_open]
+/// gets the path picked.
+pub fn present(
+    parent: &impl IsA<gtk::Widget>,
+    mode: Mode,
+    store: Rc<VaultStore>,
+    recent: Vec<String>,
+    query: &str,
+    on_open: impl Fn(&str) + 'static,
+) {
     let candidates: Vec<Candidate> = match mode {
-        Mode::Files => {
-            let index = store.index();
-            index
-                .files
-                .iter()
-                .map(|path| {
-                    let aliases = index.notes.get(path).map(|n| n.parsed.aliases.clone()).unwrap_or_default();
-                    Candidate::new(path, &Vault::title(path), &aliases)
-                })
-                .collect()
-        }
+        Mode::Files => candidates(&store),
         Mode::Text => vec![],
     };
     let placeholder = match mode {
@@ -81,7 +98,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, mode: Mode, store: Rc<VaultStore>
                 .collect(),
         }
     };
-    show(parent, placeholder, find, on_open);
+    show(parent, placeholder, query, find, on_open);
 }
 
 /// The command palette: [commands] ranked by how well their names match.
@@ -107,11 +124,17 @@ pub fn present_commands(parent: &impl IsA<gtk::Widget>, commands: Vec<Command>, 
         found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         found.into_iter().map(|(_, _, row)| row).collect()
     };
-    show(parent, "Run a command", find, on_run);
+    show(parent, "Run a command", "", find, on_run);
 }
 
 /// The dialog: a field, and the rows [find] gives for what is typed in it.
-fn show(parent: &impl IsA<gtk::Widget>, placeholder: &str, find: impl Fn(&str) -> Vec<Row> + 'static, on_open: impl Fn(&str) + 'static) {
+fn show(
+    parent: &impl IsA<gtk::Widget>,
+    placeholder: &str,
+    query: &str,
+    find: impl Fn(&str) -> Vec<Row> + 'static,
+    on_open: impl Fn(&str) + 'static,
+) {
     let entry = gtk::SearchEntry::builder().placeholder_text(placeholder).hexpand(true).build();
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Browse).css_classes(["navigation-sidebar"]).build();
     let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&list).build();
@@ -154,7 +177,9 @@ fn show(parent: &impl IsA<gtk::Widget>, placeholder: &str, find: impl Fn(&str) -
             *rows.borrow_mut() = found;
         }
     };
-    fill("");
+    entry.set_text(query);
+    entry.set_position(-1);
+    fill(query);
 
     // The note opens once the dialog is gone: WebKit draws no frame for a
     // page that changes while the closing dialog still covers it.

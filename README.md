@@ -30,12 +30,14 @@ This is the first part of the port. It has:
 - **Board:** Ctrl+2, the tasks in columns by status, by day or by note, filtered by note or by words. A card dragged to another status or day column changes its line as the Tasks plugin writes it, and only while the line is still the task the card showed; a click opens the task, a right click edits or moves it.
 - **Edit Task:** a right click on a task, in a note, on Today or on the board: the text, the status, the priority, the due, scheduled and start dates, and the repeat rule. The line is read again before the save, which is refused when it changed.
 - **Git sync:** a button in the sidebar shows the branch and what waits to be pushed, pulled or committed; Ctrl+Shift+S commits, pulls with a rebase and pushes, as `daftar-cli sync` does. It pulls at launch (`git.pull_on_launch`), syncs every `git.sync_interval` minutes when that is set, and shortly after a task is ticked.
-- **Back and Forward:** Ctrl+[ and Ctrl+], or Alt+Left and Alt+Right. Ctrl+= and Ctrl+- set the text size, Ctrl+0 resets it.
+- **Tabs:** Ctrl+T opens a tab on the note on screen, or on the home page, as on the Mac; Ctrl+click or a middle click on a link, and "Open in New Tab" in the sidebar's menu, open the note in a new tab. Ctrl+W closes a tab and the last one closes the window; Ctrl+Tab, Ctrl+Page Up and Down and Alt+1 to 9 go from tab to tab. Each tab has its own history, editor, Today and board, and the tabs come back at the next launch.
+- **Home:** a tab with no note shows the time, a greeting, a field that opens the best match (or Quick Open with the text), the notes read last, the bookmarks and a quote, over your picture (`home.image`, chosen in Settings). It replaces Obsidian's Beautitab new tab and follows its settings in the vault.
+- **Back and Forward:** Ctrl+[ and Ctrl+], or Alt+Left and Alt+Right, in the tab. Ctrl+= and Ctrl+- set the text size, Ctrl+0 resets it.
 - **Command palette:** Ctrl+Shift+P, every command by name, matched as the switcher matches.
 - **Graph:** Ctrl+Alt+G, the notes a few links from the open one, or the whole vault, each top folder in its color as on the Mac; drag to move, scroll to zoom, click a note to open it.
 - **Terminal:** Ctrl+\`, your login shell under the note, started in the vault's folder, in Daftar's colors (`terminal.shell`, `terminal.font_size`).
 - **Notifications:** a meeting alert a few minutes before each meeting in the week note, with Join, and a morning digest of the tasks due (`[notifications]`). Unlike on the Mac, they ring while Daftar runs.
-- **Settings:** Ctrl+, for the theme, the text size, the fonts and git, written back to `config.toml` line by line. Ctrl+Alt+N opens another window.
+- **Settings:** Ctrl+, for the theme, the text size, the fonts, the home picture and git, written back to `config.toml` line by line. Ctrl+Alt+N opens another window.
 - **Command line:** `daftar-cli`, below.
 - **Core:** the parser, the link resolver, the task lines, the vault index, the quick switcher's ranking, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
 

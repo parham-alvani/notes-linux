@@ -22,13 +22,18 @@ pub struct PlaceBook {
 impl PlaceBook {
     /// The places of the vault at [root].
     pub fn load(root: &Path) -> std::rc::Rc<PlaceBook> {
-        let file = state_dir().join("daftar").join(format!("places-{:016x}.json", fnv(&root.to_string_lossy())));
+        let file = state_file(root, "places");
         let places = fs::read_to_string(&file).map(|data| ReadingPlaces::from_data(&data)).unwrap_or_else(|_| ReadingPlaces::new());
         std::rc::Rc::new(PlaceBook { places: RefCell::new(places), file, pending: RefCell::new(None) })
     }
 
     pub fn get(&self, path: &str) -> Option<usize> {
         self.places.borrow().get(path)
+    }
+
+    /// The notes read last, newest first.
+    pub fn recently_read(&self, limit: usize) -> Vec<String> {
+        self.places.borrow().recently_read(limit)
     }
 
     pub fn set(self: &std::rc::Rc<Self>, path: &str, line: usize) {
@@ -85,6 +90,12 @@ impl PlaceBook {
             let _ = fs::rename(&temporary, &self.file);
         }
     }
+}
+
+/// The file of [kind] for the vault at [root] in Daftar's state folder:
+/// `places-<hash>.json`.
+pub fn state_file(root: &Path, kind: &str) -> PathBuf {
+    state_dir().join("daftar").join(format!("{kind}-{:016x}.json", fnv(&root.to_string_lossy())))
 }
 
 /// `$XDG_STATE_HOME`, else `~/.local/state`, as the XDG spec has it.

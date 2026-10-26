@@ -94,7 +94,23 @@ fn css(palette: &[(&str, &str)]) -> String {
          .board-card:focus-visible { box-shadow: inset 0 0 0 2px @daftar_accent; background-color: alpha(@daftar_accent, 0.08); }\n\
          .daftar-board-head { padding: 10px 16px; }\n\
          .daftar-board-icon { border-radius: 8px; color: white; min-width: 30px; min-height: 30px; background-image: linear-gradient(135deg, @daftar_purple, @daftar_accent); }\n\
-         .daftar-pill { border-radius: 999px; padding: 4px 9px; }\n",
+         .daftar-pill { border-radius: 999px; padding: 4px 9px; }\n\
+         .daftar-home { background-color: @daftar_background; }\n\
+         .daftar-home .home-scrim { background-image: linear-gradient(to bottom, alpha(@daftar_background, 0.15), alpha(@daftar_background, 0.3), alpha(@daftar_background, 0.6)); }\n\
+         .daftar-home .home-clock { text-shadow: 0 0 10px alpha(@daftar_background, 0.7); color: @daftar_text; }\n\
+         .daftar-home .home-time { font-size: 66pt; font-weight: 300; font-feature-settings: \"tnum\"; }\n\
+         .daftar-home.compact .home-time { font-size: 36pt; }\n\
+         .daftar-home .home-date { font-size: 15pt; color: @daftar_muted; }\n\
+         .daftar-home .home-greeting { font-size: 21pt; font-weight: 500; }\n\
+         .daftar-home .home-glass { background-color: alpha(@daftar_panel, 0.62); border: 1px solid alpha(@daftar_text, 0.10); box-shadow: 0 4px 18px alpha(black, 0.12); }\n\
+         .daftar-home .home-search { border-radius: 999px; padding: 6px 16px; font-size: 13pt; }\n\
+         .daftar-home .home-search entry, .daftar-home .home-search text { background: none; border: none; box-shadow: none; outline: none; }\n\
+         .daftar-home .home-card { border-radius: 18px; padding: 10px; }\n\
+         .daftar-home .home-heading { font-weight: 600; color: @daftar_muted; margin: 0 8px 4px 8px; }\n\
+         .daftar-home .home-row { border-radius: 8px; padding: 5px 8px; min-height: 0; }\n\
+         .daftar-home .home-row:hover { background-color: alpha(@daftar_text, 0.08); }\n\
+         .daftar-home .home-folder, .daftar-home .home-keys { color: alpha(@daftar_muted, 0.8); }\n\
+         .daftar-home .home-quote { font-size: 14pt; font-style: italic; }\n",
     );
     out
 }

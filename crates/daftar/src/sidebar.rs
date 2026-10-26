@@ -281,6 +281,11 @@ fn item_for(label: &str, action: &str, target: &str) -> gio::MenuItem {
 /// The file commands for a row, as the Mac's context menu has them.
 fn menu(path: &str, folder: bool, bookmarked: bool) -> gio::Menu {
     let menu = gio::Menu::new();
+    if !folder {
+        let open = gio::Menu::new();
+        open.append_item(&item_for("Open in New Tab", "win.open-tab", path));
+        menu.append_section(None, &open);
+    }
     if folder {
         let create = gio::Menu::new();
         create.append_item(&item_for("New Note", "win.new-note", path));

@@ -7,6 +7,7 @@ mod editor_popup;
 mod editor_style;
 mod files;
 mod graph;
+mod home;
 mod inspector;
 mod neovim_session;
 mod notifier;
@@ -39,7 +40,10 @@ fn main() -> glib::ExitCode {
     let open = args.next();
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_activate(move |app| window::Window::present(app, open.clone()));
-    app.set_accels_for_action("window.close", &["<Ctrl>w"]);
+    // A tab closes, and the last one closes the window. Ctrl+Tab, Ctrl+Page
+    // Up and Down and Alt+1 to 9 are the tab view's own.
+    app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
+    app.set_accels_for_action("win.new-tab", &["<Ctrl>t"]);
     app.set_accels_for_action("win.find", &["<Ctrl>f"]);
     app.set_accels_for_action("win.find-next", &["<Ctrl>g"]);
     app.set_accels_for_action("win.find-previous", &["<Ctrl><Shift>g"]);
@@ -69,7 +73,13 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.actual-size", &["<Ctrl>0"]);
     let quit = gtk::gio::SimpleAction::new("quit", None);
     let handle = app.clone();
-    quit.connect_activate(move |_, _| handle.quit());
+    // Each window closes as its button closes it: the editors save, and the
+    // tabs and the reading places are kept. The app ends with the last.
+    quit.connect_activate(move |_, _| {
+        for window in handle.windows() {
+            window.close();
+        }
+    });
     app.add_action(&quit);
     app.set_accels_for_action("app.quit", &["<Ctrl>q"]);
     // A notification's actions: a meeting's web link, or the Today page.
