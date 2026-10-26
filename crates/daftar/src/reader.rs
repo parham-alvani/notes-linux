@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use webkit6::prelude::*;
 use webkit6::{NavigationPolicyDecision, PolicyDecisionType, URISchemeRequest, URISchemeResponse, WebView};
 
-use daftar_core::{NoteParser, Vault};
+use daftar_core::{Day, NoteParser, QueryTask, TasksQuery, Vault};
 
 use crate::settings::AppSettings;
 use crate::store::{VaultStore, file_in};
@@ -265,8 +265,12 @@ impl Reader {
     /// The page's questions: an embedded note, a tasks query, a base.
     fn answer(&self, name: &str, body: &Value) -> Value {
         match name {
-            // The query engine comes with the next port of the core.
-            "tasks" => json!({ "tasks": [], "links": {}, "notUnderstood": ["Daftar for Linux does not run tasks queries yet."] }),
+            "tasks" => {
+                let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
+                let source = body.get("source").and_then(Value::as_str).unwrap_or("");
+                let path = body.get("path").and_then(Value::as_str);
+                run_query(&store, source, path)
+            }
             "base" => json!({ "views": [], "problems": ["Daftar for Linux does not read bases yet."] }),
             _ => {
                 let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
@@ -398,6 +402,35 @@ fn bytes(header: &str, size: usize) -> Option<(usize, usize)> {
         (None, None) => return None,
     };
     (start <= end && start < size).then_some((start, end))
+}
+
+/// A query's result as the page draws it: each task with the groups it is
+/// under, its note, its line, and the links its text needs.
+fn run_query(store: &VaultStore, source: &str, path: Option<&str>) -> Value {
+    let index = store.index();
+    let query = TasksQuery::parse(source, path);
+    let mut tasks = index.tasks();
+    tasks.sort_by(|a, b| (&a.path, a.task.line).cmp(&(&b.path, b.task.line)));
+    let found = query.run(tasks, Day::today(), |t| QueryTask::from(t));
+    let mut links = serde_json::Map::new();
+    let rows: Vec<Value> = found
+        .iter()
+        .map(|task| {
+            for link in NoteParser::parse(&task.task.text).links {
+                if !links.contains_key(&link.target)
+                    && let Some(target) = index.resolve(&link.target, &task.path)
+                {
+                    links.insert(link.target, target.into());
+                }
+            }
+            json!({
+                "path": task.path, "line": task.task.line, "status": task.task.status.to_string(),
+                "text": task.task.text, "title": Vault::title(&task.path), "groups": query.groups(&QueryTask::from(task)),
+                "due": task.task.due, "scheduled": task.task.scheduled, "done": task.task.done,
+            })
+        })
+        .collect();
+    json!({ "tasks": rows, "notUnderstood": query.not_understood, "links": links })
 }
 
 #[cfg(test)]

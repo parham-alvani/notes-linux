@@ -20,7 +20,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use daftar_core::{Candidate, ConfigFile, Day, Git, QuickSwitcher, SearchIndex, TaskLine, Vault, VaultEdits, VaultIndex};
+use daftar_core::{
+    Candidate, ConfigFile, Day, Git, QueryTask, QuickSwitcher, SearchIndex, TaskLine, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
+};
 
 #[derive(Parser)]
 #[command(name = "daftar-cli", version, about = "Daftar on the command line: an Obsidian vault in a Git repository")]
@@ -58,6 +60,17 @@ enum Command {
         /// Closed tasks too.
         #[arg(long)]
         all: bool,
+    },
+    /// A Tasks plugin query, as a ` ```tasks ` block in a note runs it:
+    /// `daftar-cli query 'not done' 'due before tomorrow' 'group by filename'`.
+    Query {
+        /// The query's lines; with none, the `tasks` blocks of `--note`, else
+        /// the query read from stdin.
+        lines: Vec<String>,
+        /// The note the query is in, which `{{query.file.path}}` and the
+        /// others stand for.
+        #[arg(long)]
+        note: Option<String>,
     },
     /// Ticks or opens the task on a line of a note, as a click in the app does.
     Toggle {
@@ -151,14 +164,47 @@ fn run(cli: Cli) -> Result<(), String> {
                 day(a).cmp(&day(b)).then(a.path.cmp(&b.path)).then(a.task.line.cmp(&b.task.line))
             });
             for task in tasks {
-                let t = &task.task;
-                let mut line = format!("{}:{}\t[{}] {}", task.path, t.line + 1, t.status, t.text);
-                for (mark, value) in [("⏳", &t.scheduled), ("📅", &t.due), ("🔁", &t.recurring)] {
-                    if let Some(value) = value {
-                        line.push_str(&format!(" {mark} {value}"));
-                    }
+                out!("{}", task_line(&task));
+            }
+        }
+        Command::Query { lines, note } => {
+            let index = Vault::index(&root, None);
+            let file = note.as_deref().map(|n| note_path(&index, n)).transpose()?;
+            let sources = if !lines.is_empty() {
+                vec![lines.join("\n")]
+            } else if let Some(file) = &file {
+                let text = fs::read_to_string(root.join(file)).map_err(|e| format!("{file}: {e}"))?;
+                let blocks = query_blocks(&text);
+                if blocks.is_empty() {
+                    return Err(format!("{file} has no tasks query"));
                 }
-                out!("{line}");
+                blocks
+            } else {
+                vec![std::io::read_to_string(std::io::stdin()).map_err(|e| e.to_string())?]
+            };
+            let mut tasks = index.tasks();
+            tasks.sort_by(|a, b| (&a.path, a.task.line).cmp(&(&b.path, b.task.line)));
+            for source in sources {
+                let query = TasksQuery::parse(&source, file.as_deref());
+                for line in &query.not_understood {
+                    eprintln!("daftar-cli: not understood, so not applied: {line}");
+                }
+                // A group's name on its own line, `#` once per level, when it changes.
+                let mut open: Vec<String> = Vec::new();
+                for task in query.run(tasks.clone(), Day::today(), |t| QueryTask::from(t)) {
+                    let groups = query.groups(&QueryTask::from(&task));
+                    for (level, name) in groups.iter().enumerate() {
+                        if open.get(level) == Some(name) {
+                            continue;
+                        }
+                        open.truncate(level);
+                        open.push(name.clone());
+                        if !name.is_empty() {
+                            out!("{} {name}", "#".repeat(level + 1));
+                        }
+                    }
+                    out!("{}", task_line(&task));
+                }
             }
         }
         Command::Toggle { note, line } => {
@@ -286,6 +332,41 @@ fn vault_around(folder: &std::path::Path) -> Option<PathBuf> {
 }
 
 /// A note named as a path in the vault, or as a link would name it.
+/// `path:line`, a tab, the status and the text, and the dates that matter.
+fn task_line(task: &VaultTask) -> String {
+    let t = &task.task;
+    let mut line = format!("{}:{}\t[{}] {}", task.path, t.line + 1, t.status, t.text);
+    for (mark, value) in [("⏳", &t.scheduled), ("📅", &t.due), ("✅", &t.done), ("🔁", &t.recurring)] {
+        if let Some(value) = value {
+            line.push_str(&format!(" {mark} {value}"));
+        }
+    }
+    line
+}
+
+/// The bodies of a note's ` ```tasks ` blocks, in a callout or a quote too.
+fn query_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Option<Vec<&str>> = None;
+    for line in text.lines() {
+        let mut line = line.trim_start();
+        while let Some(rest) = line.strip_prefix('>') {
+            line = rest.strip_prefix(' ').unwrap_or(rest).trim_start_matches(' ');
+        }
+        let trimmed = line.trim();
+        match &mut current {
+            None if trimmed == "```tasks" => current = Some(Vec::new()),
+            Some(body) if trimmed.starts_with("```") => {
+                blocks.push(body.join("\n"));
+                current = None;
+            }
+            Some(body) => body.push(line),
+            None => {}
+        }
+    }
+    blocks
+}
+
 fn note_path(index: &VaultIndex, note: &str) -> Result<String, String> {
     if index.notes.contains_key(note) {
         return Ok(note.to_string());
@@ -297,6 +378,14 @@ fn note_path(index: &VaultIndex, note: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_notes_tasks_blocks_are_its_queries() {
+        let text = "# Week\n\n```tasks\nnot done\ndue this week\n```\n\n```js\nx\n```\n```tasks\ndone\n```\n";
+        assert_eq!(query_blocks(text), ["not done\ndue this week", "done"]);
+        let callout = "> [!todo] Now\n>\n> ```tasks\n> not done\n> group by filename\n> ```\n";
+        assert_eq!(query_blocks(callout), ["not done\ngroup by filename"]);
+    }
 
     #[test]
     fn the_vault_is_found_from_a_folder_in_it() {

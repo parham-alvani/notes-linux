@@ -15,7 +15,9 @@ pub mod note_parser;
 pub mod quick_switcher;
 pub mod search;
 pub mod tag_tree;
+pub mod task_expression;
 pub mod task_line;
+pub mod tasks_query;
 pub mod text;
 pub mod vault;
 pub mod vault_edits;
@@ -29,6 +31,8 @@ pub use note_parser::{FrontMatter, Heading, Link, NoteParser, ParsedNote, Parsed
 pub use quick_switcher::{Candidate, QuickSwitcher};
 pub use search::{Hit, SearchIndex};
 pub use tag_tree::TagNode;
+pub use task_expression::TaskExpression;
 pub use task_line::{Meta, Recurrence, TaskFields, TaskLine, TaskMetadata};
+pub use tasks_query::{DateRange, QueryTask, TaskState, TasksQuery};
 pub use vault::{Backlink, ExcludedFiles, NoteEntry, TreeNode, Vault, VaultIndex, VaultTask};
 pub use vault_edits::{Failure, VaultEdits};
