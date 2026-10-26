@@ -22,12 +22,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_tree(frame, app, sidebar);
     draw_note(frame, app, note);
     draw_status(frame, app, status);
-    match &mut app.overlay {
+    let (picker, list, list_items) = match &mut app.overlay {
         Some(Overlay::Picker(picker)) => draw_picker(frame, &theme, picker, area),
-        Some(Overlay::Help) => draw_help(frame, &theme, area),
-        None => {}
-    }
+        Some(Overlay::Help) => (draw_help(frame, &theme, area), Rect::default(), Vec::new()),
+        None => (Rect::default(), Rect::default(), Vec::new()),
+    };
+    app.areas.picker = picker;
+    app.areas.list = list;
+    app.areas.list_items = list_items;
 }
+
+/// The spinner's frames, one every 80 ms.
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn pane<'a>(theme: &Theme, focused: bool) -> Block<'a> {
     Block::bordered()
@@ -46,6 +52,7 @@ fn draw_tree(frame: &mut Frame, app: &mut App, area: Rect) {
     ]));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    app.areas.tree = inner;
     let height = inner.height as usize;
     if app.tree_selected < app.tree_scroll {
         app.tree_scroll = app.tree_selected;
@@ -92,6 +99,7 @@ fn draw_note(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    app.areas.note = inner;
     let height = inner.height as usize;
     app.layout(inner.width, height);
     let Some(note) = &app.note else {
@@ -148,6 +156,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!(" {} ", app.vault_name()), Style::new().fg(theme.text).bg(theme.panel)),
         Span::raw(" "),
     ];
+    if let Some((doing, since)) = &app.busy {
+        let frame = SPINNER[(since.elapsed().as_millis() / 80) as usize % SPINNER.len()];
+        left.push(Span::styled(format!("{frame} {doing}…"), Style::new().fg(theme.accent)));
+        left.push(Span::raw("  "));
+    }
     match &app.message {
         Some((text, error)) => {
             left.push(Span::styled(text.clone(), Style::new().fg(if *error { theme.red } else { theme.em })));
@@ -203,7 +216,8 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect { x: area.x + (area.width - width) / 2, y: area.y + (area.height - height) / 3, width, height }
 }
 
-fn draw_picker(frame: &mut Frame, theme: &Theme, picker: &mut Picker, area: Rect) {
+/// Draws the list; returns its frame, its rows, and the item on each row.
+fn draw_picker(frame: &mut Frame, theme: &Theme, picker: &mut Picker, area: Rect) -> (Rect, Rect, Vec<usize>) {
     let rect = centered(area, (area.width * 7 / 10).max(50), (area.height * 7 / 10).max(12));
     frame.render_widget(Clear, rect);
     let count = picker.items.iter().filter(|i| i.selectable()).count();
@@ -238,6 +252,7 @@ fn draw_picker(frame: &mut Frame, theme: &Theme, picker: &mut Picker, area: Rect
         picker.scroll += 1;
     }
     let mut lines = Vec::new();
+    let mut items = Vec::new();
     for (at, item) in picker.items.iter().enumerate().skip(picker.scroll) {
         if lines.len() >= height {
             break;
@@ -250,6 +265,7 @@ fn draw_picker(frame: &mut Frame, theme: &Theme, picker: &mut Picker, area: Rect
             line = line.style(Style::new().bg(theme.panel));
         }
         lines.push(line);
+        items.push(at);
         if let Some(detail) = &item.detail {
             let mut detail = detail.clone();
             detail.spans.insert(0, Span::raw(if selected { "▌ " } else { "  " }).style(Style::new().fg(theme.accent)));
@@ -257,12 +273,15 @@ fn draw_picker(frame: &mut Frame, theme: &Theme, picker: &mut Picker, area: Rect
                 detail = detail.style(Style::new().bg(theme.panel));
             }
             lines.push(detail);
+            items.push(at);
         }
     }
+    items.truncate(height);
     frame.render_widget(Paragraph::new(lines), list);
+    (rect, list, items)
 }
 
-pub const KEYS: [(&str, &str); 22] = [
+pub const KEYS: [(&str, &str); 25] = [
     ("Ctrl+P  p", "open a note by name"),
     ("/  Ctrl+F", "search the text of every note"),
     ("t", "tasks: the note's queries, else every open task"),
@@ -277,6 +296,8 @@ pub const KEYS: [(&str, &str); 22] = [
     ("h  ←", "close the folder"),
     ("Backspace  Alt+←", "back"),
     ("Space", "tick the task, or open it again"),
+    ("Click", "open; tick a box; again on a line: follow"),
+    ("Wheel", "scroll the tree, the note or the list"),
     ("e", "edit the note in $EDITOR"),
     ("s", "sync: commit, pull, push"),
     ("r", "read the vault again"),
@@ -285,9 +306,10 @@ pub const KEYS: [(&str, &str); 22] = [
     ("q  Ctrl+C", "quit"),
     ("", ""),
     ("", "A tick refuses when the line changed on disk."),
+    ("", "A change on disk shows as it lands."),
 ];
 
-fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
+fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) -> Rect {
     let rect = centered(area, 64, KEYS.len() as u16 + 4);
     frame.render_widget(Clear, rect);
     let block = Block::bordered()
@@ -306,4 +328,5 @@ fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines).block(block), rect);
+    rect
 }

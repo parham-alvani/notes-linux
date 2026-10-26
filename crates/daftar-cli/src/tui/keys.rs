@@ -39,11 +39,7 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         KeyCode::Char('?') => app.overlay = Some(Overlay::Help),
         KeyCode::Char('e') => app.edit(),
         KeyCode::Char('s') => app.start_sync(),
-        KeyCode::Char('r') => {
-            let paths: Vec<String> = app.index.files.iter().cloned().collect();
-            app.changed(&paths);
-            app.message = Some(("Read the vault again".into(), false));
-        }
+        KeyCode::Char('r') => app.reindex(),
         KeyCode::Tab | KeyCode::BackTab => {
             app.focus = if app.focus == Focus::Sidebar && app.note.is_some() { Focus::Note } else { Focus::Sidebar };
         }

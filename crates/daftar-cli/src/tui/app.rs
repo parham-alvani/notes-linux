@@ -4,8 +4,12 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+use std::time::Instant;
 
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -101,12 +105,28 @@ pub enum Overlay {
     Help,
 }
 
-/// Work the loop does with the terminal: a sync to draw "syncing" before,
-/// an editor to hand the screen to.
+/// Work the loop does with the terminal: an editor to hand the screen to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Job {
-    Sync,
     Edit(String, usize),
+}
+
+/// What a worker thread hands back: the vault read again, after its work.
+pub struct Loaded {
+    pub index: VaultIndex,
+    pub search: SearchIndex,
+    pub message: Option<(String, bool)>,
+}
+
+/// Where the last draw put each pane, for the mouse.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Areas {
+    pub tree: Rect,
+    pub note: Rect,
+    /// The open list's frame, its rows, and the item each row shows.
+    pub picker: Rect,
+    pub list: Rect,
+    pub list_items: Vec<usize>,
 }
 
 pub struct App {
@@ -129,17 +149,36 @@ pub struct App {
     /// A line for the status bar, and whether it is an error.
     pub message: Option<(String, bool)>,
     pub job: Option<Job>,
+    /// What a worker thread does now, and since when, for the spinner.
+    pub busy: Option<(String, Instant)>,
+    worker: Option<Receiver<Loaded>>,
+    /// Files that changed while the worker read the vault: read again after it.
+    touched: BTreeSet<String>,
     pub quit: bool,
     /// The note pane's height, from the last draw.
     pub page: usize,
+    pub areas: Areas,
 }
 
 const LIMIT: usize = 200;
 
 impl App {
+    /// The app on [root], read before it returns: for the tests.
+    #[cfg(test)]
     pub fn new(root: PathBuf, theme: Theme) -> App {
         let search = SearchIndex::new();
         let index = Vault::index(&root, Some(&search));
+        App::with(root, theme, index, search)
+    }
+
+    /// The app on [root] at once, the vault read on a worker thread.
+    pub fn loading(root: PathBuf, theme: Theme) -> App {
+        let mut app = App::with(root, theme, VaultIndex::default(), SearchIndex::new());
+        app.spawn("Reading the vault", |_| None);
+        app
+    }
+
+    fn with(root: PathBuf, theme: Theme, index: VaultIndex, search: SearchIndex) -> App {
         let git = Some(Git::new(&root)).filter(Git::is_repository);
         let mut app = App {
             root,
@@ -159,8 +198,12 @@ impl App {
             overlay: None,
             message: None,
             job: None,
+            busy: None,
+            worker: None,
+            touched: BTreeSet::new(),
             quit: false,
             page: 20,
+            areas: Areas::default(),
         };
         app.refresh_git();
         app.rebuild_tree();
@@ -298,6 +341,25 @@ impl App {
         }
     }
 
+    /// The wheel on the tree: the rows move, the selection stays on screen.
+    pub fn tree_scroll_by(&mut self, by: isize) {
+        let height = (self.areas.tree.height as usize).max(1);
+        let last = self.tree.len().saturating_sub(height);
+        self.tree_scroll = (self.tree_scroll as isize + by).clamp(0, last as isize) as usize;
+        let bottom = (self.tree_scroll + height - 1).min(self.tree.len().saturating_sub(1));
+        self.tree_selected = self.tree_selected.clamp(self.tree_scroll.min(bottom), bottom);
+    }
+
+    /// The wheel on the note: the rows move, the cursor stays on screen.
+    pub fn note_scroll_by(&mut self, by: isize) {
+        let height = self.page.max(1);
+        let Some(note) = &mut self.note else { return };
+        let last = note.rows.len().saturating_sub(height);
+        note.scroll = (note.scroll as isize + by).clamp(0, last as isize) as usize;
+        let bottom = (note.scroll + height - 1).min(note.rows.len().saturating_sub(1));
+        note.cursor = note.cursor.clamp(note.scroll.min(bottom), bottom);
+    }
+
     /// The cursor to the next or the previous row with a link or a task.
     pub fn note_jump(&mut self, forward: bool) {
         let Some(note) = &mut self.note else { return };
@@ -414,27 +476,54 @@ impl App {
         self.refresh_git();
     }
 
-    /// The open note from disk, the cursor where it was.
+    /// The open note from disk, the cursor where it was, and the tree's
+    /// selection where it was; and the list over them again.
     fn reread(&mut self) {
-        let Some((path, cursor, scroll)) = self.note.as_ref().map(|n| (n.path.clone(), n.cursor, n.scroll)) else { return };
-        let message = self.message.clone();
-        let focus = self.focus;
-        self.open(&path, None, false);
-        self.message = message;
-        self.focus = focus;
-        if let Some(note) = &mut self.note {
-            note.cursor = cursor;
-            note.scroll = scroll;
-        }
-        if let Some(Overlay::Picker(picker)) = &self.overlay
-            && matches!(picker.kind, PickerKind::Tasks)
-        {
-            let selected = picker.selected;
-            self.open_tasks();
-            if let Some(Overlay::Picker(picker)) = &mut self.overlay {
-                picker.selected = selected.min(picker.items.len().saturating_sub(1));
+        let tree = (self.tree.get(self.tree_selected).map(|r| r.path.clone()), self.tree_scroll);
+        if let Some((path, cursor, scroll)) = self.note.as_ref().map(|n| (n.path.clone(), n.cursor, n.scroll)) {
+            if self.root.join(&path).is_file() {
+                let message = self.message.clone();
+                let focus = self.focus;
+                self.open(&path, None, false);
+                self.message = message;
+                self.focus = focus;
+                if let Some(note) = &mut self.note {
+                    note.cursor = cursor;
+                    note.scroll = scroll;
+                }
+            } else {
+                self.note = None;
+                self.focus = Focus::Sidebar;
+                self.message = Some((format!("{path} is gone"), false));
             }
         }
+        if let Some(at) = tree.0.and_then(|path| self.tree.iter().position(|row| row.path == path)) {
+            self.tree_selected = at;
+            self.tree_scroll = tree.1;
+        }
+        let Some(Overlay::Picker(picker)) = &self.overlay else { return };
+        let (kind, selected) = (picker.kind, picker.selected);
+        let chosen = picker.items.get(selected).and_then(|i| Some((i.path.clone()?, i.at)));
+        match kind {
+            PickerKind::Tasks => self.open_tasks(),
+            PickerKind::Switcher | PickerKind::Search => self.refilter(),
+            _ => return,
+        }
+        if let Some(picker) = self.picker() {
+            // The same file when it is still listed, else the same row.
+            picker.selected = chosen
+                .and_then(|(path, at)| picker.items.iter().position(|i| i.path.as_deref() == Some(path.as_str()) && i.at == at))
+                .unwrap_or_else(|| selected.min(picker.items.len().saturating_sub(1)));
+        }
+    }
+
+    /// The watcher says [paths] changed: the same as an edit made here.
+    pub fn files_changed(&mut self, paths: BTreeSet<String>) {
+        if self.busy.is_some() {
+            self.touched.extend(paths.iter().cloned());
+        }
+        let paths: Vec<String> = paths.into_iter().collect();
+        self.changed(&paths);
     }
 
     pub fn edit(&mut self) {
@@ -463,36 +552,85 @@ impl App {
             self.message = Some(("The vault is not a git repository".into(), true));
             return;
         }
-        self.message = Some(("Syncing…".into(), false));
-        self.job = Some(Job::Sync);
+        // Commit, pull with a rebase, push, as `daftar-cli sync`; then every
+        // file again, since a pull may change any of them.
+        self.spawn("Syncing", |root| {
+            let git = Git::new(root);
+            let message = Git::message(chrono::Local::now(), &Git::host());
+            Some(match git.sync(&message) {
+                Ok(done) => {
+                    let mut steps = Vec::new();
+                    if done.committed {
+                        steps.push("committed");
+                    }
+                    if done.pulled {
+                        steps.push("pulled");
+                    }
+                    if done.pushed {
+                        steps.push("pushed");
+                    }
+                    (if steps.is_empty() { "Up to date".to_string() } else { format!("Synced: {}", steps.join(", ")) }, false)
+                }
+                Err(failure) => (format!("Sync failed: {}", failure.output.lines().last().unwrap_or("")), true),
+            })
+        });
     }
 
-    /// Commit, pull with a rebase, push, as `daftar-cli sync`; then every
-    /// file again, since a pull may change any of them.
-    pub fn sync(&mut self) {
-        let Some(git) = &self.git else { return };
-        let message = Git::message(chrono::Local::now(), &Git::host());
-        self.message = Some(match git.sync(&message) {
-            Ok(done) => {
-                let mut steps = Vec::new();
-                if done.committed {
-                    steps.push("committed");
-                }
-                if done.pulled {
-                    steps.push("pulled");
-                }
-                if done.pushed {
-                    steps.push("pushed");
-                }
-                (if steps.is_empty() { "Up to date".to_string() } else { format!("Synced: {}", steps.join(", ")) }, false)
-            }
-            Err(failure) => (format!("Sync failed: {}", failure.output.lines().last().unwrap_or("")), true),
+    /// `r`: every file again, on a worker thread.
+    pub fn reindex(&mut self) {
+        self.spawn("Reading the vault", |_| Some(("Read the vault again".into(), false)));
+    }
+
+    /// Runs [work] and then reads the whole vault on a thread; `poll` takes
+    /// the result. One at a time: a key that starts another waits for it.
+    fn spawn(&mut self, label: &str, work: impl FnOnce(&Path) -> Option<(String, bool)> + Send + 'static) {
+        if let Some((doing, _)) = &self.busy {
+            self.message = Some((format!("Still {}…", doing.to_lowercase()), false));
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let root = self.root.clone();
+        thread::spawn(move || {
+            let message = work(&root);
+            let search = SearchIndex::new();
+            let index = Vault::index(&root, Some(&search));
+            let _ = sender.send(Loaded { index, search, message });
         });
-        self.search = SearchIndex::new();
-        self.index = Vault::index(&self.root, Some(&self.search));
+        self.worker = Some(receiver);
+        self.busy = Some((label.to_string(), Instant::now()));
+        self.touched.clear();
+        self.message = None;
+    }
+
+    /// The worker's result, when it is ready; whether it was.
+    pub fn poll(&mut self) -> bool {
+        let Some(receiver) = &self.worker else { return false };
+        let loaded = match receiver.try_recv() {
+            Ok(loaded) => loaded,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => {
+                self.worker = None;
+                self.busy = None;
+                self.message = Some(("The vault could not be read".into(), true));
+                return true;
+            }
+        };
+        self.worker = None;
+        self.busy = None;
+        self.index = loaded.index;
+        self.search = loaded.search;
+        // What changed while the thread read is read again on top.
+        let touched = std::mem::take(&mut self.touched);
+        if !touched.is_empty() {
+            self.index = Vault::update(&self.index, &touched, &self.root, Some(&self.search));
+        }
+        if loaded.message.is_some() {
+            self.message = loaded.message;
+        }
         self.rebuild_tree();
         self.reread();
         self.refresh_git();
+        true
     }
 
     // The lists
