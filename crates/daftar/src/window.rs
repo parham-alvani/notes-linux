@@ -425,10 +425,15 @@ impl Window {
         if !self.editing() {
             return true;
         }
+        let path = self.editor.path();
         if self.editor.close() == Saved::ChangedOnDisk {
             return false;
         }
         self.set_edit_state(false);
+        // Back to the note's folder under its title, as reading shows it.
+        if let Some(path) = path.or_else(|| self.reader.shown().map(|shown| shown.path)) {
+            self.title.set_subtitle(folder_of(&path));
+        }
         true
     }
 
@@ -459,11 +464,14 @@ impl Window {
         self.set_edit_state(true);
     }
 
+    /// The edit action's state, and "Editing" under the title while it is on.
     fn set_edit_state(&self, on: bool) {
         if let Some(action) = self.window.lookup_action("edit").and_downcast::<gio::SimpleAction>() {
             action.set_state(&on.to_variant());
         }
-        self.title.set_subtitle(if on { "Editing" } else { "" });
+        if on {
+            self.title.set_subtitle("Editing");
+        }
     }
 
     /// The Today page, drawn from the index as it is now.
@@ -550,9 +558,8 @@ impl Window {
             self.back.borrow_mut().push(shown.path);
             self.forward.borrow_mut().clear();
         }
-        let folder = path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("");
         self.title.set_title(&Vault::title(path));
-        self.title.set_subtitle(folder);
+        self.title.set_subtitle(folder_of(path));
         self.stack.set_visible_child_name("reader");
         self.split.set_show_content(true);
         // A note opens where it was being read, unless a link names a place in it.
@@ -829,4 +836,9 @@ fn apply_theme(theme: &str) {
         _ => adw::ColorScheme::Default,
     };
     adw::StyleManager::default().set_color_scheme(scheme);
+}
+
+/// The folder of a vault path, as the subtitle shows it under a note's title.
+fn folder_of(path: &str) -> &str {
+    path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("")
 }
