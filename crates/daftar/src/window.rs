@@ -17,6 +17,7 @@ use crate::settings::AppSettings;
 use crate::sidebar::Sidebar;
 use crate::store::VaultStore;
 use crate::sync::{GitSync, Run};
+use crate::today::Today;
 use crate::watcher::FileWatcher;
 
 /// How many notes the quick switcher remembers as opened lately.
@@ -33,6 +34,7 @@ pub struct Window {
     reader: Reader,
     sidebar: Rc<Sidebar>,
     git: Rc<GitSync>,
+    today: Rc<Today>,
     store: Rc<RefCell<Option<Rc<VaultStore>>>>,
     watcher: Rc<RefCell<Option<FileWatcher>>>,
     /// The notes opened lately, the last first.
@@ -47,6 +49,7 @@ impl Window {
     pub fn present(app: &adw::Application, open: Option<String>) {
         let settings = Rc::new(RefCell::new(AppSettings::load()));
         apply_theme(&settings.borrow().theme());
+        crate::style::install();
 
         let window = adw::ApplicationWindow::builder().application(app).title("Daftar").default_width(1200).default_height(800).build();
         let reader = Reader::new(settings.clone());
@@ -74,6 +77,21 @@ impl Window {
             gtk::Button::builder().icon_name("go-previous-symbolic").tooltip_text("Back (Ctrl+[)").action_name("win.back").build();
         let go_forward =
             gtk::Button::builder().icon_name("go-next-symbolic").tooltip_text("Forward (Ctrl+])").action_name("win.forward").build();
+        let today = {
+            let (open, toggle) = (opener.clone(), opener.clone());
+            Today::new(
+                move |path, line| {
+                    if let Some(window) = open.borrow().as_ref() {
+                        window.open_line(path, line);
+                    }
+                },
+                move |path, line, status| {
+                    if let Some(window) = toggle.borrow().as_ref() {
+                        window.toggle_task(path, line, status);
+                    }
+                },
+            )
+        };
         let this = Window {
             window: window.clone(),
             settings,
@@ -84,6 +102,7 @@ impl Window {
             reader: reader.clone(),
             sidebar: sidebar.clone(),
             git: git.clone(),
+            today: today.clone(),
             store: Rc::new(RefCell::new(None)),
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
@@ -110,6 +129,9 @@ impl Window {
             .build();
         side_header.pack_end(&quick_open);
         side_header.pack_start(&git.button);
+        let today_button =
+            gtk::Button::builder().icon_name("weather-clear-symbolic").tooltip_text("Today (Ctrl+1)").action_name("win.today").build();
+        side_header.pack_end(&today_button);
         let side = adw::ToolbarView::new();
         side.add_top_bar(&side_header);
         side.set_content(Some(&sidebar.widget));
@@ -141,6 +163,7 @@ impl Window {
             Some("loading"),
         );
         stack.add_named(&reader.view, Some("reader"));
+        stack.add_named(&today.widget, Some("today"));
         stack.add_named(&this.choose_page(), Some("choose"));
         let content = adw::ToolbarView::new();
         content.add_top_bar(&header);
@@ -247,11 +270,37 @@ impl Window {
     /// Opens a note or a base in the reader, and any other file in the app
     /// the system gives it to.
     pub fn open(&self, path: &str, anchor: Option<&str>) {
-        self.go(path, anchor, true);
+        self.go(path, anchor, None, true);
+    }
+
+    /// Opens the note at [path] with its [line] in view, as a task's link does.
+    pub fn open_line(&self, path: &str, line: usize) {
+        self.go(path, None, Some(line), true);
+    }
+
+    /// The Today page, drawn from the index as it is now.
+    fn show_today(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        self.today.show(&store);
+        self.title.set_title("Today");
+        self.title.set_subtitle("");
+        self.stack.set_visible_child_name("today");
+        self.split.set_show_content(true);
+    }
+
+    /// Ticks a task from a page drawn by the window, not the reader.
+    fn toggle_task(&self, path: &str, line: usize, status: char) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        if let Err(failure) = store.toggle_task(path, line, status) {
+            self.toasts.add_toast(adw::Toast::new(&failure.to_string()));
+        }
+        if self.stack.visible_child_name().as_deref() == Some("today") {
+            self.show_today();
+        }
     }
 
     /// Opens [path]; with [record], the note it leaves is one Back away.
-    fn go(&self, path: &str, anchor: Option<&str>, record: bool) {
+    fn go(&self, path: &str, anchor: Option<&str>, line: Option<usize>, record: bool) {
         let Some(store) = self.store.borrow().clone() else { return };
         if !Vault::opens_in_app(path) {
             let file = gio::File::for_path(store.root.join(path));
@@ -273,7 +322,7 @@ impl Window {
         self.title.set_subtitle(folder);
         self.stack.set_visible_child_name("reader");
         self.split.set_show_content(true);
-        self.reader.show(Request { path: path.to_string(), heading: anchor.map(String::from), line: None }, false);
+        self.reader.show(Request { path: path.to_string(), heading: anchor.map(String::from), line }, false);
         self.update_history();
     }
 
@@ -289,7 +338,7 @@ impl Window {
             if let Some(shown) = self.reader.shown() {
                 to.borrow_mut().push(shown.path);
             }
-            self.go(&path, None, false);
+            self.go(&path, None, None, false);
             return;
         }
         self.update_history();
@@ -328,6 +377,11 @@ impl Window {
         let index = store.index();
         if index.files != files || index.empty_folders != folders {
             self.sidebar.set_tree(index.tree());
+        }
+        if self.stack.visible_child_name().as_deref() == Some("today") {
+            drop(index);
+            self.show_today();
+            return;
         }
         let Some(shown) = self.reader.shown() else { return };
         if !index.files.contains(&shown.path) {
@@ -374,6 +428,10 @@ impl Window {
         let this = self.clone();
         open_vault.connect_activate(move |_, _| this.choose_vault());
         self.window.add_action(&open_vault);
+        let today = gio::SimpleAction::new("today", None);
+        let this = self.clone();
+        today.connect_activate(move |_, _| this.show_today());
+        self.window.add_action(&today);
         for (name, backward) in [("back", true), ("forward", false)] {
             let action = gio::SimpleAction::new(name, None);
             action.set_enabled(false);

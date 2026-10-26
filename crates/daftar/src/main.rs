@@ -6,7 +6,9 @@ mod reader;
 mod settings;
 mod sidebar;
 mod store;
+mod style;
 mod sync;
+mod today;
 mod watcher;
 mod window;
 
@@ -31,6 +33,7 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.quick-open", &["<Ctrl>p", "<Ctrl>o"]);
     app.set_accels_for_action("win.search", &["<Ctrl><Shift>f"]);
     app.set_accels_for_action("win.open-vault", &["<Ctrl><Shift>o"]);
+    app.set_accels_for_action("win.today", &["<Ctrl>1"]);
     app.set_accels_for_action("win.sync", &["<Ctrl><Shift>s"]);
     app.set_accels_for_action("win.back", &["<Ctrl>bracketleft", "<Alt>Left"]);
     app.set_accels_for_action("win.forward", &["<Ctrl>bracketright", "<Alt>Right"]);
