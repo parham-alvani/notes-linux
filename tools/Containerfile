@@ -1,5 +1,6 @@
 # The development image for a machine without GTK: `podman build -t daftar-dev tools/`.
-# Arch, as CI uses, with Xvfb, xdotool and ImageMagick to run the app, drive it and look at it.
+# Arch, as CI uses, with Xvfb, xdotool and ImageMagick to run the app, drive it and look at it,
+# and Neovim for the editor's Vim mode.
 FROM docker.io/library/archlinux:latest
 RUN printf 'Server = https://fastly.mirror.pkgbuild.com/$repo/os/$arch\nServer = https://mirror.rackspace.com/archlinux/$repo/os/$arch\nServer = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n' > /etc/pacman.d/mirrorlist
-RUN for i in 1 2 3; do pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita webkitgtk-6.0 vte4 gtksourceview5 sqlite nodejs npm just git xorg-server-xvfb xdotool imagemagick ttf-dejavu noto-fonts && ok=1 && break; sleep 5; done && test -n "$ok" && pacman -Scc --noconfirm
+RUN for i in 1 2 3; do pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita webkitgtk-6.0 vte4 gtksourceview5 neovim sqlite nodejs npm just git xorg-server-xvfb xdotool imagemagick ttf-dejavu noto-fonts && ok=1 && break; sleep 5; done && test -n "$ok" && pacman -Scc --noconfirm
