@@ -503,6 +503,7 @@ impl Window {
             command("Back", "Go", "win.back", "Ctrl+["),
             command("Forward", "Go", "win.forward", "Ctrl+]"),
             command("Edit or Read the Note", "Note", "win.edit", "Ctrl+E"),
+            command("Show the Graph", "View", "win.graph", "Ctrl+Alt+G"),
             command("Find in the Note", "Note", "win.find", "Ctrl+F"),
             command("Bigger Text", "View", "win.bigger-text", "Ctrl+="),
             command("Smaller Text", "View", "win.smaller-text", "Ctrl+-"),
@@ -521,6 +522,13 @@ impl Window {
                 let _ = WidgetExt::activate_action(&window, &format!("{group}.{name}"), None);
             }
         });
+    }
+
+    fn graph(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let center = self.reader.shown().map(|shown| shown.path).filter(|p| Vault::is_note(p));
+        let this = self.clone();
+        crate::graph::present(&self.window, store, center, move |path| this.open(path, None));
     }
 
     fn preferences(&self) {
@@ -573,6 +581,10 @@ impl Window {
         let this = self.clone();
         open_vault.connect_activate(move |_, _| this.choose_vault());
         self.window.add_action(&open_vault);
+        let graph = gio::SimpleAction::new("graph", None);
+        let this = self.clone();
+        graph.connect_activate(move |_, _| this.graph());
+        self.window.add_action(&graph);
         let preferences = gio::SimpleAction::new("preferences", None);
         let this = self.clone();
         preferences.connect_activate(move |_, _| this.preferences());

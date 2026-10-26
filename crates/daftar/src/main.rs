@@ -2,6 +2,7 @@
 //! repository. The sister of Daftar for macOS and Daftar for Android.
 
 mod editor;
+mod graph;
 mod palette;
 mod preferences;
 mod reader;
@@ -38,6 +39,7 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.today", &["<Ctrl>1"]);
     app.set_accels_for_action("win.commands", &["<Ctrl><Shift>p"]);
     app.set_accels_for_action("win.preferences", &["<Ctrl>comma"]);
+    app.set_accels_for_action("win.graph", &["<Ctrl><Alt>g"]);
     app.set_accels_for_action("win.edit", &["<Ctrl>e"]);
     app.set_accels_for_action("win.save", &["<Ctrl>s"]);
     app.set_accels_for_action("win.sync", &["<Ctrl><Shift>s"]);
