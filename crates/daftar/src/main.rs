@@ -2,7 +2,9 @@
 //! repository. The sister of Daftar for macOS and Daftar for Android.
 
 mod editor;
+mod files;
 mod palette;
+mod places;
 mod reader;
 mod settings;
 mod sidebar;
@@ -35,6 +37,11 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.search", &["<Ctrl><Shift>f"]);
     app.set_accels_for_action("win.open-vault", &["<Ctrl><Shift>o"]);
     app.set_accels_for_action("win.today", &["<Ctrl>1"]);
+    // The file commands act on the note on screen: an empty target.
+    app.set_accels_for_action("win.new-note::", &["<Ctrl>n"]);
+    app.set_accels_for_action("win.new-folder::", &["<Ctrl><Shift>n"]);
+    app.set_accels_for_action("win.rename::", &["F2", "<Ctrl>r"]);
+    app.set_accels_for_action("win.bookmark::", &["<Ctrl>d"]);
     app.set_accels_for_action("win.commands", &["<Ctrl><Shift>p"]);
     app.set_accels_for_action("win.edit", &["<Ctrl>e"]);
     app.set_accels_for_action("win.save", &["<Ctrl>s"]);

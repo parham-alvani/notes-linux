@@ -5,9 +5,12 @@ use std::cell::{Ref, RefCell};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
-use daftar_core::{Day, Failure, SearchIndex, Vault, VaultEdits, VaultIndex};
+use daftar_core::{Bookmarks, Day, Failure, Iconic, SearchIndex, Vault, VaultEdits, VaultIndex};
+
+use crate::places::PlaceBook;
 
 pub struct VaultStore {
     pub root: PathBuf,
@@ -15,11 +18,26 @@ pub struct VaultStore {
     pub search: Arc<SearchIndex>,
     /// Told after the app wrote a note, for the sync that follows an edit.
     wrote: RefCell<Option<Box<dyn Fn()>>>,
+    /// Obsidian's `.obsidian/bookmarks.json`.
+    pub bookmarks: RefCell<Bookmarks>,
+    /// The Iconic plugin's icons and colors.
+    pub iconic: RefCell<Iconic>,
+    /// Where each note was being read.
+    pub places: Rc<PlaceBook>,
 }
 
 impl VaultStore {
     pub fn new(root: PathBuf, index: VaultIndex, search: Arc<SearchIndex>) -> VaultStore {
-        VaultStore { root, index: RefCell::new(index), search, wrote: RefCell::new(None) }
+        let (bookmarks, iconic, places) = (Bookmarks::load(&root), Iconic::load(&root), PlaceBook::load(&root));
+        VaultStore {
+            root,
+            index: RefCell::new(index),
+            search,
+            wrote: RefCell::new(None),
+            bookmarks: RefCell::new(bookmarks),
+            iconic: RefCell::new(iconic),
+            places,
+        }
     }
 
     pub fn connect_wrote(&self, wrote: impl Fn() + 'static) {
@@ -28,6 +46,13 @@ impl VaultStore {
 
     pub fn index(&self) -> Ref<'_, VaultIndex> {
         self.index.borrow()
+    }
+
+    /// Tells the sync that the app wrote to the vault.
+    pub fn wrote(&self) {
+        if let Some(wrote) = self.wrote.borrow().as_ref() {
+            wrote();
+        }
     }
 
     /// The text of the file at [path], when it is in the vault.
@@ -43,9 +68,7 @@ impl VaultStore {
         }
         VaultEdits::apply(path, &self.root, |text| VaultEdits::toggle_task(text, line, status, Day::today()))?;
         self.refresh(&[path.to_string()]);
-        if let Some(wrote) = self.wrote.borrow().as_ref() {
-            wrote();
-        }
+        self.wrote();
         Ok(())
     }
 

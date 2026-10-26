@@ -21,6 +21,8 @@ use crate::sync::{GitSync, Run};
 use crate::today::Today;
 use crate::watcher::FileWatcher;
 
+mod file_actions;
+
 /// How many notes the quick switcher remembers as opened lately.
 const RECENT: usize = 20;
 
@@ -288,7 +290,8 @@ impl Window {
                 )
             };
             this.git.attach(folder.clone(), pull, interval);
-            *this.store.borrow_mut() = Some(store);
+            *this.store.borrow_mut() = Some(store.clone());
+            this.after_load(&store);
             let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if let Some(page) = this.split.sidebar() {
                 page.set_title(&name);
@@ -412,6 +415,8 @@ impl Window {
         self.title.set_subtitle(folder);
         self.stack.set_visible_child_name("reader");
         self.split.set_show_content(true);
+        // A note opens where it was being read, unless a link names a place in it.
+        let line = line.or_else(|| anchor.is_none().then(|| self.place(path)).flatten());
         self.reader.show(Request { path: path.to_string(), heading: anchor.map(String::from), line }, false);
         self.update_history();
     }
@@ -464,10 +469,18 @@ impl Window {
         };
         store.refresh(&changed.iter().cloned().collect::<Vec<_>>());
         self.git.refresh();
-        let index = store.index();
-        if index.files != files || index.empty_folders != folders {
-            self.sidebar.set_tree(index.tree());
+        let moved = {
+            let index = store.index();
+            let moved = index.files != files || index.empty_folders != folders;
+            if moved {
+                self.sidebar.set_tree(index.tree());
+            }
+            moved
+        };
+        if moved {
+            self.refresh_marks();
         }
+        let index = store.index();
         if self.stack.visible_child_name().as_deref() == Some("today") {
             drop(index);
             self.show_today();
@@ -529,6 +542,7 @@ impl Window {
     }
 
     fn add_actions(&self) {
+        self.add_file_actions();
         let quick_open = gio::SimpleAction::new("quick-open", None);
         let this = self.clone();
         quick_open.connect_activate(move |_, _| this.palette(Mode::Files));

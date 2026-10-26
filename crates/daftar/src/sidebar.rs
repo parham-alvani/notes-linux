@@ -1,17 +1,31 @@
 //! The folder tree, as Obsidian's file explorer shows it: folders first, a
-//! folder note opens with its folder.
+//! folder note opens with its folder. Above it, the vault's bookmarks; on
+//! each row, the Iconic plugin's icon and color, and a menu of the file
+//! commands on a right click.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 
-use daftar_core::{TreeNode, Vault};
+use daftar_core::{BookmarkEntry, Icon, Iconic, TreeNode, Vault};
 
 pub struct Sidebar {
-    pub widget: gtk::ScrolledWindow,
+    pub widget: gtk::Box,
     root: gio::ListStore,
     model: gtk::TreeListModel,
+    marks: gtk::ListBox,
+    marks_section: gtk::Box,
+    shared: Rc<Shared>,
+}
+
+/// What the rows read when they are drawn.
+#[derive(Default)]
+struct Shared {
+    iconic: RefCell<Iconic>,
+    bookmarked: RefCell<HashSet<String>>,
 }
 
 fn node_of(item: &glib::Object) -> Option<TreeNode> {
@@ -36,9 +50,37 @@ fn icon(node: &TreeNode) -> &'static str {
     }
 }
 
+/// Draws [icon] on a row's image and emoji label, or the default [fallback].
+fn draw_icon(image: &gtk::Image, emoji: &gtk::Label, icon: Option<&Icon>, fallback: &str) {
+    for class in image.css_classes() {
+        if class.starts_with("iconic-") {
+            image.remove_css_class(&class);
+        }
+    }
+    match icon.and_then(|i| i.name.as_deref()).filter(|_| icon.is_some_and(Icon::is_emoji)) {
+        Some(emoji_name) => {
+            emoji.set_label(emoji_name);
+            emoji.set_visible(true);
+            image.set_visible(false);
+        }
+        None => {
+            emoji.set_visible(false);
+            image.set_visible(true);
+            let name = icon.and_then(|i| i.name.as_deref()).and_then(lucide).unwrap_or(fallback);
+            image.set_icon_name(Some(name));
+            if let Some(color) = icon.and_then(|i| i.color.as_deref()).filter(|c| Iconic::COLORS.contains(c)) {
+                image.add_css_class(&format!("iconic-{color}"));
+            }
+        }
+    }
+}
+
 impl Sidebar {
     /// [on_open] gets the path of a note, a base or another file to open.
     pub fn new(on_open: impl Fn(&str) + 'static) -> Sidebar {
+        install_colors();
+        let on_open: Rc<dyn Fn(&str)> = Rc::new(on_open);
+        let shared = Rc::new(Shared::default());
         let root = gio::ListStore::new::<glib::BoxedAnyObject>();
         let model = gtk::TreeListModel::new(root.clone(), false, false, |item| {
             let children = node_of(item)?.children?;
@@ -49,48 +91,101 @@ impl Sidebar {
         selection.set_can_unselect(true);
 
         let factory = gtk::SignalListItemFactory::new();
-        factory.connect_setup(|_, item| {
-            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            row.append(&gtk::Image::new());
-            row.append(&gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build());
-            let expander = gtk::TreeExpander::new();
-            expander.set_child(Some(&row));
-            item.set_child(Some(&expander));
-        });
-        factory.connect_bind(|_, item| {
-            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-            let Some(expander) = item.child().and_downcast::<gtk::TreeExpander>() else { return };
-            let Some(row) = item.item().and_downcast::<gtk::TreeListRow>() else { return };
-            expander.set_list_row(Some(&row));
-            let Some(node) = row.item().as_ref().and_then(node_of) else { return };
-            let Some(content) = expander.child().and_downcast::<gtk::Box>() else { return };
-            if let Some(image) = content.first_child().and_downcast::<gtk::Image>() {
-                image.set_icon_name(Some(icon(&node)));
-            }
-            if let Some(label) = content.last_child().and_downcast::<gtk::Label>() {
+        {
+            let shared = shared.clone();
+            factory.connect_setup(move |_, item| {
+                let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                row.append(&gtk::Image::new());
+                row.append(&gtk::Label::builder().visible(false).width_chars(2).build());
+                row.append(&gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build());
+                let expander = gtk::TreeExpander::new();
+                expander.set_child(Some(&row));
+                item.set_child(Some(&expander));
+                // A right click: the file commands for this row.
+                let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
+                let (weak, shared) = (item.downgrade(), shared.clone());
+                click.connect_pressed(move |gesture, _, x, y| {
+                    let Some(item) = weak.upgrade() else { return };
+                    let Some(node) = item.item().and_downcast::<gtk::TreeListRow>().and_then(|row| row.item()).as_ref().and_then(node_of)
+                    else {
+                        return;
+                    };
+                    let Some(widget) = gesture.widget() else { return };
+                    let bookmarked = shared.bookmarked.borrow().contains(&node.path);
+                    popup(&widget, &menu(&node.path, node.is_folder(), bookmarked), x, y);
+                });
+                expander.add_controller(click);
+            });
+        }
+        {
+            let shared = shared.clone();
+            factory.connect_bind(move |_, item| {
+                let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+                let Some(expander) = item.child().and_downcast::<gtk::TreeExpander>() else { return };
+                let Some(row) = item.item().and_downcast::<gtk::TreeListRow>() else { return };
+                expander.set_list_row(Some(&row));
+                let Some(node) = row.item().as_ref().and_then(node_of) else { return };
+                let Some(content) = expander.child().and_downcast::<gtk::Box>() else { return };
+                let (Some(image), Some(emoji), Some(label)) = (
+                    content.first_child().and_downcast::<gtk::Image>(),
+                    content.first_child().and_then(|w| w.next_sibling()).and_downcast::<gtk::Label>(),
+                    content.last_child().and_downcast::<gtk::Label>(),
+                ) else {
+                    return;
+                };
+                let iconic = shared.iconic.borrow();
+                draw_icon(&image, &emoji, iconic.icon(&node.path, node.is_folder()), icon(&node));
                 label.set_text(&node.name);
-            }
-        });
+            });
+        }
 
         let list = gtk::ListView::new(Some(selection), Some(factory));
         list.set_single_click_activate(true);
         list.add_css_class("navigation-sidebar");
-        list.connect_activate(move |list, position| {
-            let Some(row) = list.model().and_then(|m| m.item(position)).and_downcast::<gtk::TreeListRow>() else { return };
-            let Some(node) = row.item().as_ref().and_then(node_of) else { return };
-            if node.is_folder() {
-                row.set_expanded(!row.is_expanded());
-                if let Some(note) = &node.folder_note {
-                    on_open(note);
+        {
+            let on_open = on_open.clone();
+            list.connect_activate(move |list, position| {
+                let Some(row) = list.model().and_then(|m| m.item(position)).and_downcast::<gtk::TreeListRow>() else { return };
+                let Some(node) = row.item().as_ref().and_then(node_of) else { return };
+                if node.is_folder() {
+                    row.set_expanded(!row.is_expanded());
+                    if let Some(note) = &node.folder_note {
+                        on_open(note);
+                    }
+                } else {
+                    on_open(&node.path);
                 }
-            } else {
-                on_open(&node.path);
-            }
-        });
+            });
+        }
+        let tree = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&list).build();
 
-        let widget = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&list).build();
-        Sidebar { widget, root, model }
+        // The bookmarks, as the Mac and Obsidian show them: above the tree.
+        let marks = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["navigation-sidebar"]).build();
+        marks.connect_row_activated(move |_, row| on_open(row.widget_name().trim_start_matches("b:")));
+        let marks_section = gtk::Box::builder().orientation(gtk::Orientation::Vertical).visible(false).build();
+        marks_section.append(
+            &gtk::Label::builder()
+                .label("Bookmarks")
+                .xalign(0.0)
+                .margin_start(14)
+                .margin_top(6)
+                .css_classes(["caption-heading", "dim-label"])
+                .build(),
+        );
+        let marks_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(220)
+            .child(&marks)
+            .build();
+        marks_section.append(&marks_scroll);
+        marks_section.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let widget = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
+        widget.append(&marks_section);
+        widget.append(&tree);
+        Sidebar { widget, root, model, marks, marks_section, shared }
     }
 
     /// Shows [tree], with the folders that were open still open.
@@ -113,5 +208,194 @@ impl Sidebar {
             }
             at += 1;
         }
+    }
+
+    /// The Iconic icons, for the rows drawn from now on; [set_tree] redraws.
+    pub fn set_iconic(&self, iconic: Iconic) {
+        *self.shared.iconic.borrow_mut() = iconic;
+    }
+
+    /// The bookmarks that still name something: files in [files], and folders.
+    pub fn set_bookmarks(&self, entries: &[BookmarkEntry], files: &std::collections::BTreeSet<String>) {
+        self.marks.remove_all();
+        let shown: Vec<&BookmarkEntry> = entries.iter().filter(|e| e.folder || files.contains(&e.path)).collect();
+        *self.shared.bookmarked.borrow_mut() = entries.iter().filter(|e| !e.folder).map(|e| e.path.clone()).collect();
+        let iconic = self.shared.iconic.borrow();
+        for entry in &shown {
+            // A bookmarked folder opens its folder note.
+            let open = if entry.folder {
+                let name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+                format!("{}/{name}.md", entry.path)
+            } else {
+                entry.path.clone()
+            };
+            let title = entry.title.clone().unwrap_or_else(|| Vault::title(&entry.path));
+            let row = gtk::Box::builder().spacing(8).build();
+            let (image, emoji) = (gtk::Image::new(), gtk::Label::builder().visible(false).width_chars(2).build());
+            let fallback = if entry.folder { "folder-symbolic" } else { "user-bookmarks-symbolic" };
+            draw_icon(&image, &emoji, iconic.icon(&entry.path, entry.folder), fallback);
+            row.append(&image);
+            row.append(&emoji);
+            row.append(&gtk::Label::builder().label(&title).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build());
+            let item = gtk::ListBoxRow::builder().child(&row).tooltip_text(&entry.path).build();
+            item.set_widget_name(&format!("b:{open}"));
+            let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
+            let path = entry.path.clone();
+            click.connect_pressed(move |gesture, _, x, y| {
+                let Some(widget) = gesture.widget() else { return };
+                let menu = gio::Menu::new();
+                menu.append_item(&item_for("Remove Bookmark", "win.bookmark", &path));
+                popup(&widget, &menu, x, y);
+            });
+            item.add_controller(click);
+            self.marks.append(&item);
+        }
+        self.marks_section.set_visible(!shown.is_empty());
+    }
+}
+
+fn item_for(label: &str, action: &str, target: &str) -> gio::MenuItem {
+    let item = gio::MenuItem::new(Some(label), None);
+    item.set_action_and_target_value(Some(action), Some(&target.to_variant()));
+    item
+}
+
+/// The file commands for a row, as the Mac's context menu has them.
+fn menu(path: &str, folder: bool, bookmarked: bool) -> gio::Menu {
+    let menu = gio::Menu::new();
+    if folder {
+        let create = gio::Menu::new();
+        create.append_item(&item_for("New Note", "win.new-note", path));
+        create.append_item(&item_for("New Folder…", "win.new-folder", path));
+        menu.append_section(None, &create);
+    }
+    let change = gio::Menu::new();
+    change.append_item(&item_for("Rename…", "win.rename", path));
+    change.append_item(&item_for("Move to…", "win.move", path));
+    if !folder {
+        change.append_item(&item_for(if bookmarked { "Remove Bookmark" } else { "Bookmark" }, "win.bookmark", path));
+    }
+    menu.append_section(None, &change);
+    let gone = gio::Menu::new();
+    gone.append_item(&item_for("Move to Trash…", "win.trash", path));
+    menu.append_section(None, &gone);
+    menu
+}
+
+fn popup(widget: &gtk::Widget, menu: &gio::Menu, x: f64, y: f64) {
+    let popover = gtk::PopoverMenu::from_model(Some(menu));
+    popover.set_parent(widget);
+    popover.set_has_arrow(false);
+    popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+    popover.connect_closed(|popover| {
+        // After the item's action: unparenting at once would drop it.
+        let popover = popover.clone();
+        glib::idle_add_local_once(move || popover.unparent());
+    });
+    popover.popup();
+}
+
+/// Iconic's color names in naz (dark) and Daylight (light), as the phone's
+/// `IconColors.kt` and the Mac draw them.
+const ICONIC_COLORS: [(&str, &str, &str); 9] = [
+    ("red", "#ff5070", "#c01030"),
+    ("orange", "#ffb040", "#a85200"),
+    ("yellow", "#ffd850", "#8a6a00"),
+    ("green", "#20ffa0", "#0a7a48"),
+    ("cyan", "#80e5ff", "#00707a"),
+    ("blue", "#40d0ff", "#0070a0"),
+    ("purple", "#f0a0f0", "#8040a0"),
+    ("pink", "#ff69b4", "#b02a70"),
+    ("gray", "#a8a8a0", "#6a6a62"),
+];
+
+fn iconic_css(dark: bool) -> String {
+    ICONIC_COLORS
+        .iter()
+        .map(|(name, naz, daylight)| format!(".iconic-{name} {{ color: {}; }}\n", if dark { naz } else { daylight }))
+        .collect()
+}
+
+/// The colors, for the scheme now and whenever it changes.
+fn install_colors() {
+    let Some(display) = gdk::Display::default() else { return };
+    let provider = gtk::CssProvider::new();
+    let manager = adw::StyleManager::default();
+    provider.load_from_string(&iconic_css(manager.is_dark()));
+    {
+        let provider = provider.clone();
+        manager.connect_dark_notify(move |manager| provider.load_from_string(&iconic_css(manager.is_dark())));
+    }
+    gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
+/// A Lucide name, as Iconic keeps it, to the nearest icon GTK's theme has;
+/// `None` draws the default. The theme has far fewer icons than Lucide, so
+/// some are only near.
+pub fn lucide(name: &str) -> Option<&'static str> {
+    Some(match name.strip_prefix("lucide-")? {
+        "building" | "building-2" | "landmark" | "school" | "hospital" => "x-office-address-book-symbolic",
+        "house" | "house-plus" | "home" => "user-home-symbolic",
+        "laptop" | "computer" | "monitor" => "computer-symbolic",
+        "tv" => "tv-symbolic",
+        "smartphone" | "phone" => "phone-symbolic",
+        "brain" | "flask-conical" | "sigma" => "applications-science-symbolic",
+        "wrench" | "hammer" | "settings" => "applications-engineering-symbolic",
+        "utensils" | "coffee" | "cake" | "apple" => "emoji-food-symbolic",
+        "train" | "truck" | "car" | "plane" | "ship" | "bike" | "route" | "map" | "baggage-claim" => "emoji-travel-symbolic",
+        "paw-print" | "leaf" | "sprout" | "mountain" | "tent" | "waves" => "emoji-nature-symbolic",
+        "lock-keyhole" | "lock" | "key" => "changes-prevent-symbolic",
+        "shield-check" | "shield" => "security-high-symbolic",
+        "sun" => "weather-clear-symbolic",
+        "moon" => "weather-clear-night-symbolic",
+        "cloud" | "umbrella" => "weather-overcast-symbolic",
+        "star" | "sparkles" | "award" | "trophy" => "starred-symbolic",
+        "heart" => "emote-love-symbolic",
+        "smile-plus" | "drama" => "face-smile-symbolic",
+        "skull" => "dialog-warning-symbolic",
+        "square-check-big" | "check-square" | "list-todo" | "check" => "checkbox-checked-symbolic",
+        "calendar" | "clock" => "x-office-calendar-symbolic",
+        "chart-no-axes-column-increasing" | "trending-up" | "calculator" => "x-office-spreadsheet-symbolic",
+        "piggy-bank" | "dollar-sign" | "banknote" | "euro" | "receipt-euro" | "coins" | "wallet" | "credit-card" | "shopping-cart" => {
+            "emoji-objects-symbolic"
+        }
+        "book" | "book-open" | "book-open-text" | "notebook" | "newspaper" | "graduation-cap" => "accessories-dictionary-symbolic",
+        "file" | "file-text" => "text-x-generic-symbolic",
+        "folder" | "folder-open" | "archive" | "inbox" => "folder-symbolic",
+        "mail" | "message-circle" => "mail-unread-symbolic",
+        "globe" | "languages" | "compass" => "web-browser-symbolic",
+        "map-pin" | "pin" => "find-location-symbolic",
+        "music" | "headphones" | "mic" => "audio-x-generic-symbolic",
+        "image" | "camera" | "film" | "clapperboard" | "palette" => "image-x-generic-symbolic",
+        "code" | "terminal" | "git-branch" | "bug" | "cpu" | "bot" => "utilities-terminal-symbolic",
+        "database" | "server" | "network" => "network-server-symbolic",
+        "user" | "id-card" | "baby" => "avatar-default-symbolic",
+        "users" => "system-users-symbolic",
+        "box" | "package" | "gift" => "package-x-generic-symbolic",
+        "gamepad-2" | "dumbbell" | "biceps-flexed" | "swords" | "target" | "flame" | "zap" | "rocket" => "emoji-activities-symbolic",
+        "link" | "paperclip" => "insert-link-symbolic",
+        "list" => "view-list-bullet-symbolic",
+        "bookmark" => "user-bookmarks-symbolic",
+        "bell" | "megaphone" | "flag" => "emblem-important-symbolic",
+        "search" | "glasses" => "edit-find-symbolic",
+        "trash-2" => "user-trash-symbolic",
+        "pen" | "clipboard" => "document-edit-symbolic",
+        "lightbulb" | "puzzle" | "pill" | "stethoscope" | "briefcase-medical" | "briefcase" | "scale" | "shirt" | "wifi" => {
+            "emoji-objects-symbolic"
+        }
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lucide_names_find_a_theme_icon_or_none() {
+        assert_eq!(lucide("lucide-house"), Some("user-home-symbolic"));
+        assert_eq!(lucide("lucide-building"), Some("x-office-address-book-symbolic"));
+        assert_eq!(lucide("lucide-no-such-icon"), None);
+        assert_eq!(lucide("😋"), None);
     }
 }

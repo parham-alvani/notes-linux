@@ -45,6 +45,7 @@ pub struct Request {
 
 type OpenHandler = Box<dyn Fn(&str, Option<&str>)>;
 type NoticeHandler = Box<dyn Fn(&str)>;
+type CursorHandler = Box<dyn Fn(&str, usize)>;
 
 struct State {
     ready: bool,
@@ -52,6 +53,7 @@ struct State {
     store: Option<Rc<VaultStore>>,
     on_open: Option<OpenHandler>,
     on_notice: Option<NoticeHandler>,
+    on_cursor: Option<CursorHandler>,
 }
 
 #[derive(Clone)]
@@ -75,7 +77,7 @@ impl Reader {
         let reader = Reader {
             view,
             settings,
-            state: Rc::new(RefCell::new(State { ready: false, shown: None, store: None, on_open: None, on_notice: None })),
+            state: Rc::new(RefCell::new(State { ready: false, shown: None, store: None, on_open: None, on_notice: None, on_cursor: None })),
         };
         reader.connect_messages();
         reader.connect_policy();
@@ -94,6 +96,11 @@ impl Reader {
 
     pub fn connect_notice(&self, handler: impl Fn(&str) + 'static) {
         self.state.borrow_mut().on_notice = Some(Box::new(handler));
+    }
+
+    /// The reading cursor moved: the note and its source line.
+    pub fn connect_cursor(&self, handler: impl Fn(&str, usize) + 'static) {
+        self.state.borrow_mut().on_cursor = Some(Box::new(handler));
     }
 
     pub fn shown(&self) -> Option<Request> {
@@ -207,7 +214,11 @@ impl Reader {
         match body.get("kind").and_then(Value::as_str).unwrap_or("") {
             "ready" => {
                 self.state.borrow_mut().ready = true;
-                self.reload();
+                // The first note, asked for before the page was there: at
+                // its heading or its line, not where a page never scrolled.
+                if let Some(request) = self.shown() {
+                    self.show(request, false);
+                }
             }
             "toggleTask" => {
                 let (Some(shown), Some(line), Some(status)) =
@@ -243,6 +254,12 @@ impl Reader {
                         }
                     }
                     None => self.notice(&format!("“{target}” is not in the vault yet.")),
+                }
+            }
+            "cursor" => {
+                let (Some(shown), Some(line)) = (self.shown(), body.get("line").and_then(Value::as_u64)) else { return };
+                if let Some(handler) = &self.state.borrow().on_cursor {
+                    handler(&shown.path, line as usize);
                 }
             }
             "copy" => self.view.clipboard().set_text(&text("text")),
