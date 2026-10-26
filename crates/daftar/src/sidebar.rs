@@ -339,7 +339,8 @@ fn hex_color(color: &str) -> Option<String> {
 }
 
 fn iconic_css(dark: bool, hexes: &BTreeSet<String>) -> String {
-    let named = ICONIC_COLORS.iter().map(|(name, naz, daylight)| format!(".iconic-{name} {{ color: {}; }}\n", if dark { naz } else { daylight }));
+    let named =
+        ICONIC_COLORS.iter().map(|(name, naz, daylight)| format!(".iconic-{name} {{ color: {}; }}\n", if dark { naz } else { daylight }));
     let own = hexes.iter().map(|hex| format!(".iconic-hex-{hex} {{ color: #{hex}; }}\n"));
     named.chain(own).collect()
 }
