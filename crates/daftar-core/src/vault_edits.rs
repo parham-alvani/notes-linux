@@ -13,6 +13,8 @@ use crate::task_line::{TaskFields, TaskLine};
 pub enum Failure {
     /// The line is not the task that was clicked: the file changed under the view.
     TaskMoved,
+    /// The text an edit was about is not where it was found any more.
+    TextMoved,
     Unreadable,
     Unwritable(String),
 }
@@ -21,6 +23,7 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Failure::TaskMoved => write!(f, "the task is not on that line any more"),
+            Failure::TextMoved => write!(f, "the text is not on that line any more"),
             Failure::Unreadable => write!(f, "the note could not be read"),
             Failure::Unwritable(why) => write!(f, "the note could not be written: {why}"),
         }
