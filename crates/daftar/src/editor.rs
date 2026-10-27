@@ -255,6 +255,7 @@ impl Editor {
         editor.connect_keys();
         editor.connect_clicks();
         editor.connect_drop();
+        editor.styler.attach(editor.view.upcast_ref());
         editor.connect_pictures();
         let this = Rc::downgrade(&editor);
         editor.glide.connect_wheel_stopped(move |top| {

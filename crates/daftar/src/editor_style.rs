@@ -148,8 +148,14 @@ pub struct Styler {
     code_font: RefCell<String>,
     /// The block lines as they were last styled.
     structure: RefCell<Vec<String>>,
-    /// The rest of a long note, styled a part at a time.
+    /// The styling of what came on screen, soon.
     pending: RefCell<Option<glib::SourceId>>,
+    /// The characters not styled yet, in order: a long note is styled where
+    /// it is seen, as it scrolls, never all at once. Every part styled is
+    /// laid out by GTK again, so the parts never seen are spared that.
+    unstyled: RefCell<Vec<Range<usize>>>,
+    /// The view that shows the buffer, for what is on screen.
+    view: RefCell<Option<glib::WeakRef<gtk::TextView>>>,
     /// Live preview (`editor.live_preview`): away from the cursor's lines
     /// the marks hide, so the note reads as it will look.
     live: std::cell::Cell<bool>,
@@ -165,7 +171,7 @@ pub struct Styler {
 /// Lines a paragraph is taken to reach up or down, at most.
 const PARAGRAPH_LINES: usize = 200;
 
-/// Characters styled at once; the rest of a long note follows between frames.
+/// Characters styled at once, and the margin styled above and below the screen.
 const PART: usize = 12_000;
 
 impl Styler {
@@ -178,6 +184,8 @@ impl Styler {
             code_font: RefCell::new("monospace".into()),
             structure: RefCell::new(Vec::new()),
             pending: RefCell::new(None),
+            unstyled: RefCell::new(Vec::new()),
+            view: RefCell::new(None),
             live: std::cell::Cell::new(false),
             revealed: std::cell::Cell::new((0, 0)),
             revealed_lines: std::cell::Cell::new(None),
@@ -185,6 +193,41 @@ impl Styler {
         });
         styler.line.set_paragraph_background_rgba(Some(&rgba("orange", 0.07, manager.is_dark())));
         buffer.tag_table().add(&styler.line);
+        // What is not styled yet moves with the text.
+        let this = Rc::downgrade(&styler);
+        buffer.connect_insert_text(move |_, at, text| {
+            if let Some(this) = this.upgrade() {
+                let (at, count) = (at.offset() as usize, text.chars().count());
+                for range in this.unstyled.borrow_mut().iter_mut() {
+                    if range.start > at {
+                        range.start += count;
+                    }
+                    if range.end > at {
+                        range.end += count;
+                    }
+                }
+            }
+        });
+        let this = Rc::downgrade(&styler);
+        buffer.connect_delete_range(move |_, from, to| {
+            if let Some(this) = this.upgrade() {
+                let (a, b) = (from.offset().min(to.offset()) as usize, from.offset().max(to.offset()) as usize);
+                let moved = |x: usize| {
+                    if x <= a {
+                        x
+                    } else if x >= b {
+                        x - (b - a)
+                    } else {
+                        a
+                    }
+                };
+                let mut unstyled = this.unstyled.borrow_mut();
+                for range in unstyled.iter_mut() {
+                    *range = moved(range.start)..moved(range.end);
+                }
+                unstyled.retain(|range| !range.is_empty());
+            }
+        });
         let this = Rc::downgrade(&styler);
         manager.connect_dark_notify(move |manager| {
             if let Some(this) = this.upgrade() {
@@ -224,40 +267,80 @@ impl Styler {
         tag
     }
 
-    /// Styles the whole note: the first part now, the rest between frames,
-    /// each part from where the one before left the block state.
+    /// The view the buffer is shown in: what scrolls on screen is styled.
+    pub fn attach(self: &Rc<Self>, view: &gtk::TextView) {
+        *self.view.borrow_mut() = Some(view.downgrade());
+        if let Some(v) = view.vadjustment() {
+            let this = Rc::downgrade(self);
+            v.connect_value_changed(move |_| {
+                if let Some(this) = this.upgrade() {
+                    this.style_seen_soon();
+                }
+            });
+        }
+    }
+
+    /// Styles the whole note: the first part now, the rest as it is seen.
     pub fn restyle_all(self: &Rc<Self>) {
         self.cancel();
         *self.structure.borrow_mut() = structure(&self.text());
         let total = self.buffer.char_count().max(0) as usize;
         let first = self.line_end_after(PART.min(total));
-        let state = self.style(0..first, Some(BlockState::Normal));
-        if first >= total {
+        self.style(0..first, Some(BlockState::Normal));
+        let mut unstyled = Vec::new();
+        if first < total {
+            unstyled.push(first..total);
+        }
+        *self.unstyled.borrow_mut() = unstyled;
+        self.style_seen_soon();
+    }
+
+    /// Styles what is on screen, and a part above and below it, once the
+    /// view has laid itself out and scrolled.
+    fn style_seen_soon(self: &Rc<Self>) {
+        if self.unstyled.borrow().is_empty() || self.pending.borrow().is_some() {
             return;
         }
         let this = Rc::downgrade(self);
-        let done = std::cell::Cell::new(first);
-        let carried = RefCell::new(state);
-        let id = glib::idle_add_local(move || {
-            let Some(this) = this.upgrade() else { return glib::ControlFlow::Break };
-            let total = this.buffer.char_count().max(0) as usize;
-            let start = done.get();
-            if start >= total {
+        // A timeout, not an idle: GTK lays a long note out in idles above
+        // any idle of ours, for seconds.
+        let id = glib::timeout_add_local_once(std::time::Duration::from_millis(40), move || {
+            if let Some(this) = this.upgrade() {
                 this.pending.take();
-                return glib::ControlFlow::Break;
-            }
-            let end = this.line_end_after((start + PART).min(total));
-            let next = this.style(start..end, Some(carried.borrow().clone()));
-            *carried.borrow_mut() = next;
-            done.set(end);
-            if end >= total {
-                this.pending.take();
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
+                this.style_seen();
             }
         });
         *self.pending.borrow_mut() = Some(id);
+    }
+
+    fn style_seen(&self) {
+        let Some(view) = self.view.borrow().as_ref().and_then(|v| v.upgrade()) else { return };
+        let rect = view.visible_rect();
+        let offset = |y: i32| view.line_at_y(y).0.offset().max(0) as usize;
+        let total = self.buffer.char_count().max(0) as usize;
+        let (low, high) = (offset(rect.y()).saturating_sub(PART), (offset(rect.y() + rect.height()) + PART).min(total));
+        let wanted: Vec<Range<usize>> =
+            self.unstyled.borrow().iter().filter(|r| r.start < high && r.end > low).map(|r| r.start.max(low)..r.end.min(high)).collect();
+        if wanted.is_empty() {
+            return;
+        }
+        let text = self.text();
+        for range in wanted {
+            // Whole lines, from the block state the note leaves there.
+            let mut start = self.buffer.iter_at_offset(range.start as i32);
+            start.set_line_offset(0);
+            let (mut at, end) = (start.offset() as usize, self.line_end_after(range.end));
+            let mut state = MarkdownHighlighter::block_state(at, &text);
+            while at < end {
+                let next = self.line_end_after((at + PART).min(end));
+                state = self.style(at..next, Some(state));
+                at = next;
+            }
+            let (from, to) = (start.offset() as usize, end);
+            let mut unstyled = self.unstyled.borrow_mut();
+            *unstyled =
+                unstyled.iter().flat_map(|r| [r.start..r.end.min(from), r.start.max(to)..r.end]).filter(|r| !r.is_empty()).collect();
+        }
     }
 
     /// After an edit in characters [range]: its paragraph again, or the rest
@@ -269,9 +352,16 @@ impl Styler {
         let (start, end) = self.paragraph(range.start.min(total), range.end.min(total));
         let state = MarkdownHighlighter::block_state(start, &text);
         if *self.structure.borrow() != now {
+            // A fence or the front matter changed: everything after it is
+            // styled again, what is seen now and the rest as it is seen.
             *self.structure.borrow_mut() = now;
-            self.cancel();
-            self.style(start..total, Some(state));
+            self.style(start..end, Some(state));
+            if end < total {
+                let mut unstyled = self.unstyled.borrow_mut();
+                *unstyled = unstyled.iter().map(|r| r.start..r.end.min(start)).filter(|r| !r.is_empty()).collect();
+                unstyled.push(end..total);
+            }
+            self.style_seen_soon();
         } else {
             self.style(start..end, Some(state));
         }
