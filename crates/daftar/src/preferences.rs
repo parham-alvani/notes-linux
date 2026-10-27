@@ -82,6 +82,20 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
         looks.add(&row);
     }
+    let persian = adw::SwitchRow::builder()
+        .title("Persian calendar")
+        .subtitle("The Solar Hijri date beside the Gregorian one, and Jalali days typed in a task's dates")
+        .active(settings.borrow().file.bool("appearance.persian_calendar").unwrap_or(false))
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        persian.connect_active_notify(move |row| {
+            write("appearance.persian_calendar", Value::Bool(row.is_active()));
+            (hooks.home)();
+            (hooks.reader)();
+        });
+    }
+    looks.add(&persian);
     page.add(&looks);
     page.add(&home_group(&settings, root, write.clone(), hooks.clone()));
     page.add(&editor_group(&settings, write.clone(), hooks.clone()));

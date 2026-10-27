@@ -306,6 +306,8 @@ fn row(title: &str, controls: &impl IsA<gtk::Widget>) -> gtk::Box {
 /// calendar, and how far it is from today. [changed] gets every new value.
 fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Option<String>) + 'static) -> gtk::Box {
     let today = Day::today();
+    // A day typed in the Solar Hijri calendar (`1405-08-05`) is its Gregorian day.
+    let parse = |text: &str| Day::parse(text).or_else(|| daftar_core::jalali::Jalali::parse(text));
     let row = gtk::Box::builder().spacing(8).css_classes([tint]).build();
     let switch = gtk::Switch::builder().active(value.is_some()).valign(gtk::Align::Center).build();
     row.append(&switch);
@@ -313,6 +315,7 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
     let entry = gtk::Entry::builder()
         .text(value.as_deref().unwrap_or(""))
         .placeholder_text("YYYY-MM-DD")
+        .tooltip_text("A day, as 2026-10-27 or in the Persian calendar as 1405-08-05")
         .width_chars(11)
         .sensitive(value.is_some())
         .build();
@@ -327,8 +330,14 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
     let show = {
         let (how_far, entry) = (how_far.clone(), entry.clone());
         move |on: bool| {
-            let day = on.then(|| Day::parse(&entry.text())).flatten();
-            how_far.set_label(&day.map(|d| relative(d, today)).unwrap_or_default());
+            let day = on.then(|| parse(&entry.text())).flatten();
+            how_far.set_label(
+                &day.map(|d| match crate::settings::persian_date(d) {
+                    Some(persian) => format!("{} · {persian}", relative(d, today)),
+                    None => relative(d, today),
+                })
+                .unwrap_or_default(),
+            );
             how_far.set_visible(day.is_some());
             entry.remove_css_class("error");
             if on && day.is_none() {
@@ -345,6 +354,8 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
             // A day half typed is not written; the last whole one stays.
             if Day::parse(&text).is_some() {
                 changed(Some(text));
+            } else if let Some(day) = daftar_core::jalali::Jalali::parse(&text) {
+                changed(Some(day.to_string()));
             }
         });
     }
@@ -355,7 +366,7 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
             entry.set_sensitive(on);
             pick.set_sensitive(on);
             if on {
-                if Day::parse(&entry.text()).is_none() {
+                if parse(&entry.text()).is_none() {
                     entry.set_text(&today.to_string());
                 }
                 changed(Some(entry.text().to_string()));

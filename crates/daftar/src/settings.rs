@@ -4,7 +4,20 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use daftar_core::{ConfigFile, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use daftar_core::jalali::Jalali;
+use daftar_core::{ConfigFile, Day, Value};
+
+/// `appearance.persian_calendar`, for the pages that show a date and do not
+/// hold the settings: the home page, Today, a daily note's subtitle.
+static PERSIAN_CALENDAR: AtomicBool = AtomicBool::new(false);
+
+/// [day] in the Solar Hijri calendar, as Persian says it, when the settings
+/// want it beside the Gregorian date.
+pub fn persian_date(day: Day) -> Option<String> {
+    PERSIAN_CALENDAR.load(Ordering::Relaxed).then(|| Jalali::long(day))
+}
 
 pub struct AppSettings {
     pub path: PathBuf,
@@ -25,12 +38,20 @@ impl AppSettings {
                 ConfigFile::TEMPLATE.to_string()
             }
         };
-        AppSettings { path, file: ConfigFile::new(text) }
+        let settings = AppSettings { path, file: ConfigFile::new(text) };
+        settings.publish();
+        settings
+    }
+
+    /// The settings the pages read without holding them.
+    fn publish(&self) {
+        PERSIAN_CALENDAR.store(self.file.bool("appearance.persian_calendar").unwrap_or(false), Ordering::Relaxed);
     }
 
     /// Writes one value back, keeping the rest of the file as it is.
     pub fn set(&mut self, key: &str, value: Value) -> io::Result<()> {
         self.file.set(key, value);
+        self.publish();
         fs::write(&self.path, self.file.text())
     }
 

@@ -100,6 +100,9 @@ impl Today {
         let head = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(10).build();
         let date = chrono::Local::now().format("%A %-d %B").to_string();
         head.append(&gtk::Label::builder().label(&date).xalign(0.0).css_classes(["daftar-date"]).build());
+        if let Some(persian) = crate::settings::persian_date(today) {
+            head.append(&gtk::Label::builder().label(&persian).xalign(0.0).css_classes(["title-3", "daftar-muted"]).build());
+        }
         let chips = gtk::FlowBox::builder().selection_mode(gtk::SelectionMode::None).max_children_per_line(6).column_spacing(8).build();
         let chip = |text: String, icon: &str, tint: &str| {
             let row = gtk::Box::builder().spacing(6).css_classes(["daftar-chip", tint]).build();

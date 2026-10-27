@@ -22,6 +22,7 @@ pub mod git;
 pub mod home;
 pub mod html_markdown;
 pub mod iconic;
+pub mod jalali;
 pub mod line_diff;
 pub mod link_resolver;
 pub mod markdown_highlighter;

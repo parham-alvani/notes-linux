@@ -621,10 +621,10 @@ impl Window {
             .flatten()
             .map(|text| words_of(&text))
             .unwrap_or(0);
-        if words < 50 {
-            return String::new();
-        }
-        format!("{} words · {} min", grouped(words), (words as f64 / 220.0).round().max(1.0) as usize)
+        // A daily note's day, in the Solar Hijri calendar too when wanted.
+        let persian = daftar_core::Day::parse(&Vault::title(path)).and_then(crate::settings::persian_date);
+        let length = (words >= 50).then(|| format!("{} words · {} min", grouped(words), (words as f64 / 220.0).round().max(1.0) as usize));
+        [persian, length].into_iter().flatten().collect::<Vec<_>>().join(" · ")
     }
 
     fn set_subtitle(&self, tab: &Tab, subtitle: &str) {

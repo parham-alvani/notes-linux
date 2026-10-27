@@ -193,6 +193,9 @@ text_size = 14
 font = "Inter"
 # Code and the editor's markup.
 code_font = "JetBrains Mono"
+# The Solar Hijri date beside the Gregorian one (home, Today, a daily
+# note), and Jalali days typed in a task's dates.
+persian_calendar = false
 
 [editor]
 # Away from the cursor's line, the marks (**, ==, [[ ]], #, a link's
