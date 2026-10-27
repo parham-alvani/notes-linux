@@ -130,7 +130,7 @@ impl Window {
             )
         };
         let inspector = {
-            let (open, notices) = (opener.clone(), toasts.clone());
+            let (open, notices, tags) = (opener.clone(), toasts.clone(), opener.clone());
             Inspector::new(
                 move |path, line| {
                     if let Some(window) = open.borrow().as_ref() {
@@ -138,6 +138,11 @@ impl Window {
                     }
                 },
                 move |text| notices.add_toast(adw::Toast::new(text)),
+                move |tag| {
+                    if let Some(window) = tags.borrow().as_ref() {
+                        window.palette(Mode::Text, &format!("#{tag}"));
+                    }
+                },
             )
         };
         // The inspector has its own header bar: at the window's right edge,
@@ -408,6 +413,34 @@ impl Window {
         {
             let this = self.clone();
             tab.reader.connect_edit_task(move |path, line| this.edit_task(path, line));
+        }
+        {
+            let this = self.clone();
+            tab.reader.connect_tag(move |tag| this.palette(Mode::Text, &format!("#{tag}")));
+        }
+        {
+            let (this, weak) = (self.clone(), Rc::downgrade(&tab));
+            tab.reader.connect_section(move |line| {
+                if weak.upgrade().is_some_and(|tab| this.is_chosen(&tab)) {
+                    this.inspector.set_section(line);
+                }
+            });
+        }
+        {
+            let (this, weak) = (self.clone(), Rc::downgrade(&tab));
+            tab.reader.connect_create(move |target, from| {
+                let (Some(store), Some(tab)) = (this.store.borrow().clone(), weak.upgrade()) else { return };
+                match store.create_note_for_link(target, from) {
+                    Ok(path) => {
+                        this.sidebar.set_tree(&store.tree());
+                        this.go_in(&tab, &path, None, None, true);
+                        if this.is_chosen(&tab) {
+                            this.toggle_edit();
+                        }
+                    }
+                    Err(error) => this.toasts.add_toast(adw::Toast::new(&format!("The note was not made: {error}"))),
+                }
+            });
         }
         {
             // The reading cursor is kept as the note's place, and is reading time for WakaTime.

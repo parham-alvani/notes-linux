@@ -37,7 +37,7 @@ const OUTSIDE: [&str; 6] = ["http", "https", "mailto", "tel", "sms", "geo"];
 
 /// What a detected address or phone number opens: OpenStreetMap's search for
 /// the address, `tel:` with the number's digits.
-fn detected_url(kind: &str, value: &str) -> Option<String> {
+pub fn detected_url(kind: &str, value: &str) -> Option<String> {
     match kind {
         "address" if !value.trim().is_empty() => {
             Some(format!("https://www.openstreetmap.org/search?query={}", glib::Uri::escape_string(value.trim(), None, false)))
@@ -92,6 +92,9 @@ type OpenHandler = Rc<dyn Fn(&str, Option<&str>, OpenIn)>;
 type NoticeHandler = Rc<dyn Fn(&str)>;
 type EditTaskHandler = Rc<dyn Fn(&str, usize)>;
 type CursorHandler = Rc<dyn Fn(&str, usize)>;
+type TagHandler = Rc<dyn Fn(&str)>;
+type CreateHandler = Rc<dyn Fn(&str, &str)>;
+type SectionHandler = Rc<dyn Fn(Option<usize>)>;
 
 struct State {
     ready: bool,
@@ -103,6 +106,9 @@ struct State {
     on_notice: Option<NoticeHandler>,
     on_edit_task: Option<EditTaskHandler>,
     on_cursor: Option<CursorHandler>,
+    on_tag: Option<TagHandler>,
+    on_create: Option<CreateHandler>,
+    on_section: Option<SectionHandler>,
 }
 
 #[derive(Clone)]
@@ -135,6 +141,9 @@ impl Reader {
                 on_notice: None,
                 on_edit_task: None,
                 on_cursor: None,
+                on_tag: None,
+                on_create: None,
+                on_section: None,
             })),
         };
         reader.connect_messages();
@@ -165,6 +174,21 @@ impl Reader {
     /// The reading cursor moved: the note and its source line.
     pub fn connect_cursor(&self, handler: impl Fn(&str, usize) + 'static) {
         self.state.borrow_mut().on_cursor = Some(Rc::new(handler));
+    }
+
+    /// A tag clicked on the page, without its `#`.
+    pub fn connect_tag(&self, handler: impl Fn(&str) + 'static) {
+        self.state.borrow_mut().on_tag = Some(Rc::new(handler));
+    }
+
+    /// A link to a note that is not there yet: its target, and the note it is in.
+    pub fn connect_create(&self, handler: impl Fn(&str, &str) + 'static) {
+        self.state.borrow_mut().on_create = Some(Rc::new(handler));
+    }
+
+    /// The section on screen: its heading's line, or none above the first heading.
+    pub fn connect_section(&self, handler: impl Fn(Option<usize>) + 'static) {
+        self.state.borrow_mut().on_section = Some(Rc::new(handler));
     }
 
     pub fn shown(&self) -> Option<Request> {
@@ -402,7 +426,28 @@ impl Reader {
                             handler(&found, anchor.as_deref(), place);
                         }
                     }
+                    // A wikilink to a note not there yet makes it, as Obsidian does.
+                    None if !target.is_empty() && text("path").is_empty() => {
+                        let (handler, shown) = (self.state.borrow().on_create.clone(), self.shown());
+                        match (handler, shown) {
+                            (Some(handler), Some(shown)) => handler(&target, &shown.path),
+                            _ => self.notice(&format!("“{target}” is not in the vault yet.")),
+                        }
+                    }
                     None => self.notice(&format!("“{target}” is not in the vault yet.")),
+                }
+            }
+            "tag" => {
+                let handler = self.state.borrow().on_tag.clone();
+                if let Some(handler) = handler {
+                    handler(text("tag").trim_start_matches('#'));
+                }
+            }
+            "section" => {
+                let line = body.get("line").and_then(Value::as_i64).and_then(|l| usize::try_from(l).ok());
+                let handler = self.state.borrow().on_section.clone();
+                if let Some(handler) = handler {
+                    handler(line);
                 }
             }
             "editTask" => {

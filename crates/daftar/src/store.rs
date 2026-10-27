@@ -121,6 +121,20 @@ impl VaultStore {
         Ok(made)
     }
 
+    /// A note for the link [target] in [source] that goes nowhere yet: at the
+    /// path the link names, else beside [source]; its vault path.
+    pub fn create_note_for_link(&self, target: &str, source: &str) -> Result<String, String> {
+        let clean = target.split(['#', '|']).next().unwrap_or("").trim();
+        let mut parts: Vec<&str> = clean.split('/').filter(|p| !p.is_empty()).collect();
+        let last = parts.pop().ok_or_else(|| format!("“{target}” is not a name for a note."))?;
+        let name = last.strip_suffix(".md").unwrap_or(last);
+        let folder = if parts.is_empty() { crate::files::parent(source).to_string() } else { parts.join("/") };
+        let made = crate::files::create_note(&self.root, &self.index(), name, &folder, "").map_err(|e| e.to_string())?;
+        self.refresh(std::slice::from_ref(&made));
+        self.wrote();
+        Ok(made)
+    }
+
     /// The template notes of the vault, for New Note.
     pub fn template_notes(&self) -> Vec<String> {
         self.templates.templates(&self.index().files)

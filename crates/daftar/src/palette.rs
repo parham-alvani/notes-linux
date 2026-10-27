@@ -87,6 +87,18 @@ pub fn present(
                     Row { title: marked(&title, &in_title), subtitle: marked(&folder, &in_folder), path }
                 })
                 .collect(),
+            // `#tag`: the notes with the tag or one under it, as the Mac's search lists them.
+            Mode::Text if query.trim().len() > 1 && query.trim().starts_with('#') && !query.trim().contains(' ') => store
+                .notes_tagged(query.trim().trim_start_matches('#'))
+                .into_iter()
+                .filter(|path| !store.is_hidden(path))
+                .take(LIMIT)
+                .map(|path| Row {
+                    title: glib::markup_escape_text(&Vault::title(&path)).into(),
+                    subtitle: glib::markup_escape_text(&QuickSwitcher::folder(&path)).into(),
+                    path,
+                })
+                .collect(),
             Mode::Text => store
                 .search
                 .search(query, LIMIT)
