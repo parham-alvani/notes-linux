@@ -10,6 +10,7 @@ macro_rules! out {
     };
 }
 
+mod clip;
 mod images;
 mod tui;
 mod vault_commands;
@@ -186,6 +187,18 @@ enum Command {
         /// Prints the path and makes nothing.
         #[arg(long)]
         no_create: bool,
+    },
+    /// A web page as a new note: its main text as Markdown, its pictures in
+    /// the attachment folder, and `source` and `clipped` in its front matter.
+    /// Prints the note's path.
+    Clip {
+        url: String,
+        /// The folder of the vault the note goes in.
+        #[arg(long, default_value = "Clippings")]
+        folder: String,
+        /// The note's name; else the page's title.
+        #[arg(long)]
+        title: Option<String>,
     },
     /// Removes pictures no note names, makes the others JPEGs under 1 MB and
     /// renames them in the notes, as notes-cli does.
@@ -457,6 +470,9 @@ fn run(cli: Cli) -> Result<(), String> {
                 None => Day::today(),
             };
             out!("{}", vault_commands::daily(&root, &index.files, day, !no_create, Clock::now())?);
+        }
+        Command::Clip { url, folder, title } => {
+            out!("{}", clip::run(&root, &url, &folder, title.as_deref())?);
         }
         Command::Images { folder, dry_run, keep_originals } => {
             let folder = if folder.is_absolute() { folder } else { root.join(folder) };
