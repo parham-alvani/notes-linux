@@ -23,6 +23,8 @@ pub struct Hooks {
     pub editor: Box<dyn Fn()>,
     /// The lists, after the hidden files changed.
     pub hidden: Box<dyn Fn()>,
+    /// The notifications planned again, as now set.
+    pub notifications: Box<dyn Fn()>,
     pub notice: Box<dyn Fn(&str)>,
 }
 
@@ -113,6 +115,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     git.add(&interval);
     page.add(&git);
     page.add(&files_group(&settings, write.clone(), hooks.clone()));
+    page.add(&notifications_group(&settings, write.clone(), hooks.clone()));
     page.add(&capture_group(&settings, write.clone()));
     page.add(&wakatime_group(&settings, write.clone()));
 
@@ -235,6 +238,68 @@ fn editor_group(
     group.add(&path);
     group.add(&found);
     group.add(&config);
+    group
+}
+
+/// Settings › Notifications: a meeting before it starts, and the morning's
+/// digest of the tasks due, as `[notifications]` in the file has them.
+fn notifications_group(
+    settings: &Rc<RefCell<AppSettings>>,
+    write: impl Fn(&str, Value) + Clone + 'static,
+    hooks: Rc<Hooks>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Notifications")
+        .description("Meetings come from the week notes in Calendar/; the digest lists the tasks due and late.")
+        .build();
+    let file = settings.borrow().file.clone();
+    let meetings = adw::SwitchRow::builder().title("Before a meeting").active(file.bool("notifications.meetings").unwrap_or(true)).build();
+    let lead = adw::SpinRow::with_range(0.0, 120.0, 1.0);
+    lead.set_title("Minutes before");
+    lead.set_value(file.int("notifications.meeting_lead").unwrap_or(5).max(0) as f64);
+    let digest = adw::SwitchRow::builder().title("Morning digest").active(file.bool("notifications.digest").unwrap_or(true)).build();
+    let time = adw::EntryRow::builder().title("Digest at (HH:MM)").show_apply_button(true).build();
+    time.set_text(&file.string("notifications.digest_time").unwrap_or_else(|| "09:00".into()));
+    let replan = Rc::new(move || (hooks.notifications)());
+    {
+        let (write, replan, lead) = (write.clone(), replan.clone(), lead.clone());
+        meetings.connect_active_notify(move |row| {
+            lead.set_sensitive(row.is_active());
+            write("notifications.meetings", Value::Bool(row.is_active()));
+            replan();
+        });
+    }
+    {
+        let (write, replan) = (write.clone(), replan.clone());
+        lead.connect_value_notify(move |row| {
+            write("notifications.meeting_lead", Value::Int(row.value() as i64));
+            replan();
+        });
+    }
+    {
+        let (write, replan, time) = (write.clone(), replan.clone(), time.clone());
+        digest.connect_active_notify(move |row| {
+            time.set_sensitive(row.is_active());
+            write("notifications.digest", Value::Bool(row.is_active()));
+            replan();
+        });
+    }
+    time.connect_apply(move |row| {
+        let text = row.text().trim().to_string();
+        if chrono::NaiveTime::parse_from_str(&text, "%H:%M").is_err() {
+            row.add_css_class("error");
+            return;
+        }
+        row.remove_css_class("error");
+        write("notifications.digest_time", Value::String(text));
+        replan();
+    });
+    lead.set_sensitive(meetings.is_active());
+    time.set_sensitive(digest.is_active());
+    group.add(&meetings);
+    group.add(&lead);
+    group.add(&digest);
+    group.add(&time);
     group
 }
 

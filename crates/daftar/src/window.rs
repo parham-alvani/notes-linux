@@ -1301,6 +1301,10 @@ impl Window {
                 let this = self.clone();
                 move || this.restart_editors()
             }),
+            notifications: Box::new({
+                let this = self.clone();
+                move || this.plan_notifications()
+            }),
             hidden: Box::new({
                 let this = self.clone();
                 move || this.refresh_hidden()

@@ -58,7 +58,7 @@ This is the first part of the port. It has:
 - **Read aloud:** Ctrl+Alt+R reads the note from the reading cursor on, a paragraph at a time, with speech-dispatcher (`spd-say`) or `espeak-ng`, and a Persian voice for a Persian paragraph. Escape on the page or Ctrl+Alt+R again stops.
 - **Export as PDF:** Ctrl+Shift+E prints the note on screen to an A4 PDF where you choose.
 - **WakaTime:** a setting (off at first) sends the time spent reading and writing each note to WakaTime with `wakatime-cli` and the key in `~/.wakatime.cfg`, as Obsidian's WakaTime plugin does.
-- **Notifications:** a meeting alert a few minutes before each meeting in the week note, with Join, and a morning digest of the tasks due (`[notifications]`). Unlike on the Mac, they ring while Daftar runs.
+- **Notifications:** a meeting alert a few minutes before each meeting in the week note, with Join, and a morning digest of the tasks due (`[notifications]`, or Settings › Notifications: each on or off, the minutes before and the digest's time). Unlike on the Mac, they ring while Daftar runs.
 - **Settings:** Ctrl+, for the theme, the text size, the fonts, the home picture and git, written back to `config.toml` line by line. Ctrl+Alt+N opens another window.
 - **Command line:** `daftar-cli`, below.
 - **Core:** the parser, the link resolver, the task lines, the vault index, the quick switcher's ranking, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
