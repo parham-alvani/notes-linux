@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { render, taskLabel, baseName } from "../src/render.js";
-import { codeHead, findBar, foldState, taskChip, baseTabs, canvasBar, zoomLabel } from "../src/controls.js";
+import { codeHead, findBar, foldState, taskChip, baseTabs, canvasBar, zoomLabel, zoomBar, zoomPercent } from "../src/controls.js";
 import { renderView } from "../src/bases.js";
 
 const links = { Inbox: "Notes/Inbox.md", "logo.png": "uploads/logo.png" };
@@ -49,6 +49,13 @@ test("the page's controls are buttons with names", () => {
   for (const name of ["Zoom out", "Zoom in", "Show the whole canvas"]) assert.match(canvas, new RegExp(`aria-label="${name}"`));
   assert.equal(zoomLabel("logo", false), "logo. Escape closes it.");
   assert.equal(zoomLabel("", true), "Diagram. Escape closes it.");
+  // Every button of the picture viewer has a name; ‹ › only with more than one picture.
+  for (const count of [1, 3]) {
+    const bar = zoomBar(count);
+    for (const button of bar.match(/<button[^>]*>/g)) assert.match(button, /aria-label="[^"]+"/);
+    assert.equal(bar.includes("zoom-next"), count > 1);
+  }
+  assert.equal(zoomPercent(1.254), "125%");
 });
 
 test("a task chip says its colour: overdue, priority, repeat", () => {

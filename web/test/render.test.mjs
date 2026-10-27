@@ -169,3 +169,11 @@ test("a date keeps its order in a right-to-left line", () => {
   assert.doesNotMatch(render("- [ ] کار 📅 2026-10-30"), /<bdi/);
   assert.doesNotMatch(render("On 2026-10-30"), /<bdi/);
 });
+
+test("a markdown image of the vault is found as its links are, and sized with a bar", () => {
+  const links = { "uploads/a b.svg": "uploads/a b.svg", "cat.gif": "pics/cat.gif" };
+  const html = render("![one](uploads/a%20b.svg) ![two|240](cat.gif) ![web](https://example.org/x.png)", { links });
+  assert.match(html, /<img src="vault:\/\/\/uploads\/a%20b\.svg" alt="one">/);
+  assert.match(html, /<img src="vault:\/\/\/pics\/cat\.gif" alt="two" width="240">/);
+  assert.match(html, /src="https:\/\/example\.org\/x\.png"/);
+});

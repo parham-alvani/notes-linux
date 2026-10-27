@@ -543,6 +543,37 @@ function linkOf(env, target) {
   return env.links && Object.hasOwn(env.links, target) ? env.links[target] : undefined;
 }
 
+/**
+ * `![alt](uploads/a.png)`: a picture of the vault, found as the note's links
+ * are, by its path or its name. `![alt|300](…)` sizes it, as in Obsidian. A
+ * web address stays as it is.
+ */
+function images(md) {
+  const plain = md.renderer.rules.image;
+  md.renderer.rules.image = (tokens, idx, options, env, self) => {
+    const token = tokens[idx];
+    const src = token.attrGet("src") ?? "";
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith("#")) {
+      let target = src.split("#")[0];
+      try {
+        target = decodeURIComponent(target);
+      } catch {
+        // a lone % is a name
+      }
+      const path = linkOf(env, target);
+      if (path) token.attrSet("src", vaultUrl(path));
+    }
+    const last = token.children?.at(-1);
+    const size = last?.type === "text" && /\|(\d+)(?:x(\d+))?$/.exec(last.content);
+    if (size) {
+      last.content = last.content.slice(0, size.index).trimEnd();
+      token.attrSet("width", size[1]);
+      if (size[2]) token.attrSet("height", size[2]);
+    }
+    return plain(tokens, idx, options, env, self);
+  };
+}
+
 /** Headings carry their text, which is what `[[Note#Heading]]` names. */
 function headings(md) {
   md.core.ruler.push("heading_ids", (state) => {
@@ -599,7 +630,7 @@ function fences(md) {
 
 export function createRenderer() {
   const md = new MarkdownIt({ html: true, linkify: true, breaks: false, typographer: false });
-  md.use(footnote).use(wikilinks).use(highlights).use(tags).use(math).use(callouts).use(tasks).use(blockIds).use(direction).use(isolateDates).use(headings).use(sourceLines).use(fences);
+  md.use(footnote).use(wikilinks).use(images).use(highlights).use(tags).use(math).use(callouts).use(tasks).use(blockIds).use(direction).use(isolateDates).use(headings).use(sourceLines).use(fences);
   return md;
 }
 

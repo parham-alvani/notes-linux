@@ -34,7 +34,7 @@ use daftar_core::{
 };
 
 #[path = "editor_media.rs"]
-mod media;
+pub(crate) mod media;
 
 use crate::editor_popup::{Choice, Popup};
 use crate::editor_style::Styler;

@@ -39,15 +39,63 @@ pub(super) struct Pictures {
     /// What is drawn now: per line, the files and their sizes.
     shown: RefCell<Layout>,
     widgets: RefCell<Vec<(usize, gtk::Picture, gtk::TextTag)>>,
+    /// The frames of the animated pictures shown, ended when put away.
+    playing: RefCell<Vec<gtk::TickCallbackId>>,
     /// Pictures put on the view and hidden, for the next ones: the view does
     /// not give an overlay child back once it has it.
     spare: RefCell<Vec<gtk::Picture>>,
     /// Loaded pictures, until their file changes.
-    cache: RefCell<HashMap<PathBuf, (SystemTime, gdk::Texture)>>,
+    cache: RefCell<HashMap<PathBuf, (SystemTime, Loaded)>>,
     place_soon: Cell<bool>,
 }
 
 pub use daftar_core::embed_size::Hint;
+
+/// A picture as loaded: what is drawn, the size it is (an SVG is drawn at
+/// twice it, to stay sharp on a HiDPI screen), and a GIF's frames.
+#[derive(Clone)]
+pub(crate) struct Loaded {
+    pub texture: gdk::Texture,
+    pub width: i32,
+    pub height: i32,
+    pub animation: Option<gtk::gdk_pixbuf::PixbufAnimation>,
+}
+
+impl Loaded {
+    pub fn load(file: &Path) -> Option<Loaded> {
+        let extension = file.extension().and_then(|e| e.to_str()).unwrap_or_default().to_lowercase();
+        if extension == "gif"
+            && let Ok(animation) = gtk::gdk_pixbuf::PixbufAnimation::from_file(file)
+            && !animation.is_static_image()
+        {
+            let texture = gdk::Texture::for_pixbuf(&animation.static_image()?);
+            return Some(Loaded { texture, width: animation.width(), height: animation.height(), animation: Some(animation) });
+        }
+        let texture = gdk::Texture::from_filename(file).ok()?;
+        let (width, height) = (texture.width(), texture.height());
+        let texture = if extension == "svg" && width > 0 && width <= 2048 && height <= 2048 {
+            gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(file, width * 2, height * 2, true)
+                .map(|p| gdk::Texture::for_pixbuf(&p))
+                .unwrap_or(texture)
+        } else {
+            texture
+        };
+        Some(Loaded { texture, width, height, animation: None })
+    }
+}
+
+/// Plays [animation] in [picture] while it is on screen: a tick of the
+/// frame clock shows the frame that is due. The id ends it.
+pub(crate) fn play(picture: &gtk::Picture, animation: &gtk::gdk_pixbuf::PixbufAnimation) -> gtk::TickCallbackId {
+    let frames = animation.iter(Some(SystemTime::now()));
+    picture.set_paintable(Some(&gdk::Texture::for_pixbuf(&frames.pixbuf())));
+    picture.add_tick_callback(move |picture, _| {
+        if frames.advance(SystemTime::now()) {
+            picture.set_paintable(Some(&gdk::Texture::for_pixbuf(&frames.pixbuf())));
+        }
+        glib::ControlFlow::Continue
+    })
+}
 
 /// The lines of [text] that embed a picture, with the targets as written
 /// and the size each asks for.
@@ -218,6 +266,7 @@ impl Editor {
             return;
         }
         self.put_away_pictures();
+        let mut playing = Vec::new();
         let table = self.buffer.tag_table();
         let gap = self.view.pixels_below_lines();
         let mut widgets = Vec::new();
@@ -232,21 +281,50 @@ impl Editor {
             table.add(&tag);
             self.buffer.apply_tag(&tag, &start, &end);
             for (file, width, height) in files {
-                let Some(texture) = self.texture(file) else { continue };
+                let Some(loaded) = self.texture(file) else { continue };
                 let spare = self.pictures.spare.borrow_mut().pop();
                 let picture = spare.unwrap_or_else(|| {
                     let picture = gtk::Picture::builder().can_shrink(true).content_fit(gtk::ContentFit::Contain).build();
                     picture.add_css_class("daftar-editor-picture");
+                    picture.set_cursor_from_name(Some("zoom-in"));
+                    picture.set_tooltip_text(Some("Click to see it large"));
+                    // A click opens it large, with the note's other pictures beside it.
+                    let click = gtk::GestureClick::new();
+                    let this = Rc::downgrade(self);
+                    click.connect_released(move |gesture, _, _, _| {
+                        let (Some(this), Some(picture)) = (this.upgrade(), gesture.widget()) else { return };
+                        let files: Vec<(gtk::Widget, PathBuf)> = {
+                            let widgets = this.pictures.widgets.borrow();
+                            let shown = this.pictures.shown.borrow();
+                            let mut index: HashMap<usize, usize> = HashMap::new();
+                            widgets
+                                .iter()
+                                .filter_map(|(line, picture, _)| {
+                                    let at = index.entry(*line).or_insert(0);
+                                    let file = shown.get(line)?.get(*at)?.0.clone();
+                                    *at += 1;
+                                    Some((picture.clone().upcast(), file))
+                                })
+                                .collect()
+                        };
+                        let at = files.iter().position(|(widget, _)| *widget == picture).unwrap_or(0);
+                        crate::picture_viewer::show(&this.view, files.into_iter().map(|(_, file)| file).collect(), at);
+                    });
+                    picture.add_controller(click);
                     self.view.add_overlay(&picture, 0, 0);
                     picture
                 });
-                picture.set_paintable(Some(&texture));
+                picture.set_paintable(Some(&loaded.texture));
                 picture.set_size_request(*width, *height);
                 picture.set_visible(true);
+                if let Some(animation) = &loaded.animation {
+                    playing.push(play(&picture, animation));
+                }
                 widgets.push((line, picture, tag.clone()));
             }
         }
         *self.pictures.widgets.borrow_mut() = widgets;
+        *self.pictures.playing.borrow_mut() = playing;
         *self.pictures.shown.borrow_mut() = wanted;
         self.schedule_place();
     }
@@ -302,8 +380,8 @@ impl Editor {
                 .filter_map(|(target, hint)| Some((index.resolve(target, &source)?, *hint)))
                 .filter_map(|(path, hint)| Some((file_in(&path, &store.root)?, hint)))
                 .filter_map(|(file, hint)| {
-                    let texture = self.texture(&file)?;
-                    let (width, height) = fit_hinted(texture.width(), texture.height(), room, hint);
+                    let loaded = self.texture(&file)?;
+                    let (width, height) = fit_hinted(loaded.width, loaded.height, room, hint);
                     (width > 0).then_some((file, width, height))
                 })
                 .collect();
@@ -315,21 +393,24 @@ impl Editor {
     }
 
     /// The picture in [file], loaded once until the file changes.
-    fn texture(&self, file: &Path) -> Option<gdk::Texture> {
+    fn texture(&self, file: &Path) -> Option<Loaded> {
         let changed = fs::metadata(file).and_then(|m| m.modified()).ok()?;
-        if let Some((when, texture)) = self.pictures.cache.borrow().get(file)
+        if let Some((when, loaded)) = self.pictures.cache.borrow().get(file)
             && *when == changed
         {
-            return Some(texture.clone());
+            return Some(loaded.clone());
         }
-        let texture = gdk::Texture::from_filename(file).ok()?;
-        self.pictures.cache.borrow_mut().insert(file.to_path_buf(), (changed, texture.clone()));
-        Some(texture)
+        let loaded = Loaded::load(file)?;
+        self.pictures.cache.borrow_mut().insert(file.to_path_buf(), (changed, loaded.clone()));
+        Some(loaded)
     }
 
     /// Every picture hidden and spare, and the space under the lines gone.
     fn put_away_pictures(&self) {
         let table = self.buffer.tag_table();
+        for tick in self.pictures.playing.borrow_mut().drain(..) {
+            tick.remove();
+        }
         let mut spare = self.pictures.spare.borrow_mut();
         // The pictures of a line share its tag.
         let mut tags: Vec<gtk::TextTag> = Vec::new();

@@ -79,3 +79,26 @@ export function zoomLabel(alt, diagram) {
   if (diagram) return "Diagram. Escape closes it.";
   return `${alt ? alt : "Picture"}. Escape closes it.`;
 }
+
+/** The buttons of a picture opened large; ‹ and › only when the note has more than one. */
+export function zoomBar(count) {
+  const step = count > 1
+    ? `<button type="button" class="zoom-prev" title="Previous picture (←)" aria-label="Previous picture">‹</button>` +
+      `<span class="zoom-count" aria-live="polite"></span>` +
+      `<button type="button" class="zoom-next" title="Next picture (→)" aria-label="Next picture">›</button>`
+    : "";
+  return (
+    `<div class="zoom-bar" role="toolbar" aria-label="Picture">${step}` +
+    `<button type="button" class="zoom-out" title="Zoom out (−)" aria-label="Zoom out">−</button>` +
+    `<span class="zoom-scale"></span>` +
+    `<button type="button" class="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>` +
+    `<button type="button" class="zoom-fit" title="Fit the window (0)" aria-label="Fit the window">Fit</button>` +
+    `<button type="button" class="zoom-actual" title="Actual size (1)" aria-label="Actual size">1:1</button>` +
+    `<button type="button" class="zoom-close" title="Close (Escape)" aria-label="Close">✕</button></div>`
+  );
+}
+
+/** "125%": a zoom as the bar shows it. */
+export function zoomPercent(scale) {
+  return `${Math.round(scale * 100)}%`;
+}

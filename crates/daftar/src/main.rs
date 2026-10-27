@@ -16,6 +16,7 @@ mod inspector;
 mod neovim_session;
 mod notifier;
 mod palette;
+mod picture_viewer;
 mod places;
 mod preferences;
 mod read_aloud;
