@@ -12,6 +12,7 @@ macro_rules! out {
 
 mod clip;
 mod images;
+mod lint;
 mod tui;
 mod vault_commands;
 
@@ -199,6 +200,19 @@ enum Command {
         /// The note's name; else the page's title.
         #[arg(long)]
         title: Option<String>,
+    },
+    /// Lints the notes against the vault's .markdownlint.jsonc, as
+    /// markdownlint-cli2 does, with Obsidian's syntax known; the whole vault,
+    /// or the files and folders given. Fails when a problem is left.
+    Lint {
+        paths: Vec<PathBuf>,
+        /// Mends first what can be mended: spaces, blank lines, list marks,
+        /// heading marks, fences, emphasis marks, bare URLs, the last newline.
+        #[arg(long)]
+        fix: bool,
+        /// A folder or file of the vault to leave out (as .markdownlintignore).
+        #[arg(long)]
+        ignore: Vec<String>,
     },
     /// Removes pictures no note names, makes the others JPEGs under 1 MB and
     /// renames them in the notes, as notes-cli does.
@@ -470,6 +484,15 @@ fn run(cli: Cli) -> Result<(), String> {
                 None => Day::today(),
             };
             out!("{}", vault_commands::daily(&root, &index.files, day, !no_create, Clock::now())?);
+        }
+        Command::Lint { paths, fix, ignore } => {
+            let outcome = lint::run(&root, &paths, &ignore, fix, |line| out!("{line}"))?;
+            if fix && outcome.fixed > 0 {
+                eprintln!("daftar-cli: fixed {} of {} notes", outcome.fixed, outcome.checked);
+            }
+            if outcome.problems > 0 {
+                return Err(format!("{} problems in {} of {} notes", outcome.problems, outcome.notes, outcome.checked));
+            }
         }
         Command::Clip { url, folder, title } => {
             out!("{}", clip::run(&root, &url, &folder, title.as_deref())?);

@@ -1,0 +1,3 @@
+# No final newline
+
+Text

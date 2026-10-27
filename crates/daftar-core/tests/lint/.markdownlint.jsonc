@@ -1,0 +1,93 @@
+{
+    "default": true, // Start with all rules enabled, then disable/configure specific ones
+    "MD001": {
+        // Heading levels should only increment by one at a time
+        "level": 2, // Ensure the first heading in a file is always H1
+    },
+    "MD003": {
+        // Heading style
+        "style": "atx", // Enforce ATX headings (e.g., # Heading) over Setext (e.g., Heading\n---)
+    },
+    "MD004": {
+        // Unordered list style
+        "style": "dash", // Enforce dashes (-) for unordered lists. Obsidian's default is often dash.
+    },
+    "MD005": false, // Disable: Inconsistent indentation for list items at the same level
+    // Obsidian's "Smart indent lists" can sometimes create slight variations that are hard to lint.
+    // If you want strict list indentation, enable this and work with Obsidian's settings.
+    "MD007": {
+        // Unordered list indentation
+        "indent": 4,
+    },
+    "MD009": {
+        // Trailing spaces
+        "br_spaces": 2, // Allow two spaces for explicit line breaks (often used in notes)
+    },
+    // Hard tabs (indentation)
+    "MD010": {
+        "code_blocks": false,
+    },
+    "MD011": true, // Backslashes instead of asterisks for strong/emphasis
+    "MD012": true, // Multiple blank lines
+    "MD013": false,
+    "MD014": true, // Dollar signs used in code blocks
+    "MD018": true, // No space after hash in ATX heading
+    "MD019": true, // Multiple spaces after hash in ATX heading
+    "MD020": true, // No space inside hashes on closed ATX heading
+    "MD021": true, // Multiple spaces inside hashes on closed ATX heading
+    "MD022": true, // Headings should be surrounded by blank lines
+    "MD023": true, // Headings must start at the beginning of the line
+    "MD024": {
+        // Multiple headings with the same content
+        "siblings_only": true,
+    },
+    "MD025": true, // Multiple top-level headings in the same document
+    "MD026": true, // Trailing punctuation in heading
+    "MD027": true, // Multiple spaces after blockquote symbol
+    "MD028": false, // Blank line inside blockquote
+    "MD029": {
+        // Ordered list item prefix
+        "style": "ordered", // Use "1.", "2.", "3." etc. consistently
+    },
+    "MD030": true, // Spaces after list markers
+    "MD031": true, // Fenced code blocks should be surrounded by blank lines
+    "MD032": true, // Lists should be surrounded by blank lines
+    "MD033": false, // Disable: Inline HTML (Obsidian users often embed HTML for specific formatting or components)
+    "MD034": true, // Bare URLs
+    "MD035": {
+        // Horizontal rule style
+        "style": "---", // Enforce three dashes for horizontal rules
+    },
+    "MD036": false, // Disable: Emphasis used instead of a heading (sometimes notes use bold for emphasis rather than actual headings)
+    "MD037": true, // Spaces inside emphasis markers
+    "MD038": true, // Spaces inside code block markers
+    "MD039": true, // Fenced code blocks should not have leading/trailing blank lines
+    "MD040": true, // Fenced code blocks should have a language specified (good practice for highlighting)
+    "MD041": false, // Disable: First line in a file should be a top-level heading (Obsidian notes don't always start with a heading, e.g., daily notes)
+    "MD042": true, // No empty links
+    "MD043": false, // Disable: Required heading structure (too restrictive for general notes)
+    "MD044": false, // Disable: Proper names should have the correct capitalization (can be too noisy for personal notes)
+    "MD045": true, // Images should have alternate text (alt text)
+    "MD046": {
+        // Code block style
+        "style": "fenced", // Prefer fenced code blocks (```) over indented code blocks
+    },
+    "MD047": true, // Files should end with a single newline character
+    "MD048": {
+        // Code fence style
+        "style": "backtick", // Prefer backticks (```) over tildes (~~~) for code fences
+    },
+    "MD049": true,
+    "MD050": {
+        // Strong style
+        "style": "asterisk", // Prefer asterisks (**) for strong (e.g., **bold**)
+    },
+    "MD051": false, // Disable: Link fragments should be valid (can be tricky with Obsidian's internal links and block references)
+    "MD052": false, // Disable: Reference links and images should use a label that is defined (often using bare internal links in Obsidian)
+    "MD053": false, // Disable: Link and image reference definitions should be needed (similar to MD052, can interfere with Obsidian linking)
+    "MD054": false, // Disable: Trailing backslash in link or image URL (Obsidian internal links)
+    "MD055": false, // Disable: Inline HTML with empty tags (can be valid in some Obsidian use cases)
+    "MD056": false, // Disable: Table column alignment
+    "MD059": false,
+    "MD060": false, // Disable: Table column style (incompatible with Prettier and Unicode/emoji width)
+}
