@@ -661,6 +661,15 @@ impl Editor {
                     self.wrap("==");
                     glib::Propagation::Stop
                 }
+                // Strikethrough and inline code, the Mac's Shift+Cmd+X and Shift+Cmd+C.
+                gdk::Key::x if shift => {
+                    self.wrap("~~");
+                    glib::Propagation::Stop
+                }
+                gdk::Key::c if shift => {
+                    self.wrap("`");
+                    glib::Propagation::Stop
+                }
                 gdk::Key::k if !shift => {
                     self.insert_link();
                     glib::Propagation::Stop

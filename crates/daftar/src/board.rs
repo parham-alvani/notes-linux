@@ -576,7 +576,7 @@ impl Board {
         }
         // The Tasks plugin's Postpone, for an open task with a date.
         if daftar_core::TaskLine::can_postpone(t) {
-            for amount in [daftar_core::Postpone::Day, daftar_core::Postpone::Week, daftar_core::Postpone::Month] {
+            for amount in daftar_core::Postpone::ALL {
                 let moved = self.moved();
                 let task = task.clone();
                 item(&format!("Postpone by {}", amount.title()), Box::new(move || moved(&task, &BoardDrop::Postpone(amount))));
