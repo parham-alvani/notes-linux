@@ -270,6 +270,7 @@ impl Sidebar {
                 let menu = gio::Menu::new();
                 menu.append_item(&item_for("Mark as Read", "win.mark-read", &path));
                 menu.append_item(&item_for("Open in New Tab", "win.open-tab", &path));
+                menu.append_item(&item_for("Open in Split", "win.open-split", &path));
                 popup(&widget, &menu, x, y);
             });
             item.add_controller(click);
@@ -372,6 +373,7 @@ fn menu(path: &str, folder: bool, bookmarked: bool) -> gio::Menu {
     if !folder {
         let open = gio::Menu::new();
         open.append_item(&item_for("Open in New Tab", "win.open-tab", path));
+        open.append_item(&item_for("Open in Split", "win.open-split", path));
         menu.append_section(None, &open);
     }
     if folder {

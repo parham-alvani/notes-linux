@@ -77,6 +77,8 @@ fn main() -> glib::ExitCode {
     // Up and Down and Alt+1 to 9 are the tab view's own.
     app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     app.set_accels_for_action("win.new-tab", &["<Ctrl>t"]);
+    app.set_accels_for_action("win.split", &["<Ctrl>backslash"]);
+    app.set_accels_for_action("win.other-pane", &["<Ctrl><Alt>backslash"]);
     app.set_accels_for_action("win.find", &["<Ctrl>f"]);
     app.set_accels_for_action("win.find-next", &["<Ctrl>g"]);
     app.set_accels_for_action("win.find-previous", &["<Ctrl><Shift>g"]);

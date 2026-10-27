@@ -19,7 +19,7 @@ use crate::home::{self, HomePage};
 use crate::inspector::Inspector;
 use crate::notifier::{Notifier, Wanted};
 use crate::palette::{self, Mode};
-use crate::reader::{Reader, Request};
+use crate::reader::{OpenIn, Reader, Request};
 use crate::settings::AppSettings;
 use crate::sidebar::Sidebar;
 use crate::store::VaultStore;
@@ -31,10 +31,11 @@ use crate::watcher::FileWatcher;
 
 mod extras;
 mod file_actions;
+mod split;
 mod tab;
 mod vault_tools;
 
-pub(crate) use tab::Tab;
+pub(crate) use tab::{Group, Tab};
 
 /// How many notes the quick switcher remembers as opened lately.
 const RECENT: usize = 20;
@@ -145,7 +146,7 @@ impl Window {
         side_header.pack_end(&quick_open);
         side_header.pack_start(&git.button);
         let today_button =
-            gtk::Button::builder().icon_name("weather-clear-symbolic").tooltip_text("Today (Ctrl+1)").action_name("win.today").build();
+            gtk::Button::builder().icon_name("x-office-calendar-symbolic").tooltip_text("Today (Ctrl+1)").action_name("win.today").build();
         side_header.pack_end(&today_button);
         let side = adw::ToolbarView::new();
         side.add_top_bar(&side_header);
@@ -225,6 +226,30 @@ impl Window {
 
     /// A tab, at the end and chosen, on the home page once a vault is open.
     fn new_tab(&self) -> Rc<Tab> {
+        let group = Group::new();
+        let tab = self.new_pane(&group);
+        group.paned.set_start_child(Some(&tab.stack));
+        *group.focused.borrow_mut() = Rc::downgrade(&tab);
+        // Chosen at once, so it is in the list before the view tells of it.
+        let page = self.tab_view.append(&group.paned);
+        page.set_title("Home");
+        *group.page.borrow_mut() = Some(page.clone());
+        self.tab_view.set_selected_page(&page);
+        self.start_pane(&tab);
+        tab
+    }
+
+    /// A pane's first page: home once a vault is open.
+    fn start_pane(&self, tab: &Rc<Tab>) {
+        match self.store.borrow().clone() {
+            Some(_) => self.show_home(tab),
+            None if self.settings.borrow().vault().is_some() => tab.stack.set_visible_child_name("loading"),
+            None => tab.stack.set_visible_child_name("choose"),
+        }
+    }
+
+    /// A note pane in [group], in the window's list and not yet on screen.
+    fn new_pane(&self, group: &Rc<Group>) -> Rc<Tab> {
         let tab = Rc::new_cyclic(|weak: &Weak<Tab>| {
             let reader = Reader::new(self.settings.clone());
             let editor = {
@@ -268,7 +293,9 @@ impl Window {
                     search: Box::new(move |text| search.home_search(text)),
                 })
             };
-            let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).build();
+            // As wide as the page on screen needs, not as the widest page
+            // (the board): a split pane may be narrow.
+            let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).hhomogeneous(false).build();
             stack.add_named(&home.widget, Some("empty"));
             stack.add_named(
                 &gtk::Spinner::builder()
@@ -295,19 +322,22 @@ impl Window {
                 back: RefCell::new(Vec::new()),
                 forward: RefCell::new(Vec::new()),
                 title: RefCell::new(("Home".into(), String::new())),
-                page: RefCell::new(None),
+                group: group.clone(),
             }
         });
         {
-            let this = self.clone();
-            tab.reader.connect_open(move |path, anchor, new_tab| {
-                if new_tab {
-                    this.open_in_new_tab(path, anchor);
-                } else {
-                    this.open(path, anchor);
+            let (this, weak) = (self.clone(), Rc::downgrade(&tab));
+            tab.reader.connect_open(move |path, anchor, place| {
+                let Some(tab) = weak.upgrade() else { return };
+                match place {
+                    OpenIn::NewTab => this.open_in_new_tab(path, anchor),
+                    OpenIn::OtherPane => this.open_in_other_pane(&tab, path, anchor),
+                    // A link opens in the pane it is in, which the click focused.
+                    OpenIn::Here => this.go_in(&tab, path, anchor, None, true),
                 }
             });
         }
+        self.follow_focus(&tab);
         {
             let toasts = self.toasts.clone();
             tab.reader.connect_notice(move |text| toasts.add_toast(adw::Toast::new(text)));
@@ -339,42 +369,45 @@ impl Window {
             tab.reader.set_store(store.clone());
             tab.editor.set_store(store.clone());
         }
-        // Chosen at once, so it is in the list before the view tells of it.
         self.tabs.borrow_mut().push(tab.clone());
-        let page = self.tab_view.append(&tab.stack);
-        page.set_title("Home");
-        *tab.page.borrow_mut() = Some(page.clone());
-        self.tab_view.set_selected_page(&page);
-        match store {
-            Some(_) => self.show_home(&tab),
-            None if self.settings.borrow().vault().is_some() => tab.stack.set_visible_child_name("loading"),
-            None => tab.stack.set_visible_child_name("choose"),
-        }
         tab
     }
 
-    /// The chosen tab.
+    /// The focused pane of the chosen tab.
     fn tab(&self) -> Rc<Tab> {
-        let tabs = self.tabs.borrow();
+        let tabs = self.tabs.borrow().clone();
         let chosen = self.tab_view.selected_page().map(|page| page.child());
-        tabs.iter()
-            .find(|tab| chosen.as_ref() == Some(tab.stack.upcast_ref::<gtk::Widget>()))
-            .or_else(|| tabs.first())
-            .cloned()
+        let in_chosen: Vec<&Rc<Tab>> = tabs.iter().filter(|tab| tab.group.holds(chosen.as_ref())).collect();
+        in_chosen
+            .iter()
+            .find(|tab| tab.group.is_focused(tab))
+            .or_else(|| in_chosen.first())
+            .map(|tab| (*tab).clone())
+            .or_else(|| tabs.first().cloned())
             .expect("a window has a tab")
     }
 
+    /// Is [tab] the pane the header and the commands follow?
     fn is_chosen(&self, tab: &Tab) -> bool {
-        self.tab_view.selected_page().is_some_and(|page| &page.child() == tab.stack.upcast_ref::<gtk::Widget>())
+        let chosen = self.tab_view.selected_page().map(|page| page.child());
+        tab.group.holds(chosen.as_ref()) && (tab.group.is_focused(tab) || self.panes_of(&tab.group).len() < 2)
     }
 
-    /// The tabs in the order the bar shows them.
-    fn tabs_in_order(&self) -> Vec<Rc<Tab>> {
-        let tabs = self.tabs.borrow();
+    /// The panes of [group], the left one first.
+    fn panes_of(&self, group: &Rc<Group>) -> Vec<Rc<Tab>> {
+        let mut panes: Vec<Rc<Tab>> = self.tabs.borrow().iter().filter(|tab| Rc::ptr_eq(&tab.group, group)).cloned().collect();
+        panes.sort_by_key(|tab| !tab.is_start());
+        panes
+    }
+
+    /// The tabs in the order the bar shows them, each with its panes.
+    fn tabs_in_order(&self) -> Vec<Vec<Rc<Tab>>> {
+        let tabs = self.tabs.borrow().clone();
         (0..self.tab_view.n_pages())
             .filter_map(|at| {
                 let child = self.tab_view.nth_page(at).child();
-                tabs.iter().find(|tab| &child == tab.stack.upcast_ref::<gtk::Widget>()).cloned()
+                let group = tabs.iter().find(|tab| tab.group.holds(Some(&child)))?.group.clone();
+                Some(self.panes_of(&group))
             })
             .collect()
     }
@@ -399,20 +432,23 @@ impl Window {
     /// first, and the last tab closes the window.
     fn close_page(&self, page: &adw::TabPage) -> glib::Propagation {
         let child = page.child();
-        let Some(tab) = self.tabs.borrow().iter().find(|tab| &child == tab.stack.upcast_ref::<gtk::Widget>()).cloned() else {
+        let Some(group) = self.tabs.borrow().iter().find(|tab| tab.group.holds(Some(&child))).map(|tab| tab.group.clone()) else {
             return glib::Propagation::Proceed;
         };
-        if self.tabs.borrow().len() <= 1 {
+        if self.tab_view.n_pages() <= 1 {
             self.tab_view.close_page_finish(page, false);
             self.window.close();
             return glib::Propagation::Stop;
         }
-        if tab.editing() && tab.editor.close() == Saved::ChangedOnDisk {
+        let panes = self.panes_of(&group);
+        if panes.iter().any(|tab| tab.editing() && tab.editor.close() == Saved::ChangedOnDisk) {
             self.tab_view.close_page_finish(page, false);
             self.toasts.add_toast(adw::Toast::new("The note changed on disk; the tab stays open so the text is not lost."));
             return glib::Propagation::Stop;
         }
-        self.tabs.borrow_mut().retain(|other| !Rc::ptr_eq(other, &tab));
+        self.tabs.borrow_mut().retain(|other| !Rc::ptr_eq(&other.group, &group));
+        // The hidden side holds the tab, which holds it.
+        group.spare.borrow_mut().take();
         glib::Propagation::Proceed
     }
 
@@ -420,7 +456,10 @@ impl Window {
     /// chosen, in the header.
     fn set_titles(&self, tab: &Tab, title: &str, subtitle: &str) {
         *tab.title.borrow_mut() = (title.to_string(), subtitle.to_string());
-        if let Some(page) = tab.page.borrow().as_ref() {
+        // The bar names a tab after its focused pane.
+        if tab.group.is_focused(tab)
+            && let Some(page) = tab.group.page.borrow().as_ref()
+        {
             page.set_title(title);
             page.set_tooltip(&glib::markup_escape_text(if subtitle.is_empty() { title } else { subtitle }));
         }
@@ -644,6 +683,9 @@ impl Window {
         let Some(shown) = tab.reader.shown().filter(|_| tab.showing().as_deref() == Some("reader")) else { return };
         if !Vault::is_note(&shown.path) {
             self.toasts.add_toast(adw::Toast::new("Only a note can be edited here."));
+            return;
+        }
+        if !self.one_editor(&tab) {
             return;
         }
         if !tab.editor.load(&store.root, &shown.path, shown.line) {
@@ -908,6 +950,8 @@ impl Window {
             command("Forward", "Go", "win.forward", "Ctrl+]"),
             command("New Tab", "Tab", "win.new-tab", "Ctrl+T"),
             command("Close Tab", "Tab", "win.close-tab", "Ctrl+W"),
+            command("Split Right or Close the Split", "View", "win.split", "Ctrl+\\"),
+            command("Focus the Other Pane", "View", "win.other-pane", "Ctrl+Alt+\\"),
             command("Edit or Read the Note", "Note", "win.edit", "Ctrl+E"),
             command("Show the Graph", "View", "win.graph", "Ctrl+Alt+G"),
             command("Show or Hide the Inspector", "View", "win.inspector", "Ctrl+Alt+I"),
@@ -993,18 +1037,23 @@ impl Window {
     }
 
     /// The tabs' notes, kept for the next launch: `tabs-<hash>.json` beside
-    /// the reading places, the chosen one marked.
+    /// the reading places, the chosen one marked. `splits` has the right
+    /// pane's note of a split tab (`""` on its home page), else null, and
+    /// `focused` the side each tab's commands acted on.
     fn save_tabs(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
         let tabs = self.tabs_in_order();
         let chosen = self.tab();
-        let paths: Vec<String> = tabs.iter().map(|tab| tab.current().unwrap_or_default()).collect();
-        let at = tabs.iter().position(|tab| Rc::ptr_eq(tab, &chosen)).unwrap_or(0);
+        let note = |tab: &Rc<Tab>| tab.current().unwrap_or_default();
+        let paths: Vec<String> = tabs.iter().map(|panes| note(&panes[0])).collect();
+        let splits: Vec<Option<String>> = tabs.iter().map(|panes| panes.get(1).map(note)).collect();
+        let focused: Vec<usize> = tabs.iter().map(|panes| panes.iter().position(|tab| tab.group.is_focused(tab)).unwrap_or(0)).collect();
+        let at = tabs.iter().position(|panes| Rc::ptr_eq(&panes[0].group, &chosen.group)).unwrap_or(0);
         let file = crate::places::state_file(&store.root, "tabs");
         if let Some(folder) = file.parent() {
             let _ = std::fs::create_dir_all(folder);
         }
-        let _ = std::fs::write(&file, json!({ "tabs": paths, "chosen": at }).to_string());
+        let _ = std::fs::write(&file, json!({ "tabs": paths, "splits": splits, "focused": focused, "chosen": at }).to_string());
     }
 
     /// The tabs [save_tabs] kept, each on its note while it is still there.
@@ -1017,16 +1066,25 @@ impl Window {
             .map(|t| t.iter().filter_map(|p| p.as_str().map(String::from)).collect())
             .unwrap_or_default();
         let chosen = saved.get("chosen").and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+        let at_index = |key: &str, at: usize| saved.get(key).and_then(|list| list.get(at)).cloned();
         for (at, path) in paths.iter().enumerate().take(20) {
             let tab = if at == 0 { self.tab() } else { self.new_tab() };
             if store.index().files.contains(path) {
                 self.go_in(&tab, path, None, None, false);
             }
+            let Some(right) = at_index("splits", at).and_then(|split| split.as_str().map(String::from)) else { continue };
+            let other = self.split_pane(&tab);
+            if store.index().files.contains(&right) {
+                self.go_in(&other, &right, None, None, false);
+            } else {
+                self.show_home(&other);
+            }
+            let focused = at_index("focused", at).and_then(|f| f.as_u64()).unwrap_or(0);
+            self.focus_pane(if focused == 1 { &other } else { &tab }, false);
         }
-        if let Some(tab) = self.tabs_in_order().get(chosen)
-            && let Some(page) = tab.page.borrow().as_ref()
-        {
-            self.tab_view.set_selected_page(page);
+        let page = self.tabs_in_order().get(chosen).and_then(|panes| panes[0].group.page.borrow().clone());
+        if let Some(page) = page {
+            self.tab_view.set_selected_page(&page);
         }
     }
 
@@ -1034,6 +1092,7 @@ impl Window {
         self.add_file_actions();
         self.add_vault_tools();
         self.add_extra_actions();
+        self.add_split_actions();
         let quick_open = gio::SimpleAction::new("quick-open", None);
         let this = self.clone();
         quick_open.connect_activate(move |_, _| this.palette(Mode::Files, ""));

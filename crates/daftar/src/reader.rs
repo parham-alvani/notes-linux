@@ -64,9 +64,31 @@ pub struct Request {
     pub line: Option<usize>,
 }
 
+/// Where a link the page posts opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenIn {
+    Here,
+    NewTab,
+    OtherPane,
+}
+
+impl OpenIn {
+    /// A Ctrl or ⌘ click (or a middle click) is a new tab, an Alt click the
+    /// other pane of a split.
+    pub fn from_click(new_tab: bool, other_pane: bool) -> OpenIn {
+        if new_tab {
+            OpenIn::NewTab
+        } else if other_pane {
+            OpenIn::OtherPane
+        } else {
+            OpenIn::Here
+        }
+    }
+}
+
 // Shared, so a handler is taken out of the state before it runs: one that
 // shows a note borrows the state again.
-type OpenHandler = Rc<dyn Fn(&str, Option<&str>, bool)>;
+type OpenHandler = Rc<dyn Fn(&str, Option<&str>, OpenIn)>;
 type NoticeHandler = Rc<dyn Fn(&str)>;
 type EditTaskHandler = Rc<dyn Fn(&str, usize)>;
 type CursorHandler = Rc<dyn Fn(&str, usize)>;
@@ -126,8 +148,8 @@ impl Reader {
         self.state.borrow_mut().store = Some(store);
     }
 
-    /// A link followed: the path, the heading it names, and whether it asked for a new tab.
-    pub fn connect_open(&self, handler: impl Fn(&str, Option<&str>, bool) + 'static) {
+    /// A link followed: the path, the heading it names, and where it asked to open.
+    pub fn connect_open(&self, handler: impl Fn(&str, Option<&str>, OpenIn) + 'static) {
         self.state.borrow_mut().on_open = Some(Rc::new(handler));
     }
 
@@ -364,7 +386,8 @@ impl Reader {
             "open" => {
                 let (path, target) = (text("path"), text("target"));
                 let anchor = Some(text("anchor")).filter(|a| !a.is_empty());
-                let new_tab = body.get("newTab").and_then(Value::as_bool).unwrap_or(false);
+                let flag = |key: &str| body.get(key).and_then(Value::as_bool).unwrap_or(false);
+                let place = OpenIn::from_click(flag("newTab"), flag("otherPane"));
                 let Some(store) = self.state.borrow().store.clone() else { return };
                 // A markdown link, `[x](Notes/a.md)`, names its note by path.
                 let found = if path.is_empty() {
@@ -376,7 +399,7 @@ impl Reader {
                     Some(found) => {
                         let handler = self.state.borrow().on_open.clone();
                         if let Some(handler) = handler {
-                            handler(&found, anchor.as_deref(), new_tab);
+                            handler(&found, anchor.as_deref(), place);
                         }
                     }
                     None => self.notice(&format!("“{target}” is not in the vault yet.")),
@@ -740,5 +763,14 @@ mod tests {
     #[test]
     fn the_reader_is_built_in() {
         assert!(READER.get_file("index.html").is_some(), "run `just web` first");
+    }
+
+    #[test]
+    fn a_click_opens_where_its_keys_say() {
+        assert_eq!(OpenIn::from_click(false, false), OpenIn::Here);
+        assert_eq!(OpenIn::from_click(true, false), OpenIn::NewTab);
+        assert_eq!(OpenIn::from_click(false, true), OpenIn::OtherPane);
+        // Ctrl with Alt is a new tab, as ⌘ with ⌥ is on the Mac.
+        assert_eq!(OpenIn::from_click(true, true), OpenIn::NewTab);
     }
 }

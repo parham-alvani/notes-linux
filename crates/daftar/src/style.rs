@@ -68,6 +68,8 @@ fn css(palette: &[(&str, &str)]) -> String {
     }
     out.push_str(
         "vte-terminal { padding: 6px 12px; }\n\
+         .daftar-split > stack { border-top: 2px solid transparent; }\n\
+         .daftar-split > stack.daftar-pane-focused { border-top-color: @daftar_accent; }\n\
          .daftar-page, .daftar-page > viewport, .daftar-editor { background-color: @daftar_background; }\n\
          .daftar-card { border-radius: 14px; padding: 16px; }\n\
          .daftar-card .card-title { font-weight: bold; }\n\
