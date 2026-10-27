@@ -76,6 +76,7 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.history", &["<Ctrl><Alt>y"]);
     app.set_accels_for_action("win.read-aloud", &["<Ctrl><Alt>r"]);
     app.set_accels_for_action("win.export-pdf", &["<Ctrl><Shift>e"]);
+    app.set_accels_for_action("win.clip", &["<Ctrl><Shift>l"]);
     // A tab closes, and the last one closes the window. Ctrl+Tab, Ctrl+Page
     // Up and Down and Alt+1 to 9 are the tab view's own.
     app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);

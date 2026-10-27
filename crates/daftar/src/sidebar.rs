@@ -48,6 +48,8 @@ struct Shared {
     on_tag: RefCell<Option<TagHandler>>,
     /// What a drop on a folder does: the window moves the files into it.
     on_move: RefCell<Option<MoveHandler>>,
+    /// A web address dropped on the sidebar: the window clips the page.
+    on_link: RefCell<Option<TagHandler>>,
 }
 
 fn node_of(item: &glib::Object) -> Option<TreeNode> {
@@ -352,6 +354,24 @@ impl Sidebar {
         widget.append(&marks_section);
         widget.append(&tree);
         widget.append(&tags_section);
+        // A link dragged from a browser onto the sidebar is clipped as a note.
+        let link = gtk::DropTarget::new(glib::types::Type::STRING, gdk::DragAction::COPY);
+        {
+            let shared = shared.clone();
+            link.connect_drop(move |_, value, _, _| {
+                let Ok(text) = value.get::<String>() else { return false };
+                let url = text.lines().next().unwrap_or("").trim().to_string();
+                let handler = shared.on_link.borrow().clone();
+                match handler {
+                    Some(handler) if url.starts_with("http://") || url.starts_with("https://") => {
+                        handler(&url);
+                        true
+                    }
+                    _ => false,
+                }
+            });
+        }
+        widget.add_controller(link);
         Sidebar {
             widget,
             root,
@@ -367,6 +387,11 @@ impl Sidebar {
             tags_section,
             shared,
         }
+    }
+
+    /// [handler] gets a web address dropped anywhere on the sidebar.
+    pub fn connect_link(&self, handler: impl Fn(&str) + 'static) {
+        *self.shared.on_link.borrow_mut() = Some(Rc::new(handler));
     }
 
     /// [handler] gets the vault paths dropped on a folder row, and the folder.

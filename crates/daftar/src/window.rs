@@ -220,6 +220,13 @@ impl Window {
         *opener.borrow_mut() = Some(this.clone());
         {
             let opener = opener.clone();
+            let clipper = opener.clone();
+            this.sidebar.connect_link(move |url| {
+                let window = clipper.borrow().clone();
+                if let Some(window) = window {
+                    window.clip(url);
+                }
+            });
             let mover = opener.clone();
             this.sidebar.connect_move(move |paths, folder| {
                 let window = mover.borrow().clone();

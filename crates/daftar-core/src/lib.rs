@@ -52,6 +52,8 @@ pub mod vault_edits;
 pub mod vault_moves;
 pub mod vault_replace;
 pub mod web_clip;
+#[cfg(feature = "web")]
+pub mod web_fetch;
 pub mod yaml;
 
 pub use base_expression::{BaseExpr, BaseParseError, BaseParser, BaseSpan, BaseValue};

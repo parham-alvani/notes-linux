@@ -572,7 +572,6 @@ dependencies = [
  "regex",
  "tempfile",
  "unicode-width",
- "ureq",
  "walkdir",
 ]
 
@@ -592,6 +591,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-normalization",
+ "ureq",
  "walkdir",
 ]
 

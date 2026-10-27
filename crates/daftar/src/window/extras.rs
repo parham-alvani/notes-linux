@@ -2,7 +2,7 @@
 //! conflicts, read aloud and Export as PDF, each on the chosen tab's note.
 
 use adw::prelude::*;
-use gtk::gio;
+use gtk::{gio, glib};
 
 use daftar_core::{Vault, VaultEdits};
 
@@ -17,6 +17,7 @@ impl Window {
             ("read-aloud", Window::read_aloud),
             ("export-pdf", Window::export_pdf),
             ("neovide", Window::open_in_neovide),
+            ("clip", Window::ask_clip),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let this = self.clone();
@@ -46,6 +47,7 @@ impl Window {
             ),
             command("Export the Note as PDF", "Note", "win.export-pdf", "Ctrl+Shift+E"),
             command("Quick Capture", "File", "app.capture", ""),
+            command("Clip Web Page…", "File", "win.clip", "Ctrl+Shift+L"),
             command(
                 if self.hidden_settings().1 { "Hide Hidden Files" } else { "Show Hidden Files" },
                 "View",
@@ -63,6 +65,70 @@ impl Window {
             commands.push(command("Resolve Sync Conflicts", "Git", "win.conflicts", ""));
         }
         commands
+    }
+
+    /// Clip Web Page…: an address, from the clipboard when it holds one,
+    /// and the page as a new note in Clippings.
+    fn ask_clip(&self) {
+        let entry = gtk::Entry::builder().placeholder_text("https://…").activates_default(true).build();
+        let dialog = adw::AlertDialog::builder()
+            .heading("Clip Web Page")
+            .body("The page's text becomes a new note in Clippings, its pictures saved in the vault.")
+            .extra_child(&entry)
+            .default_response("clip")
+            .close_response("cancel")
+            .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("clip", "Clip")]);
+        dialog.set_response_appearance("clip", adw::ResponseAppearance::Suggested);
+        {
+            let entry = entry.clone();
+            glib::spawn_future_local(async move {
+                if let Ok(Some(text)) = entry.clipboard().read_text_future().await {
+                    let text = text.trim().to_string();
+                    if (text.starts_with("http://") || text.starts_with("https://")) && entry.text().is_empty() {
+                        entry.set_text(&text);
+                    }
+                }
+            });
+        }
+        let this = self.clone();
+        {
+            let entry = entry.clone();
+            dialog.connect_response(Some("clip"), move |_, _| {
+                let url = entry.text().trim().to_string();
+                if !url.is_empty() {
+                    this.clip(&url);
+                }
+            });
+        }
+        dialog.present(Some(&self.window));
+        entry.grab_focus();
+    }
+
+    /// The page at [url] as a new note, fetched off the window; the note opens.
+    pub(crate) fn clip(&self, url: &str) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let (root, url) = (store.root.clone(), url.to_string());
+        self.notice(&format!("Clipping {url}…"));
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let agent = concat!("Daftar/", env!("CARGO_PKG_VERSION"));
+            let done = gio::spawn_blocking(move || {
+                daftar_core::web_fetch::clip(&root, &url, "Clippings", None, agent).map(|clip| (clip.path, clip.skipped.len()))
+            })
+            .await
+            .unwrap_or_else(|_| Err("the clip stopped".into()));
+            match done {
+                Ok((path, skipped)) => {
+                    this.files_changed(std::collections::BTreeSet::from([path.clone()]));
+                    this.open(&path, None);
+                    if skipped > 0 {
+                        this.notice(&format!("Clipped; {skipped} pictures stayed links."));
+                    }
+                }
+                Err(error) => this.notice(&format!("Not clipped: {error}")),
+            }
+        });
     }
 
     /// The note in Neovide, at the line in view, with the person's own

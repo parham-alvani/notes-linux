@@ -12,14 +12,13 @@ path = "src/main.rs"
 [dependencies]
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive", "env"] }
-daftar-core = { version = "0.4.5", path = "../daftar-core" }
+daftar-core = { version = "0.4.5", path = "../daftar-core", features = ["web"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "webp", "tiff"] }
 md-5 = "0.11.0"
 notify = "8.2.1"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
 regex = "1.13.1"
 unicode-width = "0.2.2"
-ureq = "3.5.0"
 walkdir = "2.5.0"
 
 [dev-dependencies]
