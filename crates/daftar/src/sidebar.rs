@@ -4,8 +4,10 @@
 //! commands on a right click.
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
@@ -61,12 +63,50 @@ fn icon(node: &TreeNode) -> &'static str {
     }
 }
 
+/// A logo as read: when its file changed, and its picture if it read.
+type Read = (Option<SystemTime>, Option<gdk::Texture>);
+
+thread_local! {
+    /// Folder logos, read once and kept until the file changes.
+    static LOGOS: RefCell<HashMap<PathBuf, Read>> = RefCell::new(HashMap::new());
+}
+
+/// The side a logo is drawn at, in pixels: twice the row's icon, so an SVG
+/// stays sharp on a doubled screen.
+const LOGO_SIZE: i32 = 32;
+
+/// The picture of the logo at [file], or `None` when it does not read.
+fn logo(file: &Path) -> Option<gdk::Texture> {
+    let modified = std::fs::metadata(file).and_then(|m| m.modified()).ok();
+    if let Some((at, texture)) = LOGOS.with(|logos| logos.borrow().get(file).cloned())
+        && at == modified
+    {
+        return texture;
+    }
+    // A drawing is drawn at the size it is shown at; a picture as it is.
+    #[allow(deprecated)]
+    let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(file, LOGO_SIZE, LOGO_SIZE, true)
+        .ok()
+        .map(|pixbuf| gdk::Texture::for_pixbuf(&pixbuf))
+        .or_else(|| gdk::Texture::from_filename(file).ok());
+    LOGOS.with(|logos| logos.borrow_mut().insert(file.to_path_buf(), (modified, texture.clone())));
+    texture
+}
+
 /// Draws [icon] on a row's image and emoji label, or the default [fallback].
-fn draw_icon(image: &gtk::Image, emoji: &gtk::Label, icon: Option<&Icon>, fallback: &str) {
+/// A folder's [logo] wins over both.
+fn draw_icon(image: &gtk::Image, emoji: &gtk::Label, icon: Option<&Icon>, fallback: &str, logo_file: Option<PathBuf>) {
     for class in image.css_classes() {
-        if class.starts_with("iconic-") {
+        if class.starts_with("iconic-") || class == "folder-logo" {
             image.remove_css_class(&class);
         }
+    }
+    if let Some(texture) = logo_file.as_deref().and_then(logo) {
+        emoji.set_visible(false);
+        image.set_visible(true);
+        image.set_paintable(Some(&texture));
+        image.add_css_class("folder-logo");
+        return;
     }
     match icon.and_then(|i| i.name.as_deref()).filter(|_| icon.is_some_and(Icon::is_emoji)) {
         Some(emoji_name) => {
@@ -107,7 +147,8 @@ impl Sidebar {
             factory.connect_setup(move |_, item| {
                 let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                row.append(&gtk::Image::new());
+                // Rounded corners clip a logo, as the Mac draws it.
+                row.append(&gtk::Image::builder().overflow(gtk::Overflow::Hidden).build());
                 row.append(&gtk::Label::builder().visible(false).width_chars(2).build());
                 row.append(&gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build());
                 let expander = gtk::TreeExpander::new();
@@ -157,7 +198,8 @@ impl Sidebar {
                     return;
                 };
                 let iconic = shared.iconic.borrow();
-                draw_icon(&image, &emoji, iconic.icon(&node.path, node.is_folder()), icon(&node));
+                let logo = node.logo.as_ref().and_then(|file| Some(shared.root.borrow().as_ref()?.join(file)));
+                draw_icon(&image, &emoji, iconic.icon(&node.path, node.is_folder()), icon(&node), logo);
                 label.set_text(&node.name);
             });
         }
@@ -334,9 +376,17 @@ impl Sidebar {
             };
             let title = entry.title.clone().unwrap_or_else(|| Vault::title(&entry.path));
             let row = gtk::Box::builder().spacing(8).build();
-            let (image, emoji) = (gtk::Image::new(), gtk::Label::builder().visible(false).width_chars(2).build());
+            let (image, emoji) = (
+                gtk::Image::builder().overflow(gtk::Overflow::Hidden).build(),
+                gtk::Label::builder().visible(false).width_chars(2).build(),
+            );
             let fallback = if entry.folder { "folder-symbolic" } else { "user-bookmarks-symbolic" };
-            draw_icon(&image, &emoji, iconic.icon(&entry.path, entry.folder), fallback);
+            let logo = entry
+                .folder
+                .then(|| Vault::logo(&entry.path, files))
+                .flatten()
+                .and_then(|file| Some(self.shared.root.borrow().as_ref()?.join(file)));
+            draw_icon(&image, &emoji, iconic.icon(&entry.path, entry.folder), fallback, logo);
             row.append(&image);
             row.append(&emoji);
             row.append(&gtk::Label::builder().label(&title).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build());
