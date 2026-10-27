@@ -272,6 +272,24 @@ fn draw_home(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
+    let right = match &app.git_status {
+        Some(status) => {
+            let mut spans = vec![Span::styled(format!(" ⎇ {} ", status.branch), Style::new().fg(theme.text))];
+            if status.ahead > 0 {
+                spans.push(Span::styled(format!("↑{} ", status.ahead), Style::new().fg(theme.green)));
+            }
+            if status.behind > 0 {
+                spans.push(Span::styled(format!("↓{} ", status.behind), Style::new().fg(theme.orange)));
+            }
+            if status.changed > 0 {
+                spans.push(Span::styled(format!("●{} ", status.changed), Style::new().fg(theme.vivid_yellow)));
+            } else {
+                spans.push(Span::styled("✓ ", Style::new().fg(theme.green)));
+            }
+            Line::from(spans).style(Style::new().bg(theme.panel))
+        }
+        None => Line::from(Span::styled(" no git ", theme.faint())),
+    };
     let mut left = vec![
         Span::styled(" daftar ", Style::new().fg(theme.background).bg(theme.accent).add_modifier(Modifier::BOLD)),
         Span::styled(format!(" {} ", app.vault_name()), Style::new().fg(theme.text).bg(theme.panel)),
@@ -297,8 +315,24 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                     hints.insert(0, ("enter", "follow"));
                 }
             }
-            hints.push(("?", "help"));
-            for (n, (key, what)) in hints.into_iter().enumerate() {
+            // Whole hints, as many as fit beside the git status; "? help" last.
+            let room = (area.width as usize).saturating_sub(right.width() + Line::from(left.clone()).width() + 1);
+            let cost = |first: bool, (key, what): (&str, &str)| if first { 0 } else { 3 } + key.len() + 1 + what.len();
+            let help = ("?", "help");
+            let mut shown = Vec::new();
+            let mut used = 0;
+            for hint in hints {
+                let width = cost(shown.is_empty(), hint);
+                if used + width + cost(false, help) > room {
+                    break;
+                }
+                used += width;
+                shown.push(hint);
+            }
+            if used + cost(shown.is_empty(), help) <= room {
+                shown.push(help);
+            }
+            for (n, (key, what)) in shown.into_iter().enumerate() {
                 if n > 0 {
                     left.push(Span::styled(" · ", theme.faint()));
                 }
@@ -307,24 +341,6 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
-    let right = match &app.git_status {
-        Some(status) => {
-            let mut spans = vec![Span::styled(format!(" ⎇ {} ", status.branch), Style::new().fg(theme.text))];
-            if status.ahead > 0 {
-                spans.push(Span::styled(format!("↑{} ", status.ahead), Style::new().fg(theme.green)));
-            }
-            if status.behind > 0 {
-                spans.push(Span::styled(format!("↓{} ", status.behind), Style::new().fg(theme.orange)));
-            }
-            if status.changed > 0 {
-                spans.push(Span::styled(format!("●{} ", status.changed), Style::new().fg(theme.vivid_yellow)));
-            } else {
-                spans.push(Span::styled("✓ ", Style::new().fg(theme.green)));
-            }
-            Line::from(spans).style(Style::new().bg(theme.panel))
-        }
-        None => Line::from(Span::styled(" no git ", theme.faint())),
-    };
     let right_width = right.width() as u16;
     let [left_area, right_area] = Layout::horizontal([Constraint::Min(10), Constraint::Length(right_width)]).areas(area);
     frame.render_widget(Paragraph::new(Line::from(left)), left_area);
