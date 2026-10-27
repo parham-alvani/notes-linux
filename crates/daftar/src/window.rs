@@ -43,6 +43,8 @@ const RECENT: usize = 20;
 
 #[derive(Clone)]
 pub struct Window {
+    /// The commands the palette ran in this window, the last first.
+    recent_commands: Rc<RefCell<Vec<String>>>,
     window: adw::ApplicationWindow,
     settings: Rc<RefCell<AppSettings>>,
     title: Rc<crumbs::TitleBar>,
@@ -213,6 +215,7 @@ impl Window {
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
             periodic_nav: periodic_nav.clone(),
+            recent_commands: Rc::new(RefCell::new(Vec::new())),
         };
         *opener.borrow_mut() = Some(this.clone());
         {
@@ -1254,8 +1257,15 @@ impl Window {
         commands.push(command("New Window", "App", "app.new-window", "Ctrl+Alt+N"));
         commands.push(command("Settings", "App", "win.preferences", "Ctrl+,"));
         commands.push(command("Quit", "App", "app.quit", "Ctrl+Q"));
-        let window = self.window.clone();
-        palette::present_commands(&self.window, commands, move |action| {
+        let (window, recent) = (self.window.clone(), self.recent_commands.clone());
+        let used = recent.borrow().clone();
+        palette::present_commands(&self.window, commands, used, move |action| {
+            {
+                let mut recent = recent.borrow_mut();
+                recent.retain(|other| other != action);
+                recent.insert(0, action.to_string());
+                recent.truncate(8);
+            }
             // `win.rename::` is an action with an empty string target: the note on screen.
             match action.strip_suffix("::") {
                 Some(name) => {

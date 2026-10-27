@@ -106,6 +106,8 @@ pub struct Editor {
     /// The characters changed since the colors were last brought up to date.
     dirty: Cell<Option<(usize, usize)>>,
     restyle_soon: Cell<bool>,
+    /// A cursor move waiting for the idle that tints its line.
+    reveal_soon: Cell<bool>,
     open: RefCell<Option<Open>>,
     pending: RefCell<Option<glib::SourceId>>,
     settings: Rc<RefCell<AppSettings>>,
@@ -207,6 +209,7 @@ impl Editor {
             auto_closed: Cell::new(None),
             dirty: Cell::new(None),
             restyle_soon: Cell::new(false),
+            reveal_soon: Cell::new(false),
             open: RefCell::new(None),
             pending: RefCell::new(None),
             settings,
@@ -497,6 +500,7 @@ impl Editor {
         let code = settings.file.string("appearance.code_font").filter(|f| !f.is_empty()).unwrap_or_else(|| "monospace".into());
         self.font_css.load_from_string(&format!("textview.daftar-editor {{ font-family: {text}; font-size: {size}px; }}"));
         self.styler.set_code_font(&code);
+        self.styler.set_live(settings.file.bool("editor.live_preview").unwrap_or(true));
         // Line height 1.6: the space between lines and between wrapped rows.
         let gap = (size as f64 * 0.6).round() as i32;
         self.view.set_pixels_below_lines(gap);
@@ -540,7 +544,29 @@ impl Editor {
                 && (mark.name().as_deref() == Some("insert") || mark.name().as_deref() == Some("selection_bound"))
             {
                 this.update_counts();
+                this.schedule_reveal();
             }
+        });
+    }
+
+    /// The cursor's line tinted, and its marks shown, once the key that
+    /// moved it is done with.
+    fn schedule_reveal(self: &Rc<Self>) {
+        if self.reveal_soon.replace(true) {
+            return;
+        }
+        let this = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            let Some(this) = this.upgrade() else { return };
+            this.reveal_soon.set(false);
+            let (a, b) = this.buffer.selection_bounds().map_or_else(
+                || {
+                    let at = this.buffer.iter_at_mark(&this.buffer.get_insert()).offset() as usize;
+                    (at, at)
+                },
+                |(a, b)| (a.offset() as usize, b.offset() as usize),
+            );
+            this.styler.reveal((a, b));
         });
     }
 

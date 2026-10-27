@@ -75,6 +75,8 @@ struct Look {
     flip: bool,
     /// Persian letters, in Vazirmatn as on the phone and the Mac.
     persian: bool,
+    /// A mark live preview hides.
+    hidden: bool,
 }
 
 fn fg(name: &'static str) -> Look {
@@ -148,6 +150,14 @@ pub struct Styler {
     structure: RefCell<Vec<String>>,
     /// The rest of a long note, styled a part at a time.
     pending: RefCell<Option<glib::SourceId>>,
+    /// Live preview (`editor.live_preview`): away from the cursor's lines
+    /// the marks hide, so the note reads as it will look.
+    live: std::cell::Cell<bool>,
+    /// The cursor's lines, as characters from the start of the first to
+    /// past the end of the last, where every mark shows.
+    revealed: std::cell::Cell<(usize, usize)>,
+    /// The tint of the cursor's line, as the Mac draws it.
+    line: gtk::TextTag,
 }
 
 /// Characters styled at once; the rest of a long note follows between frames.
@@ -163,7 +173,12 @@ impl Styler {
             code_font: RefCell::new("monospace".into()),
             structure: RefCell::new(Vec::new()),
             pending: RefCell::new(None),
+            live: std::cell::Cell::new(false),
+            revealed: std::cell::Cell::new((0, 0)),
+            line: gtk::TextTag::new(Some("daftar:cursor-line")),
         });
+        styler.line.set_paragraph_background_rgba(Some(&rgba("orange", 0.07, manager.is_dark())));
+        buffer.tag_table().add(&styler.line);
         let this = Rc::downgrade(&styler);
         manager.connect_dark_notify(move |manager| {
             if let Some(this) = this.upgrade() {
@@ -171,6 +186,7 @@ impl Styler {
                 for (tag, look) in this.tags.borrow().values() {
                     apply_look(tag, look, manager.is_dark(), &this.code_font.borrow());
                 }
+                this.line.set_paragraph_background_rgba(Some(&rgba("orange", 0.07, manager.is_dark())));
             }
         });
         styler
@@ -192,9 +208,9 @@ impl Styler {
         apply_look(&tag, &look, self.dark.get(), &self.code_font.borrow());
         self.buffer.tag_table().add(&tag);
         self.tags.borrow_mut().insert(name.to_string(), (tag.clone(), look));
-        // Marks always win: they are the top tags.
+        // Marks always win: they are the top tags, and a hidden mark over them.
         let top = self.buffer.tag_table().size() - 1;
-        for raised in ["highlight-mark", "markup"] {
+        for raised in ["highlight-mark", "markup", "hidden"] {
             if let Some((tag, _)) = self.tags.borrow().get(raised) {
                 tag.set_priority(top);
             }
@@ -284,7 +300,89 @@ impl Styler {
                 self.buffer.apply_tag(&tag, &iter(span.range.start), &iter(span.range.end));
             }
         }
-        self.style_script(&chars, range);
+        self.style_script(&chars, range.clone());
+        if self.live.get() {
+            self.hide_marks(&spans, &chars, range);
+        }
+    }
+
+    /// Live preview on or off; the note is styled again for it.
+    pub fn set_live(self: &Rc<Self>, on: bool) {
+        if self.live.replace(on) != on {
+            self.restyle_all();
+        }
+    }
+
+    /// The cursor is on characters [selection]: its line is tinted (with no
+    /// selection), and with live preview the lines it left hide their marks
+    /// again and the ones it is on show them. Run from an idle, never while
+    /// the view lays out.
+    pub fn reveal(self: &Rc<Self>, selection: (usize, usize)) {
+        let text = self.text();
+        let chars: Vec<char> = text.chars().collect();
+        let (from, to) = (selection.0.min(chars.len()), selection.1.min(chars.len()));
+        let start = chars[..from].iter().rposition(|&c| c == '\n').map_or(0, |n| n + 1);
+        let end = chars[to..].iter().position(|&c| c == '\n').map_or(chars.len(), |n| to + n + 1).min(chars.len());
+        let (all_start, all_end) = self.buffer.bounds();
+        self.buffer.remove_tag(&self.line, &all_start, &all_end);
+        if from == to {
+            self.buffer.apply_tag(&self.line, &self.buffer.iter_at_offset(start as i32), &self.buffer.iter_at_offset(end as i32));
+        }
+        let old = self.revealed.replace((start, end));
+        if !self.live.get() || old == (start, end) {
+            return;
+        }
+        for (a, b) in [old, (start, end)] {
+            if b <= chars.len() && a < b {
+                self.style(&text, a..b);
+            }
+        }
+    }
+
+    /// Away from the cursor's lines the marks go -- `**`, `==`, `[[` and a
+    /// link's target, a heading's `#` -- as the Mac's `hideMarks`. A quote's
+    /// `>` and a callout's type stay: they say what the line is.
+    fn hide_marks(&self, spans: &[HighlightSpan], chars: &[char], range: Range<usize>) {
+        let (shown_from, shown_to) = self.revealed.get();
+        let hidden = self.tag("hidden", || Look { hidden: true, ..Look::default() });
+        let iter = |offset: usize| self.buffer.iter_at_offset(offset as i32);
+        let hide = |from: usize, to: usize| {
+            if from < to && to <= chars.len() && (to <= shown_from || from >= shown_to) && from >= range.start && to <= range.end {
+                self.buffer.apply_tag(&hidden, &iter(from), &iter(to));
+            }
+        };
+        for (at, span) in spans.iter().enumerate() {
+            let (from, to) = (span.range.start, span.range.end);
+            if to > chars.len() || from >= to {
+                continue;
+            }
+            match span.kind {
+                HighlightKind::Markup => {
+                    if chars[from] == '>' || chars[from..].starts_with(&['[', '!']) {
+                        continue;
+                    }
+                    // A heading's `#` goes with the space after it.
+                    let heading = chars[from..to].iter().all(|&c| c == '#') && chars.get(to) == Some(&' ');
+                    hide(from, to + usize::from(heading));
+                }
+                // `==🔴 text==`: the color's emoji goes too, as in the reader.
+                HighlightKind::Highlight if to - from > 4 && "🔴🟠🟡🟢🔵🟣".contains(chars[from + 2]) => {
+                    hide(from + 2, from + 3 + usize::from(chars.get(from + 3) == Some(&' ')));
+                }
+                // `[label](target)`: the brackets and the target go, the label reads.
+                HighlightKind::Link => {
+                    let Some(next) = spans.get(at + 1).filter(|next| next.kind == HighlightKind::Url && next.range.start == to) else {
+                        continue;
+                    };
+                    if to - from >= 2 {
+                        hide(from, from + 1);
+                        hide(to - 1, to);
+                        hide(next.range.start, next.range.end);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Each line on the side its text reads from, whatever its syntax starts
@@ -424,6 +522,9 @@ fn apply_look(tag: &gtk::TextTag, look: &Look, dark: bool, code_font: &str) {
     }
     if look.persian {
         tag.set_family(Some(PERSIAN_FONT));
+    }
+    if look.hidden {
+        tag.set_invisible(true);
     }
 }
 

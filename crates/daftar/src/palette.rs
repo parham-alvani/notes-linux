@@ -115,23 +115,31 @@ pub fn present(
     show(parent, placeholder, query, find, on_open);
 }
 
-/// The command palette: [commands] ranked by how well their names match.
-pub fn present_commands(parent: &impl IsA<gtk::Widget>, commands: Vec<Command>, on_run: impl Fn(&str) + 'static) {
+/// The command palette: [commands] ranked by how well their names match,
+/// as the Mac ranks them: with nothing typed, the [recent] ones (actions,
+/// the last run first) come first; a recent one ranks a little higher.
+pub fn present_commands(parent: &impl IsA<gtk::Widget>, commands: Vec<Command>, recent: Vec<String>, on_run: impl Fn(&str) + 'static) {
     let find = move |query: &str| -> Vec<Row> {
         let mut found: Vec<(i64, usize, Row)> = commands
             .iter()
             .enumerate()
             .filter_map(|(at, command)| {
                 let hit = Fuzzy::matches(query, command.title)?;
+                let used = recent.iter().position(|action| action == command.action);
                 let positions = hit.positions.iter().copied().collect();
-                let subtitle =
-                    if command.keys.is_empty() { command.group.to_string() } else { format!("{} · {}", command.group, command.keys) };
+                let group = if used.is_some() { "Recent" } else { command.group };
+                let subtitle = if command.keys.is_empty() { group.to_string() } else { format!("{group} · {}", command.keys) };
                 let row = Row {
                     title: marked(command.title, &positions),
                     subtitle: glib::markup_escape_text(&subtitle).into(),
                     path: command.action.to_string(),
                 };
-                Some((hit.score, at, row))
+                let score = match used {
+                    Some(order) if query.trim().is_empty() => i64::MAX - order as i64,
+                    Some(_) => hit.score + 3,
+                    None => hit.score,
+                };
+                Some((score, at, row))
             })
             .collect();
         // The best match first; with no query, the palette's own order.

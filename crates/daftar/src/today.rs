@@ -194,7 +194,9 @@ impl Today {
                 .xalign(if rtl { 1.0 } else { 0.0 })
                 .build(),
         );
-        let meta = gtk::Box::builder().spacing(6).css_classes(["caption"]).build();
+        // A Persian task's note and dates stand under it, on the right.
+        let meta =
+            gtk::Box::builder().spacing(6).css_classes(["caption"]).halign(if rtl { gtk::Align::End } else { gtk::Align::Start }).build();
         meta.append(&gtk::Label::builder().label(Vault::title(&task.path)).css_classes(["daftar-note"]).build());
         if !t.section.is_empty() {
             meta.append(
@@ -219,6 +221,25 @@ impl Today {
             button.connect_clicked(move |_| (this.open)(&path, line));
         }
         row.append(&button);
+        // The Tasks plugin's Postpone, one click away, as on the Mac.
+        if daftar_core::TaskLine::can_postpone(t) {
+            let amounts = gtk::gio::Menu::new();
+            for amount in daftar_core::Postpone::ALL {
+                let item = gtk::gio::MenuItem::new(Some(&format!("Postpone by {}", amount.title())), None);
+                let target = format!("{}\t{}\t{}", task.path, t.line, amount.name());
+                item.set_action_and_target_value(Some("win.postpone"), Some(&target.to_variant()));
+                amounts.append_item(&item);
+            }
+            row.append(
+                &gtk::MenuButton::builder()
+                    .icon_name("alarm-symbolic")
+                    .menu_model(&amounts)
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat", "circular"])
+                    .tooltip_text("Postpone")
+                    .build(),
+            );
+        }
         let menu = gtk::GestureClick::builder().button(gtk::gdk::BUTTON_SECONDARY).build();
         {
             let (this, path, line) = (self.clone(), task.path.clone(), t.line);

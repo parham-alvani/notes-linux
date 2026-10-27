@@ -183,6 +183,19 @@ fn editor_group(
         .description("Your Neovim owns the buffer and writes the file; the editor shows it, with its colors and right-to-left text. Your config sees g:daftar = 1. Ctrl shortcuts stay with the app.")
         .build();
     let file = &settings.borrow().file;
+    let live = adw::SwitchRow::builder()
+        .title("Live preview")
+        .subtitle("Away from the cursor's line the marks hide, so the note reads as it will look")
+        .active(file.bool("editor.live_preview").unwrap_or(true))
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        live.connect_active_notify(move |row| {
+            write("editor.live_preview", Value::Bool(row.is_active()));
+            (hooks.editor)();
+        });
+    }
+    group.add(&live);
     let vim = adw::SwitchRow::builder().title("Edit with Neovim").active(file.bool("editor.vim_mode").unwrap_or(false)).build();
     let path = adw::EntryRow::builder().title("nvim (empty finds it on $PATH)").show_apply_button(true).build();
     path.set_text(&file.string("editor.nvim").unwrap_or_default());
