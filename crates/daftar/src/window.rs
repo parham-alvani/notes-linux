@@ -61,6 +61,17 @@ pub struct Window {
     watcher: Rc<RefCell<Option<FileWatcher>>>,
     /// The notes opened lately in any tab, the last first.
     recent: Rc<RefCell<Vec<String>>>,
+    /// On a periodic note: the earlier and later notes of the series, and a
+    /// menu of the current one and the same time in earlier years.
+    periodic_nav: PeriodicNav,
+}
+
+#[derive(Clone)]
+struct PeriodicNav {
+    widget: gtk::Box,
+    previous: gtk::Button,
+    menu: gtk::MenuButton,
+    next: gtk::Button,
 }
 
 impl Window {
@@ -130,6 +141,16 @@ impl Window {
         let inspector_split =
             adw::OverlaySplitView::builder().sidebar_position(gtk::PackType::End).show_sidebar(false).sidebar(&inspector_pane).build();
         let tab_view = adw::TabView::new();
+        let periodic_nav = {
+            let previous = gtk::Button::builder().icon_name("go-previous-symbolic").action_name("win.periodic-previous").build();
+            let next = gtk::Button::builder().icon_name("go-next-symbolic").action_name("win.periodic-next").build();
+            let menu = gtk::MenuButton::builder().always_show_arrow(false).build();
+            let widget = gtk::Box::builder().css_classes(["linked"]).visible(false).build();
+            widget.append(&previous);
+            widget.append(&menu);
+            widget.append(&next);
+            PeriodicNav { widget, previous, menu, next }
+        };
         let this = Window {
             window: window.clone(),
             settings,
@@ -147,6 +168,7 @@ impl Window {
             store: Rc::new(RefCell::new(None)),
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
+            periodic_nav: periodic_nav.clone(),
         };
         *opener.borrow_mut() = Some(this.clone());
 
@@ -188,6 +210,7 @@ impl Window {
                 .action_name("win.inspector")
                 .build(),
         );
+        header.pack_end(&periodic_nav.widget);
         let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(true).build();
         let content = adw::ToolbarView::new();
         content.add_top_bar(&header);
@@ -880,6 +903,62 @@ impl Window {
         if let Some(action) = self.window.lookup_action("home").and_downcast::<gio::SimpleAction>() {
             action.set_enabled(tab.showing().as_deref() != Some("empty"));
         }
+        self.refresh_periodic_nav(&tab);
+    }
+
+    /// The periodic controls for the note in [tab]: shown on a daily,
+    /// weekly or monthly note of the vault's series, as the Mac's breadcrumb
+    /// has them.
+    fn refresh_periodic_nav(&self, tab: &Rc<Tab>) {
+        let nav = &self.periodic_nav;
+        let store = self.store.borrow().clone();
+        let current = tab.current();
+        let Some((store, path)) = store.zip(current).filter(|(store, path)| store.periodic.period_of(path).is_some()) else {
+            nav.widget.set_visible(false);
+            // Enabled away from a periodic note: the keys say why nothing opens.
+            for name in ["periodic-previous", "periodic-next"] {
+                if let Some(action) = self.window.lookup_action(name).and_downcast::<gio::SimpleAction>() {
+                    action.set_enabled(true);
+                }
+            }
+            return;
+        };
+        let periodic = &store.periodic;
+        let index = store.index();
+        let earlier = periodic.nearest(&index.files, &path, -1);
+        let later = periodic.nearest(&index.files, &path, 1);
+        let years = periodic.years_ago(&index.files, &path);
+        drop(index);
+        let tip = |found: &Option<String>, word: &str, keys: &str| match found {
+            Some(note) => format!("{word}: {} ({keys})", Vault::title(note)),
+            None => format!("No {} note", word.to_lowercase().replace("previous", "earlier").replace("next", "later")),
+        };
+        nav.previous.set_tooltip_text(Some(&tip(&earlier, "Previous", "Ctrl+Alt+Left")));
+        nav.next.set_tooltip_text(Some(&tip(&later, "Next", "Ctrl+Alt+Right")));
+        for (name, found) in [("periodic-previous", &earlier), ("periodic-next", &later)] {
+            if let Some(action) = self.window.lookup_action(name).and_downcast::<gio::SimpleAction>() {
+                action.set_enabled(found.is_some());
+            }
+        }
+        let label = gtk::Box::builder().spacing(6).build();
+        label.append(&gtk::Image::from_icon_name("x-office-calendar-symbolic"));
+        label.append(&gtk::Label::new(Some(periodic.period.noun())));
+        nav.menu.set_child(Some(&label));
+        nav.menu.set_tooltip_text(Some("This period's note, and the same time in earlier years"));
+        let menu = gio::Menu::new();
+        menu.append(Some(periodic.period.current()), Some("win.periodic"));
+        if !years.is_empty() {
+            let earlier_years = gio::Menu::new();
+            for (back, note) in &years {
+                let when = if *back == 1 { "A year ago".to_string() } else { format!("{back} years ago") };
+                let item = gio::MenuItem::new(Some(&format!("{when}: {}", Vault::title(note))), None);
+                item.set_action_and_target_value(Some("win.open-note"), Some(&note.to_variant()));
+                earlier_years.append_item(&item);
+            }
+            menu.append_section(Some("Earlier years"), &earlier_years);
+        }
+        nav.menu.set_menu_model(Some(&menu));
+        nav.widget.set_visible(true);
     }
 
     /// Every tab's reader drawn again, as a new text size or font asks.
@@ -1211,6 +1290,15 @@ impl Window {
         let this = self.clone();
         new_tab.connect_activate(move |_, _| this.new_tab_here());
         self.window.add_action(&new_tab);
+        // A note by its path, here: the periodic menu's earlier years.
+        let open_note = gio::SimpleAction::new("open-note", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        open_note.connect_activate(move |_, target| {
+            if let Some(path) = target.and_then(|t| t.get::<String>()) {
+                this.open(&path, None);
+            }
+        });
+        self.window.add_action(&open_note);
         let open_tab = gio::SimpleAction::new("open-tab", Some(glib::VariantTy::STRING));
         let this = self.clone();
         open_tab.connect_activate(move |_, target| {
