@@ -6,6 +6,8 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use crate::day::Day;
 use crate::task_line::{TaskFields, TaskLine};
 
@@ -84,6 +86,24 @@ impl VaultEdits {
             Failure::Unwritable(e.to_string())
         })
     }
+
+    /// [edit] applied to each of [paths], several files at a time: a tag
+    /// rename can write thousands of notes. For each path, in order, whether
+    /// its text changed, or what stopped it.
+    pub fn apply_all(paths: &[String], root: &Path, edit: impl Fn(&str) -> String + Sync) -> Vec<Result<bool, Failure>> {
+        paths
+            .par_iter()
+            .map(|path| {
+                let mut changed = false;
+                Self::apply(path, root, |text| {
+                    let result = edit(text);
+                    changed = result != text;
+                    Ok(result)
+                })
+                .map(|()| changed)
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -125,5 +145,16 @@ mod tests {
         VaultEdits::apply("a.md", root.path(), |text| VaultEdits::toggle_task(text, 0, ' ', day("2026-10-05"))).unwrap();
         assert_eq!(fs::read_to_string(root.path().join("a.md")).unwrap(), "- [x] One ✅ 2026-10-05\n");
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn apply_all_says_what_changed() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("a.md"), "#old here").unwrap();
+        fs::write(root.path().join("b.md"), "nothing").unwrap();
+        let paths = ["a.md", "b.md", "gone.md"].map(String::from);
+        let results = VaultEdits::apply_all(&paths, root.path(), |text| text.replace("#old", "#new"));
+        assert_eq!(results, [Ok(true), Ok(false), Err(Failure::Unreadable)]);
+        assert_eq!(fs::read_to_string(root.path().join("a.md")).unwrap(), "#new here");
     }
 }

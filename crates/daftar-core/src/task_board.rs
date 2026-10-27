@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::day::Day;
-use crate::task_line::{ParsedTask, TaskLine};
+use crate::task_line::{ParsedTask, TaskFields, TaskLine};
 use crate::text::standard_compare;
 use crate::vault::{Vault, VaultTask};
 use crate::vault_edits::{Failure, VaultEdits};
@@ -37,6 +37,86 @@ pub enum Drop {
     Status(char),
     /// The due date; `None` takes it away.
     Due(Option<String>),
+    /// The Tasks plugin's Postpone: see `TaskLine::postponed`.
+    Postpone(Postpone),
+}
+
+/// How far the Tasks plugin's Postpone menu moves a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Postpone {
+    Day,
+    TwoDays,
+    ThreeDays,
+    Week,
+    TwoWeeks,
+    Month,
+}
+
+impl Postpone {
+    pub const ALL: [Postpone; 6] =
+        [Postpone::Day, Postpone::TwoDays, Postpone::ThreeDays, Postpone::Week, Postpone::TwoWeeks, Postpone::Month];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Postpone::Day => "a Day",
+            Postpone::TwoDays => "2 Days",
+            Postpone::ThreeDays => "3 Days",
+            Postpone::Week => "a Week",
+            Postpone::TwoWeeks => "2 Weeks",
+            Postpone::Month => "a Month",
+        }
+    }
+
+    /// A short name for an action's target: `day`, `2days` and so on.
+    pub fn name(self) -> &'static str {
+        match self {
+            Postpone::Day => "day",
+            Postpone::TwoDays => "2days",
+            Postpone::ThreeDays => "3days",
+            Postpone::Week => "week",
+            Postpone::TwoWeeks => "2weeks",
+            Postpone::Month => "month",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Postpone> {
+        Self::ALL.into_iter().find(|p| p.name() == name)
+    }
+
+    fn apply(self, day: Day) -> Day {
+        match self {
+            Postpone::Day => day.adding_days(1),
+            Postpone::TwoDays => day.adding_days(2),
+            Postpone::ThreeDays => day.adding_days(3),
+            Postpone::Week => day.adding_days(7),
+            Postpone::TwoWeeks => day.adding_days(14),
+            Postpone::Month => day.adding_months(1),
+        }
+    }
+}
+
+impl TaskLine {
+    /// The task postponed as the Tasks plugin does: its due date, or else its
+    /// scheduled date, or else its start date moves on by [amount]. A date
+    /// already past moves on from today, so an overdue task is not overdue
+    /// again at once. `None` for an open task with none of the three dates,
+    /// and for a done or cancelled task.
+    pub fn postponed(fields: &TaskFields, amount: Postpone, today: Day) -> Option<TaskFields> {
+        if TaskLine::is_closed(fields.status) {
+            return None;
+        }
+        let mut fields = fields.clone();
+        let date = [&mut fields.due, &mut fields.scheduled, &mut fields.start]
+            .into_iter()
+            .find_map(|date| date.as_deref().and_then(Day::parse).map(|day| (date, day)))?;
+        *date.0 = Some(amount.apply(date.1.max(today)).to_string());
+        Some(fields)
+    }
+
+    /// Whether the Postpone menu has anything to move on [task].
+    pub fn can_postpone(task: &ParsedTask) -> bool {
+        task.is_open() && (task.due.is_some() || task.scheduled.is_some() || task.start.is_some())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +245,7 @@ impl TaskBoard {
                 }
                 fields.due = day.clone();
             }
+            Drop::Postpone(amount) => fields = TaskLine::postponed(&fields, *amount, today)?,
         }
         TaskLine::edited(raw, &fields).map(|line| vec![line])
     }
@@ -307,5 +388,35 @@ mod tests {
         let shown = task("- [ ] Write").task;
         assert_eq!(VaultEdits::move_task(text, 1, &shown, &Drop::Status('/'), today()).unwrap(), "# Kit\n- [/] Write\n- [ ] Read\n");
         assert_eq!(VaultEdits::move_task(text, 2, &shown, &Drop::Status('/'), today()), Err(Failure::TaskMoved));
+    }
+
+    fn postponed(raw: &str, amount: Postpone) -> Option<String> {
+        TaskBoard::moved(raw, &Drop::Postpone(amount), Day::new(2026, 10, 26).unwrap()).and_then(|l| l.into_iter().next())
+    }
+
+    #[test]
+    fn the_due_date_moves_on_from_itself_or_from_today() {
+        assert_eq!(postponed("- [ ] Report 📅 2026-10-30", Postpone::Day).as_deref(), Some("- [ ] Report 📅 2026-10-31"));
+        assert_eq!(postponed("- [ ] Report 📅 2026-10-30", Postpone::Month).as_deref(), Some("- [ ] Report 📅 2026-11-30"));
+        // Overdue: from today, so it is not overdue again at once.
+        assert_eq!(postponed("- [ ] Report 📅 2026-10-01", Postpone::Week).as_deref(), Some("- [ ] Report 📅 2026-11-02"));
+        assert_eq!(postponed("- [ ] Report 📅 2026-10-26", Postpone::TwoDays).as_deref(), Some("- [ ] Report 📅 2026-10-28"));
+    }
+
+    #[test]
+    fn without_a_due_date_the_scheduled_then_the_start_date_moves() {
+        assert_eq!(
+            postponed("- [ ] Plan ⏳ 2026-10-27 🛫 2026-10-20", Postpone::ThreeDays).as_deref(),
+            Some("- [ ] Plan 🛫 2026-10-20 ⏳ 2026-10-30")
+        );
+        assert_eq!(postponed("- [/] Plan 🛫 2026-10-20 ^id-1", Postpone::TwoWeeks).as_deref(), Some("- [/] Plan 🛫 2026-11-09 ^id-1"));
+    }
+
+    #[test]
+    fn a_task_with_no_date_or_closed_stays() {
+        assert_eq!(postponed("- [ ] No date", Postpone::Day), None);
+        assert_eq!(postponed("- [x] Done 📅 2026-10-30 ✅ 2026-10-25", Postpone::Day), None);
+        assert_eq!(postponed("- [-] Dropped 📅 2026-10-30", Postpone::Day), None);
+        assert_eq!(postponed("- [ ] Bad date 📅 2026-13-40", Postpone::Day), None);
     }
 }

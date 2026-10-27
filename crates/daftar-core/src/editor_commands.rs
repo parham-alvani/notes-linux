@@ -288,7 +288,53 @@ impl EditorCommands {
         let cursor = slash + lead.len() + snippet.cursor;
         TextEdit { range: slash..slash + 1, text: format!("{lead}{}", snippet.text), selection: cursor..cursor }
     }
+
+    /// Ctrl+Alt+1 to Ctrl+Alt+6: the line as a heading of [level]; the same
+    /// level again, or 0, makes it plain text. A list or quote mark stays
+    /// where it is not a heading.
+    pub fn heading(line: &str, level: usize) -> String {
+        let current = HEADING_MARKS.captures(line);
+        let text = current.as_ref().map_or(line, |c| &line[c.get(0).unwrap().end()..]);
+        if level == 0 || current.is_some_and(|c| c[2].len() == level) {
+            return text.to_string();
+        }
+        format!("{} {text}", "#".repeat(level))
+    }
+
+    /// Alt+Shift+Up and Alt+Shift+Down: the lines that hold [selection]
+    /// again, above or below them; the selection follows the copy below.
+    pub fn duplicate_lines(text: &str, selection: Range<usize>, up: bool) -> TextEdit {
+        let chars: Vec<char> = text.chars().collect();
+        let lines = line_range(&chars, selection.clone());
+        let copy: String = chars[lines.clone()].iter().collect();
+        let length = lines.len();
+        let shift = |by: usize| {
+            let start = selection.start + if up { 0 } else { by };
+            start..start + selection.len()
+        };
+        if !copy.ends_with('\n') {
+            // The last line: the copy needs its own line break.
+            return TextEdit { range: lines.end..lines.end, text: format!("\n{copy}"), selection: shift(length + 1) };
+        }
+        TextEdit { range: lines.start..lines.start, text: copy, selection: shift(length) }
+    }
+
+    /// Ctrl+Shift+K: the lines that hold [selection] go, and the cursor
+    /// stays on the line after them.
+    pub fn delete_lines(text: &str, selection: Range<usize>) -> TextEdit {
+        let chars: Vec<char> = text.chars().collect();
+        let mut lines = line_range(&chars, selection);
+        // The last line takes the line break before it.
+        let ends_line = !lines.is_empty() && chars[lines.end - 1] == '\n';
+        if lines.end == chars.len() && lines.start > 0 && !ends_line {
+            lines.start -= 1;
+        }
+        let cursor = lines.start.min(chars.len() - lines.len());
+        TextEdit { range: lines, text: String::new(), selection: cursor..cursor }
+    }
 }
+
+static HEADING_MARKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\s{0,3})(#{1,6})\s+").unwrap());
 
 /// What a slash command inserts: `/` at the start of a line or after a
 /// space opens the menu, and the chosen snippet takes the slash's place.
@@ -371,6 +417,36 @@ mod tests {
     }
 
     // EditorCommandTests
+
+    #[test]
+    fn a_line_becomes_a_heading_and_back() {
+        assert_eq!(EditorCommands::heading("Plan", 2), "## Plan");
+        assert_eq!(EditorCommands::heading("## Plan", 3), "### Plan");
+        assert_eq!(EditorCommands::heading("## Plan", 2), "Plan");
+        assert_eq!(EditorCommands::heading("### Plan", 0), "Plan");
+        assert_eq!(EditorCommands::heading("- item", 1), "# - item");
+    }
+
+    #[test]
+    fn lines_are_duplicated_and_deleted() {
+        let text = "one\ntwo\nthree";
+        let down = EditorCommands::duplicate_lines(text, 5..5, false);
+        assert_eq!(replaced(text, &down), "one\ntwo\ntwo\nthree");
+        assert_eq!(down.selection, 9..9);
+        let up = EditorCommands::duplicate_lines(text, 5..5, true);
+        assert_eq!(up.selection, 5..5);
+        // The last line, with no line break of its own.
+        let last = EditorCommands::duplicate_lines(text, 9..9, false);
+        assert_eq!(replaced(text, &last), "one\ntwo\nthree\nthree");
+        assert_eq!(last.selection, 15..15);
+        let gone = EditorCommands::delete_lines(text, 5..5);
+        assert_eq!(replaced(text, &gone), "one\nthree");
+        assert_eq!(gone.selection, 4..4);
+        // The last line takes the line break before it.
+        let end = EditorCommands::delete_lines(text, 10..10);
+        assert_eq!(replaced(text, &end), "one\ntwo");
+        assert_eq!(replaced("a\n", &EditorCommands::delete_lines("a\n", 2..2)), "a");
+    }
 
     #[test]
     fn return_continues_lists() {
