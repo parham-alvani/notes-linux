@@ -29,6 +29,8 @@ pub struct Sidebar {
     tags: gio::ListStore,
     tags_title: gtk::Label,
     tags_section: gtk::Box,
+    /// The tags drawn, so an edit that keeps them draws nothing.
+    shown_tags: RefCell<Vec<TagNode>>,
     shared: Rc<Shared>,
 }
 
@@ -385,6 +387,7 @@ impl Sidebar {
             tags,
             tags_title,
             tags_section,
+            shown_tags: RefCell::new(Vec::new()),
             shared,
         }
     }
@@ -406,6 +409,11 @@ impl Sidebar {
 
     /// The tags, as `TagNode::tree` makes them; the section hides with none.
     pub fn set_tags(&self, tags: &[TagNode]) {
+        // Most edits keep the tags: the tree, and its open branches, stay.
+        if *self.shown_tags.borrow() == tags {
+            return;
+        }
+        *self.shown_tags.borrow_mut() = tags.to_vec();
         self.tags.remove_all();
         for node in tags {
             self.tags.append(&glib::BoxedAnyObject::new(node.clone()));

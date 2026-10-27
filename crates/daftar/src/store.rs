@@ -312,8 +312,7 @@ impl VaultStore {
     /// Reads the files at [paths] again.
     pub fn refresh(&self, paths: &[String]) {
         let changed: BTreeSet<String> = paths.iter().cloned().collect();
-        let updated = Vault::update(&self.index(), &changed, &self.root, Some(&self.search));
-        *self.index.borrow_mut() = updated;
+        Vault::update_in_place(&mut self.index.borrow_mut(), &changed, &self.root, Some(&self.search));
     }
 }
 

@@ -63,7 +63,12 @@ pub struct Board {
     /// Where the focus goes after the next draw: the task by its id, else
     /// the same place.
     refocus: RefCell<Option<(String, usize, usize)>>,
+    /// The board itself, for a column's next page.
+    this: RefCell<std::rc::Weak<Board>>,
 }
+
+/// Cards drawn at a time in a column.
+const PAGE: usize = 100;
 
 /// What a key does on a focused card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +194,9 @@ impl Board {
             drops: RefCell::new(Vec::new()),
             focused: Rc::new(Cell::new(None)),
             refocus: RefCell::new(None),
+            this: RefCell::new(std::rc::Weak::new()),
         });
+        *board.this.borrow_mut() = Rc::downgrade(&board);
         {
             // The keys of a focused card reach the columns as they bubble up.
             let keys = gtk::EventControllerKey::new();
@@ -368,6 +375,7 @@ impl Board {
         self.stack.set_visible_child_name("columns");
         let targets: Vec<(String, BoardDrop)> =
             TaskBoard::columns(&[], self.grouping.get(), Day::today(), None).into_iter().filter_map(|c| Some((c.title, c.drop?))).collect();
+        let tasks = Rc::new(tasks);
         for (at, column) in columns.iter().enumerate() {
             self.grid.borrow_mut().push(Vec::new());
             self.drops.borrow_mut().push(column.drop.clone());
@@ -388,7 +396,7 @@ impl Board {
         }
     }
 
-    fn column(&self, at: usize, column: &Column, tasks: &[VaultTask], targets: &[(String, BoardDrop)]) -> gtk::Box {
+    fn column(&self, at: usize, column: &Column, tasks: &Rc<Vec<VaultTask>>, targets: &[(String, BoardDrop)]) -> gtk::Box {
         let tint = tint(column);
         let outer = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -410,9 +418,7 @@ impl Board {
         head.append(&gtk::Label::builder().label(column.tasks.len().to_string()).css_classes(["daftar-count", &tint, "numeric"]).build());
         outer.append(&head);
         let cards = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).build();
-        for (row, task) in column.tasks.iter().enumerate() {
-            cards.append(&self.card(task, &tint, targets, (at, row)));
-        }
+        self.more_cards(&cards, at, Rc::new(column.tasks.clone()), 0, &tint, Rc::new(targets.to_vec()));
         let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&cards).build();
         follow_focus(&scroller);
         outer.append(&scroller);
@@ -420,7 +426,8 @@ impl Board {
         // A card dropped here: its id is `path:line`, found again in [tasks].
         if let Some(drop) = column.drop.clone() {
             let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
-            let tasks = tasks.to_vec();
+            // Every column shares the one list.
+            let tasks = tasks.clone();
             let moved = self.moved();
             target.connect_drop(move |_, value, _, _| {
                 let Ok(id) = value.get::<String>() else { return false };
@@ -428,16 +435,58 @@ impl Board {
                 moved(task, &drop);
                 true
             });
-            let lit = outer.clone();
+            // Weakly: the column holds the target, which would hold the column.
+            let lit = outer.downgrade();
             target.connect_enter(move |_, _, _| {
-                lit.add_css_class("drop-target");
+                if let Some(lit) = lit.upgrade() {
+                    lit.add_css_class("drop-target");
+                }
                 gdk::DragAction::MOVE
             });
-            let lit = outer.clone();
-            target.connect_leave(move |_| lit.remove_css_class("drop-target"));
+            let lit = outer.downgrade();
+            target.connect_leave(move |_| {
+                if let Some(lit) = lit.upgrade() {
+                    lit.remove_css_class("drop-target");
+                }
+            });
             outer.add_controller(target);
         }
         outer
+    }
+
+    /// The cards of a column from [from], a page of them, and a button for
+    /// the next page: a column of thousands is drawn as it is read.
+    fn more_cards(
+        &self,
+        cards: &gtk::Box,
+        at: usize,
+        tasks: Rc<Vec<VaultTask>>,
+        from: usize,
+        tint: &str,
+        targets: Rc<Vec<(String, BoardDrop)>>,
+    ) {
+        let to = (from + PAGE).min(tasks.len());
+        for (row, task) in tasks.iter().enumerate().take(to).skip(from) {
+            cards.append(&self.card(task, tint, &targets, (at, row)));
+        }
+        if to >= tasks.len() {
+            return;
+        }
+        let left = tasks.len() - to;
+        let more = gtk::Button::builder()
+            .label(format!("Show {} more of {left}", PAGE.min(left)))
+            .css_classes(["flat", "caption"])
+            .focusable(false)
+            .build();
+        let (weak, cards_box, tint) = (self.this.borrow().clone(), cards.downgrade(), tint.to_string());
+        more.connect_clicked(move |button| {
+            let Some(cards_box) = cards_box.upgrade() else { return };
+            cards_box.remove(button);
+            if let Some(board) = weak.upgrade() {
+                board.more_cards(&cards_box, at, tasks.clone(), to, &tint, targets.clone());
+            }
+        });
+        cards.append(&more);
     }
 
     fn card(&self, task: &VaultTask, tint: &str, targets: &[(String, BoardDrop)], at: (usize, usize)) -> gtk::Box {
@@ -538,56 +587,31 @@ impl Board {
             drag.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&id.to_value())));
         }
         {
-            let card = card.clone();
+            // Weakly: the card holds the drag, which would hold the card.
+            let card = card.downgrade();
             drag.connect_drag_begin(move |source, _| {
-                source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&card)).current_image()), 20, 12);
+                if let Some(card) = card.upgrade() {
+                    source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&card)).current_image()), 20, 12);
+                }
             });
         }
         card.add_controller(drag);
 
-        // A right click: open, edit, or move without dragging.
-        let menu = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
-        let popover = gtk::Popover::builder().child(&menu).has_arrow(false).build();
-        popover.set_parent(&card);
-        let item = |label: &str, run: Box<dyn Fn()>| {
-            let button =
-                gtk::Button::builder().child(&gtk::Label::builder().label(label).xalign(0.0).build()).css_classes(["flat"]).build();
-            let popover = popover.clone();
-            button.connect_clicked(move |_| {
-                popover.popdown();
-                run();
-            });
-            menu.append(&button);
-        };
-        {
-            let open = self.open();
-            let (path, line) = (task.path.clone(), t.line);
-            item("Open Note", Box::new(move || open(&path, line)));
-        }
-        {
-            let edit = self.edit();
-            let (path, line) = (task.path.clone(), t.line);
-            item("Edit Task…", Box::new(move || edit(&path, line)));
-        }
-        for (title, drop) in targets {
-            let moved = self.moved();
-            let (task, drop) = (task.clone(), drop.clone());
-            item(&format!("Move to {title}"), Box::new(move || moved(&task, &drop)));
-        }
-        // The Tasks plugin's Postpone, for an open task with a date.
-        if daftar_core::TaskLine::can_postpone(t) {
-            for amount in daftar_core::Postpone::ALL {
-                let moved = self.moved();
-                let task = task.clone();
-                item(&format!("Postpone by {}", amount.title()), Box::new(move || moved(&task, &BoardDrop::Postpone(amount))));
-            }
-        }
+        // A right click: open, edit, or move without dragging; the menu is
+        // made when it opens, as a board of thousands of cards would hold
+        // thousands of menus.
         let right = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
-        right.connect_pressed(move |gesture, _, x, y| {
-            gesture.set_state(gtk::EventSequenceState::Claimed);
-            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-            popover.popup();
-        });
+        {
+            let (open, edit, moved) = (self.open(), self.edit(), self.moved());
+            let (task, targets, weak) = (task.clone(), targets.to_vec(), card.downgrade());
+            right.connect_pressed(move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(card) = weak.upgrade() else { return };
+                let popover = card_menu(&card, &task, &targets, open.clone(), edit.clone(), moved.clone());
+                popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                popover.popup();
+            });
+        }
         card.add_controller(right);
         wrapper
     }
@@ -607,6 +631,44 @@ impl Board {
     fn moved(&self) -> Move {
         self.handlers.moved.clone()
     }
+}
+
+/// A card's right-click menu: open, edit, move to a column, postpone. It is
+/// let go when it closes.
+fn card_menu(card: &gtk::Box, task: &VaultTask, targets: &[(String, BoardDrop)], open: AtLine, edit: AtLine, moved: Move) -> gtk::Popover {
+    let menu = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
+    let popover = gtk::Popover::builder().child(&menu).has_arrow(false).build();
+    popover.set_parent(card);
+    popover.connect_closed(|popover| {
+        // After the item's own click: unparenting at once would drop it.
+        let popover = popover.clone();
+        glib::idle_add_local_once(move || popover.unparent());
+    });
+    let item = |label: &str, run: Box<dyn Fn()>| {
+        let button = gtk::Button::builder().child(&gtk::Label::builder().label(label).xalign(0.0).build()).css_classes(["flat"]).build();
+        let popover = popover.clone();
+        button.connect_clicked(move |_| {
+            popover.popdown();
+            run();
+        });
+        menu.append(&button);
+    };
+    let (path, line) = (task.path.clone(), task.task.line);
+    item("Open Note", Box::new(move || open(&path, line)));
+    let (path, line) = (task.path.clone(), task.task.line);
+    item("Edit Task…", Box::new(move || edit(&path, line)));
+    for (title, drop) in targets {
+        let (moved, task, drop) = (moved.clone(), task.clone(), drop.clone());
+        item(&format!("Move to {title}"), Box::new(move || moved(&task, &drop)));
+    }
+    // The Tasks plugin's Postpone, for an open task with a date.
+    if daftar_core::TaskLine::can_postpone(&task.task) {
+        for amount in daftar_core::Postpone::ALL {
+            let (moved, task) = (moved.clone(), task.clone());
+            item(&format!("Postpone by {}", amount.title()), Box::new(move || moved(&task, &BoardDrop::Postpone(amount))));
+        }
+    }
+    popover
 }
 
 /// The tasks the filters let through: one note, and words anywhere in the

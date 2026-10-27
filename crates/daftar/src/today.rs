@@ -162,8 +162,26 @@ impl Today {
             }
             any = true;
             let card = card(title, icon, tint, Some(tasks.len()));
-            for task in tasks {
+            for task in tasks.iter().take(SHOWN) {
                 card.append(&self.task_row(task, tint));
+            }
+            // A long list shows its first tasks; the rest on asking.
+            if tasks.len() > SHOWN {
+                let rest: Vec<VaultTask> = tasks[SHOWN..].to_vec();
+                let more = gtk::Button::builder()
+                    .label(format!("Show all {}", tasks.len()))
+                    .css_classes(["flat", "caption"])
+                    .halign(gtk::Align::Start)
+                    .build();
+                let (this, card_box, tint) = (self.clone(), card.downgrade(), tint.to_string());
+                more.connect_clicked(move |button| {
+                    let Some(card_box) = card_box.upgrade() else { return };
+                    card_box.remove(button);
+                    for task in &rest {
+                        card_box.append(&this.task_row(task, &tint));
+                    }
+                });
+                card.append(&more);
             }
             self.content.append(&card);
         }
@@ -288,22 +306,28 @@ impl Today {
         row.append(&button);
         // The Tasks plugin's Postpone, one click away, as on the Mac.
         if daftar_core::TaskLine::can_postpone(t) {
-            let amounts = gtk::gio::Menu::new();
-            for amount in daftar_core::Postpone::ALL {
-                let item = gtk::gio::MenuItem::new(Some(&format!("Postpone by {}", amount.title())), None);
-                let target = format!("{}\t{}\t{}", task.path, t.line, amount.name());
-                item.set_action_and_target_value(Some("win.postpone"), Some(&target.to_variant()));
-                amounts.append_item(&item);
-            }
-            row.append(
-                &gtk::MenuButton::builder()
-                    .icon_name("alarm-symbolic")
-                    .menu_model(&amounts)
-                    .valign(gtk::Align::Center)
-                    .css_classes(["flat", "circular"])
-                    .tooltip_text("Postpone")
-                    .build(),
-            );
+            let button = gtk::MenuButton::builder()
+                .icon_name("alarm-symbolic")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat", "circular"])
+                .tooltip_text("Postpone")
+                .build();
+            // The menu is made when it first opens.
+            let (path, line) = (task.path.clone(), t.line);
+            button.set_create_popup_func(move |button| {
+                if button.menu_model().is_some() {
+                    return;
+                }
+                let amounts = gtk::gio::Menu::new();
+                for amount in daftar_core::Postpone::ALL {
+                    let item = gtk::gio::MenuItem::new(Some(&format!("Postpone by {}", amount.title())), None);
+                    let target = format!("{path}\t{line}\t{}", amount.name());
+                    item.set_action_and_target_value(Some("win.postpone"), Some(&target.to_variant()));
+                    amounts.append_item(&item);
+                }
+                button.set_menu_model(Some(&amounts));
+            });
+            row.append(&button);
         }
         let menu = gtk::GestureClick::builder().button(gtk::gdk::BUTTON_SECONDARY).build();
         {
@@ -341,6 +365,9 @@ impl Today {
         row
     }
 }
+
+/// Tasks a card shows before "Show all".
+const SHOWN: usize = 50;
 
 fn muted(text: &str) -> gtk::Label {
     gtk::Label::builder().label(text).xalign(0.0).wrap(true).css_classes(["daftar-muted"]).build()

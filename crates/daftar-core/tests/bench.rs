@@ -163,6 +163,11 @@ fn twenty_thousand_notes() {
     time("index with search", || Vault::index(dir.path(), Some(&search)));
     let mut again = index.clone();
     time("derive, nothing changed", || again.derive());
+    time("clone the index", || index.clone());
+    let one = std::collections::BTreeSet::from([notes[1].clone()]);
+    fs::write(dir.path().join(&notes[1]), "# changed\n[[Inbox]] #new\n").unwrap();
+    let mut live = index.clone();
+    time("update, one note changed", || Vault::update_in_place(&mut live, &one, dir.path(), Some(&search)));
     let query = TasksQuery::parse("not done\ndue before in two weeks\ngroup by filename\nsort by due", None);
     let found = time("tasks query", || query.run(index.tasks(), Day::today(), |t| QueryTask::from(t)));
     println!("  {} tasks", found.len());

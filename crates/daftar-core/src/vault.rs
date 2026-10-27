@@ -309,6 +309,13 @@ impl Vault {
     /// again, or dropped when it is gone.
     pub fn update(index: &VaultIndex, changed: &BTreeSet<String>, root: &Path, search: Option<&SearchIndex>) -> VaultIndex {
         let mut index = index.clone();
+        Self::update_in_place(&mut index, changed, root, search);
+        index
+    }
+
+    /// [update] on [index] itself, with no copy of it: a vault of 20,000
+    /// notes takes a sixth of a second to copy, at every change.
+    pub fn update_in_place(index: &mut VaultIndex, changed: &BTreeSet<String>, root: &Path, search: Option<&SearchIndex>) {
         let mut reread: Vec<String> = Vec::new();
         // A folder came or went, or its last file did: the empty ones are found again.
         let mut folders = false;
@@ -329,7 +336,7 @@ impl Vault {
                     let now: BTreeSet<String> = Self::scan(root).into_iter().filter(|p| p.starts_with(&base)).collect();
                     let before: Vec<String> = index.files.iter().filter(|p| p.starts_with(&base)).cloned().collect();
                     for gone in before.iter().filter(|p| !now.contains(*p)) {
-                        forget(&mut index, gone);
+                        forget(index, gone);
                     }
                     for added in now {
                         if Self::is_note(&added) {
@@ -348,7 +355,7 @@ impl Vault {
                     folders = true;
                     let gone: Vec<String> = index.files.iter().filter(|p| *p == path || p.starts_with(&base)).cloned().collect();
                     for gone in gone {
-                        forget(&mut index, &gone);
+                        forget(index, &gone);
                     }
                 }
             }
@@ -363,7 +370,6 @@ impl Vault {
             index.empty_folders = Self::empty_folders(root, &index.files);
         }
         index.derive();
-        index
     }
 
     /// Every folder under [root] that holds none of [files], however deep.
