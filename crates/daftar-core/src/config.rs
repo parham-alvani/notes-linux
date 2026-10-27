@@ -217,6 +217,11 @@ font_size = 13
 # Beautitab plugin settings in the vault.
 image = ""
 
+[scratchpad]
+# Ctrl+Alt+S: today's scratch note, `<folder>/YYYY-MM-DD.md`, made empty
+# when it is not there and opened in the editor.
+folder = "Scratchpad"
+
 [capture]
 # Quick capture (`daftar --capture`, for a bind in the compositor): the
 # line goes into a note. "daily" is today's daily note, made from its

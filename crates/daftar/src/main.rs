@@ -91,6 +91,7 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.today", &["<Ctrl>1"]);
     app.set_accels_for_action("win.board", &["<Ctrl>2"]);
     app.set_accels_for_action("win.periodic", &["<Ctrl>3"]);
+    app.set_accels_for_action("win.scratchpad", &["<Ctrl><Alt>s"]);
     app.set_accels_for_action("win.periodic-previous", &["<Ctrl><Alt>Left"]);
     app.set_accels_for_action("win.periodic-next", &["<Ctrl><Alt>Right"]);
     app.set_accels_for_action("win.replace-key", &["<Ctrl><Shift>h"]);

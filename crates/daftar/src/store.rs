@@ -72,6 +72,20 @@ impl VaultStore {
         Ok(made)
     }
 
+    /// [day]'s scratch note in [folder], made empty when it is not there yet.
+    pub fn scratchpad(&self, day: Day, folder: &str) -> Result<String, String> {
+        let folder = folder.trim().trim_matches('/');
+        let name = day.to_string();
+        let path = if folder.is_empty() { format!("{name}.md") } else { format!("{folder}/{name}.md") };
+        if self.index().files.contains(&path) {
+            return Ok(path);
+        }
+        let made = crate::files::create_note(&self.root, &self.index(), &name, folder, "").map_err(|e| e.to_string())?;
+        self.refresh(std::slice::from_ref(&made));
+        self.wrote();
+        Ok(made)
+    }
+
     /// The template notes of the vault, for New Note.
     pub fn template_notes(&self) -> Vec<String> {
         self.templates.templates(&self.index().files)

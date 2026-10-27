@@ -13,6 +13,10 @@ use crate::vault_dialogs;
 
 impl Window {
     pub(super) fn add_vault_tools(&self) {
+        let scratchpad = gio::SimpleAction::new("scratchpad", None);
+        let this = self.clone();
+        scratchpad.connect_activate(move |_, _| this.open_scratchpad());
+        self.window.add_action(&scratchpad);
         let periodic = gio::SimpleAction::new("periodic", None);
         let this = self.clone();
         periodic.connect_activate(move |_, _| this.open_periodic());
@@ -88,6 +92,7 @@ impl Window {
         };
         vec![
             command(period.current(), "Go", "win.periodic", "Ctrl+3"),
+            command("Today's Scratchpad", "File", "win.scratchpad", "Ctrl+Alt+S"),
             command(previous, "Go", "win.periodic-previous", "Ctrl+Alt+Left"),
             command(next, "Go", "win.periodic-next", "Ctrl+Alt+Right"),
             command("Sort Tasks (Done First)", "Note", "win.sort-tasks", ""),
@@ -107,6 +112,23 @@ impl Window {
                 self.open(&path, None);
             }
             Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The note could not be made: {error}"))),
+        }
+    }
+
+    /// Ctrl+Alt+S: today's scratch note, made when it is not there yet, in
+    /// the editor.
+    fn open_scratchpad(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let folder = self.settings.borrow().file.string("scratchpad.folder").unwrap_or_else(|| "Scratchpad".into());
+        match store.scratchpad(Day::today(), &folder) {
+            Ok(path) => {
+                self.sidebar.set_tree(store.index().tree());
+                self.open(&path, None);
+                if !self.tab().editing() {
+                    self.toggle_edit();
+                }
+            }
+            Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The scratchpad could not be made: {error}"))),
         }
     }
 

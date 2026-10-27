@@ -574,11 +574,12 @@ impl Editor {
         let text = self.text();
         let words = text.split_whitespace().count();
         let characters = text.chars().count();
+        let (word, character) = (plural(words, "word"), plural(characters, "character"));
         let line = if selection.is_empty() {
-            format!("{words} words · {characters} characters")
+            format!("{words} {word} · {characters} {character}")
         } else {
             let selected = self.slice(selection.clone());
-            format!("{} of {words} words · {} of {characters} characters", selected.split_whitespace().count(), selection.len())
+            format!("{} of {words} {word} · {} of {characters} {character}", selected.split_whitespace().count(), selection.len())
         };
         self.counts.set_label(&line);
     }
@@ -1580,6 +1581,11 @@ impl Editor {
             changed(mode);
         }
     }
+}
+
+/// [noun] for [count] of it: "1 word", "2 words".
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 { noun.to_string() } else { format!("{noun}s") }
 }
 
 /// The snippets of the slash menu, with today's date and this minute in them.
