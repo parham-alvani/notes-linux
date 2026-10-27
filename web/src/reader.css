@@ -222,6 +222,8 @@ pre code { color: inherit; background: none; padding: 0; font-size: 0.85em; }
 
 ul, ol { padding-inline-start: 1.6em; }
 li { margin: 0.15em 0; }
+/* WebKit aligns an item to its list's direction (`match-parent`): a Persian item in an English list reads from the right all the same. */
+li[dir] { text-align: start; }
 li::marker { color: var(--list-marker); }
 li > p { margin: 0; }
 li.task-list-item { list-style: none; }
