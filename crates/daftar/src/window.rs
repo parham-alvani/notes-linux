@@ -217,6 +217,13 @@ impl Window {
         *opener.borrow_mut() = Some(this.clone());
         {
             let opener = opener.clone();
+            let mover = opener.clone();
+            this.sidebar.connect_move(move |paths, folder| {
+                let window = mover.borrow().clone();
+                if let Some(window) = window {
+                    window.move_into(paths, folder);
+                }
+            });
             this.sidebar.connect_tag(move |tag| {
                 let window = opener.borrow().clone();
                 if let Some(window) = window {

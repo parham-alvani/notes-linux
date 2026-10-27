@@ -34,6 +34,8 @@ pub struct Sidebar {
 
 /// Hears the tag a click picks.
 type TagHandler = Rc<dyn Fn(&str)>;
+/// Hears the vault paths dropped on a folder, and the folder.
+type MoveHandler = Rc<dyn Fn(Vec<String>, &str)>;
 
 /// What the rows read when they are drawn.
 #[derive(Default)]
@@ -44,6 +46,8 @@ struct Shared {
     root: RefCell<Option<std::path::PathBuf>>,
     /// What a click on a tag does: the window lists its notes.
     on_tag: RefCell<Option<TagHandler>>,
+    /// What a drop on a folder does: the window moves the files into it.
+    on_move: RefCell<Option<MoveHandler>>,
 }
 
 fn node_of(item: &glib::Object) -> Option<TreeNode> {
@@ -180,14 +184,63 @@ impl Sidebar {
                 // A drag: the row's file, which the editor takes as a link
                 // and another app as the file.
                 let drag = gtk::DragSource::builder().actions(gdk::DragAction::COPY).build();
-                let (weak, shared) = (item.downgrade(), shared.clone());
+                let (weak, dragged) = (item.downgrade(), shared.clone());
                 drag.connect_prepare(move |_, _, _| {
                     let item = weak.upgrade()?;
                     let node = item.item().and_downcast::<gtk::TreeListRow>().and_then(|row| row.item()).as_ref().and_then(node_of)?;
-                    let file = gio::File::for_path(shared.root.borrow().as_ref()?.join(&node.path));
+                    let file = gio::File::for_path(dragged.root.borrow().as_ref()?.join(&node.path));
                     Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(&[file]).to_value()))
                 });
                 expander.add_controller(drag);
+                // A drop of the vault's files on a folder moves them into it.
+                let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY | gdk::DragAction::MOVE);
+                let (weak, shared) = (item.downgrade(), shared.clone());
+                let folder_under = move || {
+                    let item = weak.upgrade()?;
+                    let node = item.item().and_downcast::<gtk::TreeListRow>().and_then(|row| row.item()).as_ref().and_then(node_of)?;
+                    node.is_folder().then_some(node.path)
+                };
+                {
+                    let folder_under = folder_under.clone();
+                    drop.connect_enter(move |target, _, _| {
+                        if folder_under().is_none() {
+                            return gdk::DragAction::empty();
+                        }
+                        if let Some(widget) = target.widget() {
+                            widget.add_css_class("daftar-drop");
+                        }
+                        gdk::DragAction::COPY
+                    });
+                }
+                drop.connect_leave(|target| {
+                    if let Some(widget) = target.widget() {
+                        widget.remove_css_class("daftar-drop");
+                    }
+                });
+                drop.connect_drop(move |target, value, _, _| {
+                    if let Some(widget) = target.widget() {
+                        widget.remove_css_class("daftar-drop");
+                    }
+                    let (Some(folder), Ok(files), Some(root)) =
+                        (folder_under(), value.get::<gdk::FileList>(), shared.root.borrow().clone())
+                    else {
+                        return false;
+                    };
+                    let paths: Vec<String> = files
+                        .files()
+                        .iter()
+                        .filter_map(|file| Some(file.path()?.strip_prefix(&root).ok()?.to_string_lossy().to_string()))
+                        .collect();
+                    let handler = shared.on_move.borrow().clone();
+                    match handler {
+                        Some(handler) if !paths.is_empty() => {
+                            handler(paths, &folder);
+                            true
+                        }
+                        _ => false,
+                    }
+                });
+                expander.add_controller(drop);
             });
         }
         {
@@ -314,6 +367,11 @@ impl Sidebar {
             tags_section,
             shared,
         }
+    }
+
+    /// [handler] gets the vault paths dropped on a folder row, and the folder.
+    pub fn connect_move(&self, handler: impl Fn(Vec<String>, &str) + 'static) {
+        *self.shared.on_move.borrow_mut() = Some(Rc::new(handler));
     }
 
     /// [handler] gets the tag (`a/b`, without `#`) a click on a tag row picks.
@@ -602,6 +660,9 @@ fn menu(path: &str, folder: bool, bookmarked: bool) -> gio::Menu {
         create.append_item(&item_for("New Note", "win.new-note", path));
         create.append_item(&item_for("New Folder…", "win.new-folder", path));
         menu.append_section(None, &create);
+        let find = gio::Menu::new();
+        find.append_item(&item_for("Replace in Folder…", "win.replace-in-folder", path));
+        menu.append_section(None, &find);
     }
     let change = gio::Menu::new();
     change.append_item(&item_for("Rename…", "win.rename", path));

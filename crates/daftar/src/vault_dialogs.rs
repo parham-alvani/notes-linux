@@ -99,8 +99,16 @@ struct ReplaceState {
 
 /// Find and Replace in the Vault (Ctrl+Shift+H): the matches of every note,
 /// each one chosen or not, then replaced. [done] hears what was written.
-pub fn replace_in_vault(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, find: &str, done: impl Fn(String) + 'static) {
-    let dialog = adw::Dialog::builder().title("Find and Replace in the Vault").content_width(760).content_height(640).build();
+/// Find and replace in every note of the vault, or of [folder] and the
+/// folders in it when it is not empty.
+pub fn replace_in_vault(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, folder: &str, find: &str, done: impl Fn(String) + 'static) {
+    let title = if folder.is_empty() {
+        "Find and Replace in the Vault".to_string()
+    } else {
+        format!("Find and Replace in {}", Vault::title(folder))
+    };
+    let dialog = adw::Dialog::builder().title(title).content_width(760).content_height(640).build();
+    let within = if folder.is_empty() { String::new() } else { format!("{folder}/") };
     let fields = gtk::ListBox::builder().css_classes(["boxed-list"]).selection_mode(gtk::SelectionMode::None).build();
     let find_row = adw::EntryRow::builder().title("Find").text(find).build();
     let replace_row = adw::EntryRow::builder().title("Replace with").build();
@@ -226,8 +234,8 @@ pub fn replace_in_vault(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, f
 
     // A search, a moment after the last change, read from disk off the window.
     let search: Rc<dyn Fn()> = {
-        let (state, store, find_row, replace_row, status, draw) =
-            (state.clone(), store.clone(), find_row.clone(), replace_row.clone(), status.clone(), draw.clone());
+        let (state, store, find_row, replace_row, status, draw, within) =
+            (state.clone(), store.clone(), find_row.clone(), replace_row.clone(), status.clone(), draw.clone(), within.clone());
         Rc::new(move || {
             let pattern = match ReplacePattern::new(&find_row.text(), &replace_row.text(), options()) {
                 Ok(pattern) => pattern,
@@ -257,7 +265,7 @@ pub fn replace_in_vault(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, f
             };
             status.set_label("Searching…");
             let root = store.root.clone();
-            let paths: Vec<String> = store.index().files.iter().filter(|p| Vault::is_note(p)).cloned().collect();
+            let paths: Vec<String> = store.index().files.iter().filter(|p| Vault::is_note(p) && p.starts_with(&within)).cloned().collect();
             let (state, draw) = (state.clone(), draw.clone());
             glib::spawn_future_local(async move {
                 let found = gio::spawn_blocking(move || {

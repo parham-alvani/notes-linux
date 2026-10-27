@@ -46,9 +46,13 @@ impl Window {
             this.toasts.add_toast(adw::Toast::new(&format!("Copied {text}")));
         });
         self.window.add_action(&copy);
+        let in_folder = gio::SimpleAction::new("replace-in-folder", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        in_folder.connect_activate(move |_, target| this.replace_in_vault(&target.and_then(|t| t.get::<String>()).unwrap_or_default()));
+        self.window.add_action(&in_folder);
         let replace = gio::SimpleAction::new("replace-in-vault", None);
         let this = self.clone();
-        replace.connect_activate(move |_, _| this.replace_in_vault());
+        replace.connect_activate(move |_, _| this.replace_in_vault(""));
         self.window.add_action(&replace);
         // Ctrl+Shift+H: the editor's highlight while it is open, as on the
         // Mac, where the text view takes the key first; else Replace in Vault.
@@ -59,7 +63,7 @@ impl Window {
             if tab.editing() {
                 tab.editor.highlight();
             } else {
-                this.replace_in_vault();
+                this.replace_in_vault("");
             }
         });
         self.window.add_action(&replace_key);
@@ -186,14 +190,15 @@ impl Window {
         });
     }
 
-    fn replace_in_vault(&self) {
+    /// Find and replace in the vault, or in [folder] when it is not empty.
+    fn replace_in_vault(&self, folder: &str) {
         let Some(store) = self.store.borrow().clone() else { return };
         // What the editor holds is on disk before the search reads it.
         if !self.leave_editor() {
             return;
         }
         let this = self.clone();
-        vault_dialogs::replace_in_vault(&self.window, store, "", move |text| {
+        vault_dialogs::replace_in_vault(&self.window, store, folder, "", move |text| {
             this.toasts.add_toast(adw::Toast::new(&text));
             this.redraw_page();
         });

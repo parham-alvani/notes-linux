@@ -112,6 +112,50 @@ impl Window {
 
     /// After a file command: the index, the tree and the page follow, and a
     /// new note opens in the editor, as on the Mac.
+    /// Files and folders dropped on a folder of the sidebar move into it,
+    /// their links with them, as on the Mac. What is there already, the
+    /// folder itself and a folder into its own are left where they are.
+    pub(crate) fn move_into(&self, paths: Vec<String>, folder: &str) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let moving: Vec<String> = {
+            let index = store.index();
+            paths
+                .iter()
+                .filter(|path| {
+                    let known = index.files.contains(*path)
+                        || index.empty_folders.contains(*path)
+                        || index.files.iter().any(|f| f.starts_with(&format!("{path}/")));
+                    known && files::parent(path) != folder && *path != folder && !folder.starts_with(&format!("{path}/"))
+                })
+                .filter(|path| !paths.iter().any(|other| other != *path && path.starts_with(&format!("{other}/"))))
+                .cloned()
+                .collect()
+        };
+        if moving.is_empty() || !self.leave_editor() {
+            return;
+        }
+        let mut all = Done::default();
+        for path in &moving {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let to = if folder.is_empty() { name.to_string() } else { format!("{folder}/{name}") };
+            match files::move_path(&store, path, &to) {
+                Ok(done) => {
+                    all.changed.extend(done.changed);
+                    all.moves.extend(done.moves);
+                }
+                Err(error) => self.toasts.add_toast(adw::Toast::new(&error.to_string())),
+            }
+        }
+        store.wrote();
+        let count = moving.len();
+        self.files_done(all);
+        self.toasts.add_toast(adw::Toast::new(&if count == 1 {
+            format!("Moved {} to {}", daftar_core::Vault::title(&moving[0]), if folder.is_empty() { "the top" } else { folder })
+        } else {
+            format!("Moved {count} files to {}", if folder.is_empty() { "the top" } else { folder })
+        }));
+    }
+
     fn files_done(&self, done: Done) {
         let Some(store) = self.store.borrow().clone() else { return };
         // Each tab's note, before a move takes it from the index.
