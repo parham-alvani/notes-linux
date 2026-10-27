@@ -86,8 +86,9 @@ impl Today {
         Rc::new(Today { widget, content, open: Box::new(open), toggle: Box::new(toggle), edit: Box::new(edit) })
     }
 
-    /// Draws the page again from the index.
-    pub fn show(self: &Rc<Self>, store: &VaultStore) {
+    /// Draws the page again from the index; [scratchpad] is the folder of
+    /// the day's scratchpad notes, for the review.
+    pub fn show(self: &Rc<Self>, store: &VaultStore, scratchpad: &str) {
         while let Some(child) = self.content.first_child() {
             self.content.remove(&child);
         }
@@ -171,6 +172,67 @@ impl Today {
             card.append(&muted("No open task is due this week."));
             self.content.append(&card);
         }
+        self.content.append(&self.review(store, today, scratchpad));
+    }
+
+    /// The day's review, under the tasks: today's scratchpad, and the notes
+    /// changed on disk (a pull, another app) since they were read.
+    fn review(self: &Rc<Self>, store: &VaultStore, today: Day, scratchpad: &str) -> gtk::Box {
+        let review = card("Review", "view-list-symbolic", "t-yellow", None);
+        let folder = scratchpad.trim().trim_matches('/');
+        let path = if folder.is_empty() { format!("{today}.md") } else { format!("{folder}/{today}.md") };
+        let first_line = store.index().files.contains(&path).then(|| {
+            std::fs::read_to_string(store.root.join(&path))
+                .ok()
+                .and_then(|text| text.lines().map(str::trim).find(|line| !line.is_empty() && *line != "---").map(String::from))
+                .unwrap_or_else(|| "Empty so far".into())
+        });
+        let pad = gtk::Box::builder().spacing(8).build();
+        pad.append(&gtk::Image::from_icon_name("document-edit-symbolic"));
+        let words = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
+        words.append(&gtk::Label::builder().label("Today's scratchpad").xalign(0.0).css_classes(["heading"]).build());
+        words.append(&muted(first_line.as_deref().unwrap_or("Not started: Ctrl+Alt+S makes it")));
+        pad.append(&words);
+        review.append(&gtk::Button::builder().child(&pad).css_classes(["flat"]).action_name("win.scratchpad").build());
+        let updated = store.updated_since_read();
+        if updated.is_empty() {
+            review.append(&muted("No note changed since you read it."));
+        } else {
+            let head = gtk::Box::builder().spacing(8).build();
+            head.append(
+                &gtk::Label::builder()
+                    .label(format!("Changed since you read them · {}", updated.len()))
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .css_classes(["heading"])
+                    .build(),
+            );
+            head.append(
+                &gtk::Button::builder()
+                    .label("Mark All as Read")
+                    .css_classes(["flat", "caption"])
+                    .action_name("win.mark-read")
+                    .action_target(&"".to_variant())
+                    .build(),
+            );
+            review.append(&head);
+            for (path, _) in updated.iter().take(8) {
+                let row = gtk::Box::builder().spacing(8).build();
+                row.append(&gtk::Image::from_icon_name("text-x-generic-symbolic"));
+                row.append(&gtk::Label::builder().label(Vault::title(path)).xalign(0.0).hexpand(true).build());
+                row.append(
+                    &gtk::Label::builder()
+                        .label(daftar_core::text::slugs::normalize(path.rsplit_once('/').map_or("", |(f, _)| f)))
+                        .css_classes(["daftar-muted", "caption"])
+                        .build(),
+                );
+                let button = gtk::Button::builder().child(&row).css_classes(["flat"]).build();
+                let (this, path) = (self.clone(), path.clone());
+                button.connect_clicked(move |_| (this.open)(&path, 0));
+                review.append(&button);
+            }
+        }
+        review
     }
 
     fn task_row(self: &Rc<Self>, task: &VaultTask, tint: &str) -> gtk::Box {
@@ -252,6 +314,30 @@ impl Today {
             });
         }
         row.add_controller(menu);
+        // From the keyboard, on a focused task: x ticks it, p postpones it a day.
+        let keys = gtk::EventControllerKey::new();
+        {
+            let (this, path, line, status, postponable) =
+                (self.clone(), task.path.clone(), t.line, t.status, daftar_core::TaskLine::can_postpone(t));
+            keys.connect_key_pressed(move |controller, key, _, state| {
+                if !state.is_empty() && state != gtk::gdk::ModifierType::SHIFT_MASK {
+                    return gtk::glib::Propagation::Proceed;
+                }
+                match key {
+                    gtk::gdk::Key::x => (this.toggle)(&path, line, status),
+                    gtk::gdk::Key::p if postponable => {
+                        let target = format!("{path}\t{line}\t{}", daftar_core::Postpone::Day.name());
+                        if let Some(widget) = controller.widget() {
+                            let _ = widget.activate_action("win.postpone", Some(&target.to_variant()));
+                        }
+                    }
+                    _ => return gtk::glib::Propagation::Proceed,
+                }
+                gtk::glib::Propagation::Stop
+            });
+        }
+        row.add_controller(keys);
+        row.set_tooltip_text(Some("x ticks it, p postpones it a day"));
         row
     }
 }

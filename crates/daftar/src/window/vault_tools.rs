@@ -12,6 +12,11 @@ use super::Window;
 use crate::vault_dialogs;
 
 impl Window {
+    /// The folder of the day's scratchpad notes, `scratchpad.folder`.
+    pub(super) fn scratchpad_folder(&self) -> String {
+        self.settings.borrow().file.string("scratchpad.folder").unwrap_or_else(|| "Scratchpad".into())
+    }
+
     pub(super) fn add_vault_tools(&self) {
         let scratchpad = gio::SimpleAction::new("scratchpad", None);
         let this = self.clone();
@@ -131,7 +136,7 @@ impl Window {
     /// the editor.
     fn open_scratchpad(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
-        let folder = self.settings.borrow().file.string("scratchpad.folder").unwrap_or_else(|| "Scratchpad".into());
+        let folder = self.scratchpad_folder();
         match store.scratchpad(Day::today(), &folder) {
             Ok(path) => {
                 self.sidebar.set_tree(&store.tree());

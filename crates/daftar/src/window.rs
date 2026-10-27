@@ -901,7 +901,7 @@ impl Window {
             return;
         }
         let tab = self.tab();
-        tab.today.show(&store);
+        tab.today.show(&store, &self.scratchpad_folder());
         *tab.crumb.borrow_mut() = None;
         self.set_titles(&tab, "Today", "");
         tab.stack.set_visible_child_name("today");
@@ -1208,7 +1208,7 @@ impl Window {
     /// [tab]'s page after [changed] files changed on disk.
     fn follow_disk(&self, tab: &Rc<Tab>, store: &Rc<VaultStore>, changed: &BTreeSet<String>) {
         match tab.showing().as_deref() {
-            Some("today") => tab.today.show(store),
+            Some("today") => tab.today.show(store, &self.scratchpad_folder()),
             Some("board") => tab.board.show(store.clone()),
             Some("empty") => self.show_home(tab),
             Some("editor") => {
