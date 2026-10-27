@@ -161,11 +161,7 @@ impl Window {
             return;
         }
         let Some(store) = self.store.borrow().clone() else { return };
-        let tab = self.tab();
-        // Today and the board keep the note read before them; home has none.
-        let path = tab
-            .current()
-            .or_else(|| (tab.showing().as_deref() != Some("empty")).then(|| tab.reader.shown().map(|shown| shown.path)).flatten());
+        let path = self.tab().note_in_view();
         self.inspector.show(&store, path.as_deref());
     }
 

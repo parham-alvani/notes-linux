@@ -85,6 +85,13 @@ impl Tab {
         }
     }
 
+    /// The note the side panels and the graph are about: the one on screen;
+    /// Today and the board keep the note read before them; home has none.
+    pub fn note_in_view(&self) -> Option<String> {
+        self.current()
+            .or_else(|| (self.showing().as_deref() != Some("empty")).then(|| self.reader.shown().map(|shown| shown.path)).flatten())
+    }
+
     /// Is this the left pane of its tab?
     pub fn is_start(&self) -> bool {
         self.group.paned.start_child().as_ref() == Some(self.stack.upcast_ref::<gtk::Widget>())

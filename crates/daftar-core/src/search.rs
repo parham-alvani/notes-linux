@@ -6,14 +6,16 @@
 //! disagree with the files for longer than one change.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
+use regex::Regex;
 use rusqlite::{Connection, params};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Hit {
     pub path: String,
-    /// The matching text, with the words between `\u{1}` and `\u{2}`.
+    /// The matching text as it reads, with the words between `\u{1}` and
+    /// `\u{2}`: see [readable].
     pub snippet: String,
 }
 
@@ -120,7 +122,7 @@ impl SearchIndex {
             return vec![];
         };
         let rows = statement.query_map(params![expression, limit as i64], |row| {
-            Ok(Hit { path: row.get(0)?, snippet: row.get::<_, Option<String>>(1)?.unwrap_or_default() })
+            Ok(Hit { path: row.get(0)?, snippet: readable(&row.get::<_, Option<String>>(1)?.unwrap_or_default()) })
         });
         match rows {
             Ok(rows) => rows.filter_map(Result::ok).collect(),
@@ -170,9 +172,46 @@ impl SearchIndex {
     }
 }
 
+/// The lines of [snippet] with a match, as they read: no heading marks,
+/// list marks, boxes, quote marks, emphasis or task emoji, and a link as its
+/// text. Lines are joined by ` … `; the match marks are kept.
+pub fn readable(snippet: &str) -> String {
+    static LEAD: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^\s*(?:>\s*)*(?:\[![^\]]*\][+-]?\s*)?(?:#{1,6}\s+)?(?:(?:[-*+]|\d+[.)])\s+)?(?:\[.\]\s+)?").unwrap());
+    static ALIASED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!?\[\[[^\]|]*\|([^\]]*)\]\]").unwrap());
+    static WIKI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!?\[\[([^\]]*)\]\]").unwrap());
+    static MARKDOWN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!?\[([^\]]*)\]\([^)]*\)").unwrap());
+    static MARKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*\*|__|==|~~|`|[📅⏳🛫✅➕🔁❌⏫🔼🔽⏬🔺🆔⛔🏁\x{fe0f}]").unwrap());
+    static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+    let lines: Vec<&str> = snippet.split('\n').collect();
+    let matched: Vec<&str> = lines.iter().copied().filter(|line| line.contains('\u{1}')).collect();
+    let lines = if matched.is_empty() { lines } else { matched };
+    lines
+        .into_iter()
+        .map(|line| {
+            let line = LEAD.replace(line, "");
+            let line = ALIASED.replace_all(&line, "$1");
+            let line = WIKI.replace_all(&line, "$1");
+            let line = MARKDOWN.replace_all(&line, "$1");
+            let line = MARKS.replace_all(&line, "");
+            SPACES.replace_all(&line, " ").trim().to_string()
+        })
+        .filter(|line| !line.is_empty() && line != "…")
+        .collect::<Vec<_>>()
+        .join(" … ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_snippet_reads_as_text() {
+        let raw = "…# Home\n- [ ] Book flights 📅 2026-10-28\n- [/] \u{1}Paint\u{2} the **hall** with [[Work|the team]]\n- [ ] Pay…";
+        assert_eq!(readable(raw), "\u{1}Paint\u{2} the hall with the team");
+        assert_eq!(readable("> [!todo] Now\n> see [[Kite]] and [the site](https://x.y)"), "Now … see Kite and the site");
+        assert_eq!(readable("1. ✅ done ==\u{1}fast\u{2}=="), "done \u{1}fast\u{2}");
+    }
 
     fn paths(hits: Vec<Hit>) -> Vec<String> {
         hits.into_iter().map(|h| h.path).collect()

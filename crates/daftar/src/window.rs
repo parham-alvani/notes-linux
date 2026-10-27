@@ -115,8 +115,20 @@ impl Window {
                 move |text| notices.add_toast(adw::Toast::new(text)),
             )
         };
+        // The inspector has its own header bar: at the window's right edge,
+        // it holds the window's buttons while it is open.
+        let inspector_pane = {
+            let header = adw::HeaderBar::builder()
+                .show_start_title_buttons(false)
+                .title_widget(&gtk::Label::builder().label("Inspector").css_classes(["heading"]).build())
+                .build();
+            let pane = adw::ToolbarView::new();
+            pane.add_top_bar(&header);
+            pane.set_content(Some(&inspector.widget));
+            pane
+        };
         let inspector_split =
-            adw::OverlaySplitView::builder().sidebar_position(gtk::PackType::End).show_sidebar(false).sidebar(&inspector.widget).build();
+            adw::OverlaySplitView::builder().sidebar_position(gtk::PackType::End).show_sidebar(false).sidebar(&inspector_pane).build();
         let tab_view = adw::TabView::new();
         let this = Window {
             window: window.clone(),
@@ -1016,7 +1028,7 @@ impl Window {
 
     fn graph(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
-        let center = self.tab().reader.shown().map(|shown| shown.path).filter(|p| Vault::is_note(p));
+        let center = self.tab().note_in_view().filter(|p| Vault::is_note(p));
         let this = self.clone();
         crate::graph::present(&self.window, store, center, move |path| this.open(path, None));
     }
@@ -1055,7 +1067,13 @@ impl Window {
     fn palette(&self, mode: Mode, query: &str) {
         let Some(store) = self.store.borrow().clone() else { return };
         let this = self.clone();
-        palette::present(&self.window, mode, store, self.recent.borrow().clone(), query, move |path| this.open(path, None));
+        // With nothing typed, the notes read last: here, then in the last
+        // sessions, as the home page lists them.
+        let recent = {
+            let files = &store.index().files;
+            daftar_core::home::recent(&self.recent.borrow(), &store.places.recently_read(40), |p| files.contains(p), 40)
+        };
+        palette::present(&self.window, mode, store, recent, query, move |path| this.open(path, None));
     }
 
     /// The tabs' notes, kept for the next launch: `tabs-<hash>.json` beside
