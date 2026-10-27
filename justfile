@@ -17,6 +17,10 @@ lint: web
     cargo fmt --check
     cargo clippy --workspace --all-targets -- -D warnings
 
+# The core's slow paths timed on a made-up vault of 20,000 notes: the index, a tasks query, a rename of a much-linked note.
+bench:
+    cargo test --release -p daftar-core --test bench -- --ignored --nocapture
+
 # Starts the app; `just run Notes/Inbox.md` opens that note.
 run *args: web
     cargo run -p daftar -- {{args}}

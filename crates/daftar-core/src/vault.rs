@@ -89,9 +89,12 @@ pub struct VaultIndex {
     tag_tree: Vec<TagNode>,
     /// What the resolver and the tree were made from. A saved note changes
     /// neither, and with 20,000 files they took most of a second to make.
-    resolved: Option<(BTreeSet<String>, HashMap<String, Vec<String>>)>,
+    resolved: Option<(BTreeSet<String>, Aliases)>,
     treed: Option<(BTreeSet<String>, BTreeSet<String>)>,
 }
+
+/// Each note's aliases, by its path.
+type Aliases = HashMap<String, Vec<String>>;
 
 impl VaultIndex {
     pub fn resolver(&self) -> &LinkResolver {

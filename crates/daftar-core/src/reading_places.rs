@@ -53,16 +53,14 @@ impl ReadingPlaces {
         self.entries.get(path).and_then(|e| e.read)
     }
 
-    /// The notes read last, newest first, up to [limit].
+    /// The notes read last, newest first, up to [limit]. A note with no read
+    /// time, kept by a version that did not record one, comes after those
+    /// with one, by when its place was set.
     pub fn recently_read(&self, limit: usize) -> Vec<String> {
-        let mut read: Vec<(&String, i64, usize)> = self
-            .order
-            .iter()
-            .enumerate()
-            .filter_map(|(offset, path)| self.entries.get(path).and_then(|e| e.read).map(|date| (path, date, offset)))
-            .collect();
+        let mut read: Vec<(&String, Option<i64>, usize)> =
+            self.order.iter().enumerate().filter_map(|(offset, path)| self.entries.get(path).map(|e| (path, e.read, offset))).collect();
         // The order breaks a tie: one second can hold many reads.
-        read.sort_by(|a, b| (b.1, b.2).cmp(&(a.1, a.2)));
+        read.sort_by_key(|r| std::cmp::Reverse((r.1, r.2)));
         read.into_iter().take(limit).map(|(path, _, _)| path.clone()).collect()
     }
 
@@ -98,12 +96,6 @@ impl ReadingPlaces {
             let oldest = self.order.remove(0);
             self.entries.remove(&oldest);
         }
-    }
-
-    /// The notes whose place was set last, newest first, up to [limit]: the
-    /// notes read last.
-    pub fn recently_read(&self, limit: usize) -> Vec<String> {
-        self.order.iter().rev().take(limit).cloned().collect()
     }
 
     /// After a move or a rename: [moves] maps each file's old path to its new one.

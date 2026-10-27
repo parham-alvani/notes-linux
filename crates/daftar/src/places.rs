@@ -1,4 +1,4 @@
-//! Where each note was being read (`ReadingPlaces`), kept across launches so
+//! Where each note was being read and what of it was folded (`ReadingPlaces`), kept across launches so
 //! a note opens where it was left: the Mac's `PlaceBook`. One file for each
 //! vault in `$XDG_STATE_HOME/daftar`, written a second after the last change
 //! and when the window closes.
@@ -41,6 +41,19 @@ impl PlaceBook {
             return;
         }
         self.places.borrow_mut().set(path, line);
+        self.later();
+    }
+
+    /// The sections folded shut in [path], as `level:text`.
+    pub fn folds(&self, path: &str) -> Vec<String> {
+        self.places.borrow().folds(path)
+    }
+
+    pub fn set_folds(self: &std::rc::Rc<Self>, path: &str, folds: Vec<String>) {
+        if self.folds(path) == folds {
+            return;
+        }
+        self.places.borrow_mut().set_folds(path, folds);
         self.later();
     }
 

@@ -18,7 +18,9 @@ use serde_json::{Value, json};
 use webkit6::prelude::*;
 use webkit6::{NavigationPolicyDecision, PolicyDecisionType, URISchemeRequest, URISchemeResponse, WebView};
 
-use daftar_core::{Base, BaseCell, BaseEngine, Day, NoteParser, QueryTask, TasksQuery, Vault, VaultIndex};
+use daftar_core::{
+    Base, BaseCell, BaseEngine, BaseImage, BaseLayout, Canvas, Day, Detected, NoteParser, QueryTask, TasksQuery, Vault, VaultIndex,
+};
 
 use crate::settings::AppSettings;
 use crate::store::{VaultStore, file_in};
@@ -28,6 +30,25 @@ static READER: Dir = include_dir!("$CARGO_MANIFEST_DIR/reader");
 
 /// Front matter the reader does not print: the plugins' own keys.
 const HIDDEN: [&str; 5] = ["cssclasses", "cssclass", "icon", "iconColor", "position"];
+
+/// The schemes a link may leave the app by: the web, mail, and the phone's
+/// call, message and map. Never `file:`, `smb:` or an app's own scheme.
+const OUTSIDE: [&str; 6] = ["http", "https", "mailto", "tel", "sms", "geo"];
+
+/// What a detected address or phone number opens: OpenStreetMap's search for
+/// the address, `tel:` with the number's digits.
+fn detected_url(kind: &str, value: &str) -> Option<String> {
+    match kind {
+        "address" if !value.trim().is_empty() => {
+            Some(format!("https://www.openstreetmap.org/search?query={}", glib::Uri::escape_string(value.trim(), None, false)))
+        }
+        "phone" => {
+            let digits: String = value.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
+            (digits.chars().filter(char::is_ascii_digit).count() >= 3).then(|| format!("tel:{digits}"))
+        }
+        _ => None,
+    }
+}
 
 thread_local! {
     /// The open vault's folder, for the `vault:` scheme. The schemes belong
@@ -141,6 +162,10 @@ impl Reader {
         let shows = state.shows;
         drop(state);
         let Some(text) = store.text(&request.path) else { return };
+        if Canvas::is_canvas(&request.path) {
+            self.draw_canvas(&store, &request, keep_scroll, &text);
+            return;
+        }
         if !Vault::is_base(&request.path) {
             self.draw(&store, &request, keep_scroll, &text, None);
             return;
@@ -162,9 +187,7 @@ impl Reader {
     /// Hands [request]'s note to the page: [text] as markdown, or a base's
     /// views when [base] has them.
     fn draw(&self, store: &VaultStore, request: &Request, keep_scroll: bool, text: &str, base: Option<Value>) {
-        let settings = self.settings.borrow();
-        let (font_text, font_code) = settings.font_css();
-        let mut note = if let Some(base) = base {
+        let note = if let Some(base) = base {
             json!({
                 "path": request.path, "title": Vault::title(&request.path), "text": "", "links": {}, "properties": [],
                 "base": base,
@@ -177,14 +200,62 @@ impl Reader {
                 .filter(|(key, _)| !HIDDEN.contains(&key.as_str()))
                 .map(|(key, values)| json!([key, values.join(", ")]))
                 .collect();
+            let detected: Vec<Value> = Detected::find(text)
+                .iter()
+                .map(|item| json!({ "kind": item.kind.name(), "text": item.text, "value": item.value }))
+                .collect();
             json!({
                 "path": request.path,
                 "title": Vault::title(&request.path),
                 "text": text,
                 "links": store.index().resolved_links_in(&parsed, &request.path),
                 "properties": properties,
+                "folds": store.places.folds(&request.path),
+                "detected": detected,
             })
         };
+        self.send(note, self.settings.borrow(), request, keep_scroll);
+    }
+
+    /// A `.canvas` file: its board in place of a note's text.
+    fn draw_canvas(&self, store: &VaultStore, request: &Request, keep_scroll: bool, text: &str) {
+        let canvas = Canvas::parse(text);
+        let index = store.index();
+        let files = canvas.files(&index, &request.path);
+        let nodes: Vec<Value> = canvas
+            .nodes
+            .iter()
+            .map(|node| {
+                json!({
+                    "id": node.id, "type": node.kind, "x": node.x, "y": node.y, "width": node.width, "height": node.height,
+                    "color": Canvas::color(node.color.as_deref()), "text": node.text, "file": node.file,
+                    "path": files.get(&node.id), "subpath": node.subpath, "url": node.url, "label": node.label,
+                })
+            })
+            .collect();
+        let edges: Vec<Value> = canvas
+            .edges
+            .iter()
+            .map(|edge| {
+                json!({
+                    "id": edge.id, "fromNode": edge.from_node, "toNode": edge.to_node, "fromEnd": edge.from_end,
+                    "toEnd": edge.to_end, "fromSide": edge.from_side, "toSide": edge.to_side,
+                    "color": Canvas::color(edge.color.as_deref()), "label": edge.label,
+                })
+            })
+            .collect();
+        let note = json!({
+            "path": request.path, "title": Vault::title(&request.path), "text": "",
+            "links": canvas.links(&index, &request.path), "properties": [],
+            "canvas": { "nodes": nodes, "edges": edges },
+        });
+        drop(index);
+        self.send(note, self.settings.borrow(), request, keep_scroll);
+    }
+
+    /// Hands [note] to the page with the settings it draws with.
+    fn send(&self, mut note: Value, settings: std::cell::Ref<AppSettings>, request: &Request, keep_scroll: bool) {
+        let (font_text, font_code) = settings.font_css();
         let object = note.as_object_mut().unwrap();
         object.insert("keepScroll".into(), json!(keep_scroll));
         object.insert("textSize".into(), json!(settings.text_size()));
@@ -220,6 +291,11 @@ impl Reader {
                 eprintln!("daftar: the reader failed: {error}");
             }
         });
+    }
+
+    fn launch(&self, url: &str) {
+        let window = self.view.root().and_downcast::<gtk::Window>();
+        gtk::UriLauncher::new(url).launch(window.as_ref(), gio::Cancellable::NONE, |_| {});
     }
 
     fn notice(&self, text: &str) {
@@ -324,16 +400,38 @@ impl Reader {
             }
             "copy" => self.view.clipboard().set_text(&text("text")),
             "external" => {
-                // Web and mail only: a note's `file:` or `smb:` link would
-                // start an app or a script.
+                // Web, mail and the phone only: a note's `file:` or `smb:`
+                // link would start an app or a script.
                 let url = text("url");
                 let scheme = url.split(':').next().unwrap_or("").to_lowercase();
-                if ["http", "https", "mailto"].contains(&scheme.as_str()) {
-                    let window = self.view.root().and_downcast::<gtk::Window>();
-                    gtk::UriLauncher::new(&url).launch(window.as_ref(), gio::Cancellable::NONE, |_| {});
+                if OUTSIDE.contains(&scheme.as_str()) {
+                    self.launch(&url);
                 } else {
-                    self.notice(&format!("Daftar opens only web and mail links, not “{scheme}:” links."));
+                    self.notice(&format!("Daftar opens only web, mail and phone links, not “{scheme}:” links."));
                 }
+            }
+            // An address or a phone number written as plain text: a map, or the phone.
+            "detected" => {
+                if let Some(url) = detected_url(&text("type"), &text("value")) {
+                    self.launch(&url);
+                }
+            }
+            // Sections folded shut, kept for the next time the note opens.
+            "folds" => {
+                let (Some(shown), Some(folds)) = (self.shown(), body.get("folds").and_then(Value::as_array)) else { return };
+                let folds = folds.iter().filter_map(|f| f.as_str().map(String::from)).collect();
+                let store = self.state.borrow().store.clone();
+                if let Some(store) = store {
+                    store.places.set_folds(&shown.path, folds);
+                }
+            }
+            // `e` on a block: the editor, at that block's line.
+            "edit" => {
+                let Some(line) = body.get("line").and_then(Value::as_u64) else { return };
+                if let Some(shown) = self.state.borrow_mut().shown.as_mut() {
+                    shown.line = Some(line as usize);
+                }
+                let _ = self.view.activate_action("win.edit", None);
             }
             _ => {}
         }
@@ -572,7 +670,16 @@ fn run_base(index: &VaultIndex, root: &Path, source: &str, context: &str) -> Val
                     let rows: Vec<Value> = group
                         .rows
                         .iter()
-                        .map(|row| json!({ "path": row.path, "cells": row.cells.iter().map(cell_json).collect::<Vec<_>>() }))
+                        .map(|row| {
+                            let mut out = json!({ "path": row.path, "cells": row.cells.iter().map(cell_json).collect::<Vec<_>>() });
+                            match &row.image {
+                                Some(BaseImage::File(path)) => out["image"] = json!({ "file": path }),
+                                Some(BaseImage::Url(url)) => out["image"] = json!({ "url": url }),
+                                Some(BaseImage::Color(color)) => out["image"] = json!({ "color": color }),
+                                None => {}
+                            }
+                            out
+                        })
                         .collect();
                     let mut out = json!({ "rows": rows });
                     if let Some(name) = &group.name {
@@ -581,10 +688,20 @@ fn run_base(index: &VaultIndex, root: &Path, source: &str, context: &str) -> Val
                     out
                 })
                 .collect();
-            json!({ "name": table.name, "type": table.kind, "columns": table.columns, "count": table.count, "groups": groups })
+            json!({
+                "name": table.name, "type": table.kind, "kind": table.draws_as, "layout": layout_json(&table.layout),
+                "columns": table.columns, "count": table.count, "groups": groups,
+            })
         })
         .collect();
     json!({ "views": views, "problems": engine.problems })
+}
+
+fn layout_json(layout: &BaseLayout) -> Value {
+    json!({
+        "imageFit": layout.image_fit, "imageAspectRatio": layout.image_aspect_ratio, "cardSize": layout.card_size,
+        "markers": layout.markers, "indentProperties": layout.indent_properties, "separator": layout.separator,
+    })
 }
 
 fn cell_json(cell: &BaseCell) -> Value {

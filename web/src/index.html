@@ -10,7 +10,8 @@
     <script src="reader.js" defer></script>
   </head>
   <body>
-    <div id="progress"></div>
+    <div id="progress" role="progressbar" aria-label="Reading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+    <div id="announce" class="sr-only" role="status" aria-live="polite"></div>
     <main id="note"></main>
   </body>
 </html>

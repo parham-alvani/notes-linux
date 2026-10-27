@@ -10,7 +10,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use daftar_core::{BookmarkEntry, Icon, Iconic, TreeNode, Vault};
+use daftar_core::{BookmarkEntry, Canvas, Icon, Iconic, TreeNode, Vault};
 
 pub struct Sidebar {
     pub widget: gtk::Box,
@@ -45,6 +45,10 @@ fn store_of(nodes: &[TreeNode]) -> gio::ListStore {
 fn icon(node: &TreeNode) -> &'static str {
     if node.is_folder() {
         "folder-symbolic"
+    } else if Vault::is_base(&node.path) {
+        "x-office-spreadsheet-symbolic"
+    } else if Canvas::is_canvas(&node.path) {
+        "view-grid-symbolic"
     } else if Vault::opens_in_app(&node.path) {
         "text-x-generic-symbolic"
     } else {

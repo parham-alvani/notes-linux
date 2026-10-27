@@ -18,6 +18,7 @@ just cli …    # the command line on the configured vault: `just cli tasks --du
 just app      # the release binary
 just web      # rebuild the reader bundle only
 just install  # ~/.local/bin/daftar, its desktop entry and icon
+just bench    # the core on a made-up vault of 20,000 notes, timed (crates/daftar-core/tests/bench.rs)
 ```
 
 ## Layout
@@ -43,7 +44,7 @@ Keep logic in `daftar-core`: its tests run in a second and need no display. Each
 
 `web/` is a copy of `notes-mac/web/`. The page talks to its host through `window.webkit.messageHandlers`, which WebKitGTK has as WKWebView does, so it runs unchanged. A change to `web/src` belongs in both repositories; keep the two copies the same, and keep a Linux-only need in the host, not in the page.
 
-The host's side of the protocol, in `reader.rs`: the app calls `daftar.show(note)` with `{path, title, text, links, properties, keepScroll, textSize, fontText, fontCode}` and `heading` or `line`; the page posts `ready`, `open`, `toggleTask`, `tag`, `copy`, `external`, `editTask` and `cursor` to `daftar`, and asks `embed`, `tasks` and `base`, which answer with a reply.
+The host's side of the protocol, in `reader.rs`: the app calls `daftar.show(note)` with `{path, title, text, links, properties, keepScroll, textSize, fontText, fontCode}`, a note's `folds` (from `PlaceBook`) and `detected` (`detected.rs`), a base's `base` or a canvas's `canvas` (`canvas.rs`), and `heading` or `line`; the page posts `ready`, `open`, `toggleTask`, `tag`, `copy`, `external`, `detected`, `folds`, `edit`, `editTask`, `cursor`, `section` and `stopSpeaking` to `daftar`, and asks `embed`, `tasks` and `base`, which answer with a reply. `section` and `stopSpeaking` have no use here yet; `edit` sets the shown line and runs `win.edit`. To bring the Mac's page over, copy `web/src` and `web/test` (not `quicklook.js`), then put back the Linux lines: a new tab on Ctrl as well as ⌘, and the middle click.
 
 Bases are `yaml.rs`, `base_expression.rs` and `bases.rs` (`YAML.swift`, `BaseExpression.swift`, `Bases.swift`). A `BaseEngine` is for one run; `BaseEngine::on_disk` reads `.obsidian/types.json` and the files' dates from the vault, and a creation date the file system does not keep is the change date. A regular expression is the `regex` crate's, which has no lookaround: one that does not compile makes its statement a listed problem, never a crash. Sorting goes through `safe_sort`, which cannot panic on an order that mixes kinds.
 
@@ -62,7 +63,7 @@ Bases are `yaml.rs`, `base_expression.rs` and `bases.rs` (`YAML.swift`, `BaseExp
 - **An edit reads the file again and refuses when the line changed.** `VaultEdits::toggle_task` checks that the clicked line is still a task with the status the page showed. Never write from what the view or the index remembers. A write goes through a temporary file and a rename.
 - **The index is in memory and is built at launch**, away from the main thread (`gio::spawn_blocking`). The files are the record; there is no database on disk to migrate. `watcher.rs` (inotify, the Mac's `FileWatcher`) reports the vault paths that changed, gathered for 200 ms, and only ones `Vault::counts`; `Window::files_changed` updates the index and search, rebuilds the tree only when files came or went (open folders stay open), and draws the note on screen again when it or a note it links to changed.
 - **The reader page reaches nothing but two schemes:** `daftar://reader/…` (built into the binary) and `vault:///…` (the vault, and nothing outside it: `store::file_in` refuses `..`, absolute paths and symlinks out). The page has a content security policy; keep `script-src 'self'`. A page or an SVG from the vault is served with a `sandbox` policy. The window never leaves `daftar://reader/`.
-- **Links leave the app as web and mail links only** (`http`, `https`, `mailto`), through `gtk::UriLauncher`.
+- **Links leave the app as web, mail and phone links only** (`OUTSIDE` in `reader.rs`: `http`, `https`, `mailto`, `tel`, `sms`, `geo`), through `gtk::UriLauncher`. A detected address opens OpenStreetMap's search over https.
 - **The week notes in `Calendar/` are read-only here.** The phone writes them whole at every change.
 - **Colors are Daftar's:** naz on dark, Daylight on light, in `web/src/reader.css`; the window follows `appearance.theme` through `adw::StyleManager`, and the page follows the window.
 - **The app id is `me.parham1995.notes`**, the Mac app's bundle id, for the desktop entry, the icon and the window class.

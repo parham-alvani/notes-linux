@@ -46,8 +46,8 @@ static ADDRESS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"\b\d{1,5}[a-zA-Z]?\s+(?:[A-Z][\w'.-]*\s+){0,4}",
         r"(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Way|Court|Ct\.?|Place|Pl\.?|Square|Sq\.?|Loop|Terrace|Parkway|Pkwy|Highway|Hwy)\b",
-        r"(?:,\s*[A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*)*){0,2}",
-        r"(?:,?\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?)?",
+        // Then the town, and a state with its ZIP code, before a town's words.
+        r"(?:,\s*(?:[A-Z]{2}\s+\d{5}(?:-\d{4})?|[A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*)*)){0,3}",
     ))
     .unwrap()
 });
@@ -131,6 +131,7 @@ mod tests {
         let places: Vec<&DetectedItem> = found.iter().filter(|f| f.kind == DetectedKind::Address).collect();
         assert_eq!(places.len(), 1);
         assert!(places[0].text.starts_with("1 Infinite Loop"));
+        assert_eq!(places[0].text, "1 Infinite Loop, Cupertino, CA 95014");
     }
 
     #[test]

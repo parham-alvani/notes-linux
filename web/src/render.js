@@ -20,6 +20,28 @@ export function isClosed(status) {
   return status === "x" || status === "X" || status === "-";
 }
 
+/** A colour of the palette for each tag, the same one every time. */
+const TAG_COLORS = ["--orange", "--aqua", "--pink", "--purple", "--chartreuse", "--blue", "--spring-green", "--vivid-yellow", "--red"];
+
+export function hue(text) {
+  let hash = 0;
+  for (const char of text) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
+  return TAG_COLORS[hash % TAG_COLORS.length];
+}
+
+/** The colour of a code block's language label. */
+const LANGUAGE_COLORS = {
+  go: "--aqua", python: "--vivid-yellow", py: "--vivid-yellow", bash: "--chartreuse", sh: "--chartreuse", shell: "--chartreuse", zsh: "--chartreuse",
+  fish: "--chartreuse", powershell: "--blue", yaml: "--pink", yml: "--pink", toml: "--pink", json: "--orange", sql: "--purple", rust: "--orange",
+  zig: "--orange", c: "--blue", cpp: "--blue", typescript: "--blue", ts: "--blue", javascript: "--vivid-yellow", js: "--vivid-yellow",
+  hcl: "--purple", terraform: "--purple", swift: "--orange", kotlin: "--purple", java: "--red", ruby: "--red", lua: "--blue",
+  dockerfile: "--aqua", nix: "--blue", html: "--orange", css: "--pink", markdown: "--grey", md: "--grey", text: "--grey", diff: "--spring-green",
+};
+
+export function languageColor(lang) {
+  return Object.hasOwn(LANGUAGE_COLORS, lang.toLowerCase()) ? LANGUAGE_COLORS[lang.toLowerCase()] : "--accent";
+}
+
 /** The line count of the front matter, so a token's line maps back to the file. */
 export function frontMatterLines(text) {
   if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) return 0;
@@ -75,7 +97,44 @@ export function parseWikilink(inner) {
   return { target, anchor, alias };
 }
 
-function escapeHtml(text) {
+/** A file's name without its folder and extension: an image's alt text when the embed names none. */
+export function baseName(path) {
+  return (String(path).split("/").pop() ?? "").replace(/\.[^.]+$/, "");
+}
+
+/** A task's status for a screen reader: the box says checked or not, this says the rest. */
+export function taskStatusWords(status) {
+  if (status === " " || status === "x" || status === "X") return "";
+  if (status === "/") return "in progress";
+  if (status === "-") return "cancelled";
+  return `status ${status}`;
+}
+
+/** Markdown as the words it shows: links as their text, no emphasis marks, one line. */
+export function plainText(source) {
+  return String(source)
+    .replace(/!?\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, alias) => alias ?? target)
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_~=`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const TASK_FIELDS = /[📅⏳🛫✅❌➕🔁🔺⏫🔼🔽⏬]/u;
+
+/**
+ * The name a task's checkbox has: its sentence without marks, links as
+ * their words and the Tasks plugin's fields left out, then the status a
+ * checkbox cannot show (in progress, cancelled).
+ */
+export function taskLabel(source, status) {
+  const cut = source.search(TASK_FIELDS);
+  const text = plainText(cut >= 0 ? source.slice(0, cut) : source);
+  const words = taskStatusWords(status);
+  return words ? `${text}, ${words}` : text;
+}
+
+export function escapeHtml(text) {
   return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
@@ -110,7 +169,9 @@ function wikilinks(md) {
     const cls = path ? "internal-link" : "internal-link is-unresolved";
     return (
       `<a class="${cls}" href="#" data-path="${escapeHtml(path ?? "")}"` +
-      ` data-target="${escapeHtml(target)}" data-anchor="${escapeHtml(anchor ?? "")}"${path ? "" : ' title="Click to make this note"'}>${escapeHtml(label)}</a>`
+      ` data-target="${escapeHtml(target)}" data-anchor="${escapeHtml(anchor ?? "")}"` +
+      // A missing note is a colour to the eye: words to a screen reader.
+      `${path ? "" : ` title="Click to make this note" aria-label="${escapeHtml(label)}, not a note yet"`}>${escapeHtml(label)}</a>`
     );
   };
 
@@ -123,7 +184,7 @@ function wikilinks(md) {
       const size = alias && /^(\d+)(?:x(\d+))?$/.exec(alias);
       const width = size ? ` width="${size[1]}"` : "";
       const height = size && size[2] ? ` height="${size[2]}"` : "";
-      const alt = size ? target : (alias ?? target);
+      const alt = size || !alias ? baseName(target) : alias;
       return `<img src="${vaultUrl(path)}" alt="${escapeHtml(alt)}"${width}${height}>`;
     }
     if (path && VIDEO.test(path)) {
@@ -149,7 +210,7 @@ function wikilinks(md) {
     if (path) {
       return `<a class="internal-link attachment" href="#" data-path="${escapeHtml(path)}">${escapeHtml(alias ?? target)}</a>`;
     }
-    return `<span class="internal-link is-unresolved">${escapeHtml(alias ?? target)}</span>`;
+    return `<span class="internal-link is-unresolved" role="link" aria-disabled="true" aria-label="${escapeHtml(alias ?? target)}, not in the vault">${escapeHtml(alias ?? target)}</span>`;
   };
 }
 
@@ -330,14 +391,17 @@ function callouts(md) {
     const { callout, fold } = tokens[idx].meta;
     const tag = fold ? "details" : "div";
     const open = fold === "+" ? " open" : "";
-    return `<${tag} class="callout" data-callout="${escapeHtml(callout)}" dir="auto"${open}>`;
+    // A plain callout is a note to a screen reader; a folding one is a details already.
+    return `<${tag} class="callout" data-callout="${escapeHtml(callout)}" dir="auto"${fold ? "" : ' role="note"'}${open}>`;
   };
   md.renderer.rules.callout_close = (tokens, idx) => (tokens[idx].meta.fold ? "</details>\n" : "</div>\n");
   md.renderer.rules.callout_title = (tokens, idx, options, env, self) => {
-    const { fold, hasTitle, title } = tokens[idx].meta;
+    const { fold, hasTitle, title, callout } = tokens[idx].meta;
     const tag = fold ? "summary" : "div";
     const text = hasTitle ? self.renderInline(tokens[idx].children, options, env) : escapeHtml(title[0].toUpperCase() + title.slice(1));
-    return `<${tag} class="callout-title"><span class="callout-icon"></span><span class="callout-title-inner">${text}</span></${tag}>\n`;
+    // The icon is the callout's kind, which a custom title does not say.
+    const kind = (callout ?? title ?? "").replace(/^./, (c) => c.toUpperCase());
+    return `<${tag} class="callout-title"><span class="callout-icon" role="img" aria-label="${escapeHtml(kind)}"></span><span class="callout-title-inner">${text}</span></${tag}>\n`;
   };
   md.renderer.rules.callout_body_open = () => `<div class="callout-content">\n`;
   md.renderer.rules.callout_body_close = () => `</div>\n`;
@@ -361,7 +425,7 @@ function tasks(md) {
       const status = match[1];
       first.content = first.content.slice(match[0].length);
       const box = new state.Token("task_checkbox", "", 0);
-      box.meta = { status, line: tokens[i - 2].map[0] + offset };
+      box.meta = { status, line: tokens[i - 2].map[0] + offset, label: taskLabel(inline.content.replace(TASK, ""), status) };
       inline.children.unshift(box);
       tokens[i - 2].attrJoin("class", "task-list-item");
       tokens[i - 2].attrSet("data-task", status);
@@ -369,8 +433,8 @@ function tasks(md) {
     }
   });
   md.renderer.rules.task_checkbox = (tokens, idx) => {
-    const { status, line } = tokens[idx].meta;
-    return `<input type="checkbox" class="task-list-item-checkbox" data-line="${line}" data-status="${escapeHtml(status)}"${isClosed(status) ? " checked" : ""}>`;
+    const { status, line, label } = tokens[idx].meta;
+    return `<input type="checkbox" class="task-list-item-checkbox" data-line="${line}" data-status="${escapeHtml(status)}"${isClosed(status) ? " checked" : ""} aria-label="${escapeHtml(label)}">`;
   };
 }
 

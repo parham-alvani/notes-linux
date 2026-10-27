@@ -18,7 +18,7 @@ test("a heading link keeps its anchor", () => {
 
 test("an image embed loads from the vault and takes a width", () => {
   const html = render("![[logo.png|300]]", { links });
-  assert.match(html, /<img src="vault:\/\/\/uploads\/logo.png" alt="logo.png" width="300">/);
+  assert.match(html, /<img src="vault:\/\/\/uploads\/logo.png" alt="logo" width="300">/);
 });
 
 test("a note embed is a placeholder the page fills", () => {
@@ -29,9 +29,9 @@ test("a task knows the file line it is on, front matter counted", () => {
   const text = "---\ntags: [a]\n---\n# Title\n\n- [ ] first\n- [x] second\n";
   assert.equal(frontMatterLines(text), 3);
   const html = render(text);
-  assert.match(html, /data-line="5" data-status=" ">first/);
-  assert.match(html, /data-line="6" data-status="x" checked>second/);
-  assert.match(render("- [/] half"), /data-status="\/">half/);
+  assert.match(html, /data-line="5" data-status=" " aria-label="first">first/);
+  assert.match(html, /data-line="6" data-status="x" checked aria-label="second">second/);
+  assert.match(render("- [/] half"), /data-status="\/" aria-label="half, in progress">half/);
 });
 
 test("a callout has a title and a body, and a fold marker makes it a details", () => {
@@ -119,4 +119,43 @@ test("every list item has its source line, for the reading cursor", () => {
   assert.match(html, /<li dir="auto" data-line="2">one<\/li>/);
   assert.match(html, /<li dir="auto" data-line="3">two/);
   assert.match(html, /<li dir="auto" data-line="4">nested<\/li>/);
+});
+
+import { renderView } from "../src/bases.js";
+
+const cell = (text, path) => ({ parts: [{ text, path }], numeric: false });
+const baseView = (kind, layout = {}, image) => ({
+  name: "V", type: kind, kind: ["cards", "list"].includes(kind) ? kind : "table", layout, columns: ["file name", "stage"], count: 2,
+  groups: [
+    { name: "Open", rows: [{ path: "Shops/Bakery.md", cells: [cell("Bakery", "Shops/Bakery.md"), cell("open")], image }] },
+    { name: "Closed", rows: [{ path: "Shops/Cafe.md", cells: [cell("Cafe", "Shops/Cafe.md"), { parts: [], numeric: false }] }] },
+  ],
+});
+
+test("a table view draws a table, and an unknown view type falls back to it", () => {
+  assert.match(renderView(baseView("table")), /<table class="base-table">.*<th scope="col" dir="auto">stage<\/th>/s);
+  const kanban = renderView(baseView("kanban"));
+  assert.match(kanban, /<table class="base-table">/);
+  assert.match(kanban, /shown as a table, not kanban/);
+});
+
+test("a cards view draws a card per note with its cover and its properties", () => {
+  const html = renderView(baseView("cards", { cardSize: 260, imageFit: "contain", imageAspectRatio: 0.5 }, { file: "uploads/a b.png" }));
+  assert.match(html, /grid-template-columns: repeat\(auto-fill, minmax\(260px, 1fr\)\)/);
+  assert.match(html, /aspect-ratio: 1 \/ 0.5"><img src="vault:\/\/\/uploads\/a%20b.png"[^>]*object-fit: contain/);
+  assert.match(html, /base-card-title[^>]*><a class="internal-link" href="#" data-path="Shops\/Bakery.md">Bakery<\/a>/);
+  assert.match(html, /base-card-label" dir="auto">stage<\/span><span class="base-card-value" dir="auto">open/);
+  assert.match(html, /class="base-group-head" dir="auto">Open <span class="base-group-count">1/);
+  // The name is the title, not a line; an empty value is no line.
+  assert.equal(html.match(/base-card-line/g).length, 1);
+  assert.match(renderView(baseView("cards", {}, { color: "#ff5070" })), /background: #ff5070/);
+  assert.doesNotMatch(renderView(baseView("cards", {}, { color: "red;}" })), /red;/);
+  assert.doesNotMatch(renderView(baseView("cards", {}, { url: "javascript:x" })), /javascript/);
+});
+
+test("a list view draws a line per note, its properties inline or indented", () => {
+  const html = renderView(baseView("list", { markers: "number", separator: "," }));
+  assert.match(html, /<ol class="base-list"><li dir="auto"><a class="internal-link" href="#" data-path="Shops\/Bakery.md">Bakery<\/a><span class="base-list-values"> <span class="base-list-value" title="stage">open<\/span>/);
+  assert.match(renderView(baseView("list", { markers: "none" })), /<ul class="base-list is-plain">/);
+  assert.match(renderView(baseView("list", { indentProperties: true })), /<ul><li dir="auto"><span class="base-list-label">stage<\/span> open<\/li><\/ul>/);
 });
