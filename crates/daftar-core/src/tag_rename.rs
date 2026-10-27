@@ -7,6 +7,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::text::slugs;
+
 /// A fence line, also for `VaultReplace`'s "Skip code".
 pub(crate) static FENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:>\s*)*(```+|~~~+)").unwrap());
 static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\p{L}\p{N}_/-]+").unwrap());
@@ -28,6 +30,12 @@ impl TagRename {
             && !bare.starts_with('/')
             && !bare.ends_with('/')
             && !bare.contains("//")
+    }
+
+    /// Whether a note with [tags] has [tag] or one under it, as a rename finds it.
+    pub fn has(tags: &[String], tag: &str) -> bool {
+        let folded = slugs::fold(tag.strip_prefix('#').unwrap_or(tag));
+        tags.iter().map(|t| slugs::fold(t)).any(|t| t == folded || t.starts_with(&format!("{folded}/")))
     }
 
     /// [text] with the tag [old] named [new], or the text as it was.
@@ -161,5 +169,13 @@ mod tests {
         assert_eq!(TagRename::rename("#a", "a", "b c"), "#a");
         assert_eq!(TagRename::rename("#a", "a", "a"), "#a");
         assert_eq!(TagRename::rename("#کار و #کار/x", "کار", "work"), "#work و #work/x");
+    }
+
+    #[test]
+    fn a_note_has_the_tag_or_one_under_it() {
+        let tags = ["Project/Alpha".to_string(), "home".to_string()];
+        assert!(TagRename::has(&tags, "#project"));
+        assert!(TagRename::has(&tags, "home"));
+        assert!(!TagRename::has(&tags, "proj"));
     }
 }

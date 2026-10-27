@@ -12,6 +12,7 @@ macro_rules! out {
 
 mod images;
 mod tui;
+mod vault_commands;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -22,7 +23,8 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use daftar_core::{
-    Candidate, ConfigFile, Day, Git, QueryTask, QuickSwitcher, SearchIndex, TaskLine, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
+    Candidate, Clock, ConfigFile, Day, Git, QueryTask, QuickSwitcher, ReplaceOptions, SearchIndex, TaskLine, TasksQuery, Vault, VaultEdits,
+    VaultIndex, VaultTask,
 };
 
 #[derive(Parser)]
@@ -98,6 +100,64 @@ enum Command {
     },
     /// The branch, how far it is from its remote, and how many files changed.
     Status,
+    /// Renames a tag and the tags under it (`#old/sub`) in every note, in the
+    /// text and in the `tags` property; code and links are left alone.
+    RenameTag {
+        old: String,
+        new: String,
+        /// Lists the notes that would change, and changes nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Finds and replaces in the text of every note, as Replace in Vault does:
+    /// prints each match's line before and after, then writes them.
+    Replace {
+        find: String,
+        replacement: String,
+        /// A regular expression, whose replacement names its groups as `$1`.
+        #[arg(short = 'e', long)]
+        regex: bool,
+        #[arg(short = 'c', long)]
+        match_case: bool,
+        #[arg(short = 'w', long)]
+        whole_word: bool,
+        /// Code blocks and inline code too, which are left alone otherwise.
+        #[arg(long)]
+        in_code: bool,
+        /// Only the notes in this folder of the vault.
+        #[arg(long)]
+        folder: Option<String>,
+        /// Prints the matches, and changes nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Done and cancelled tasks first in each section of a note, as the Task
+    /// Sorter plugin sorts them.
+    SortTasks {
+        note: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Moves a task's due date (else its scheduled, else its start date) on,
+    /// as the Tasks plugin's Postpone does: by day, 2days, 3days, week, 2weeks or month.
+    Postpone {
+        note: String,
+        /// The line, from 1, as `tasks` prints it.
+        line: usize,
+        #[arg(default_value = "day")]
+        by: String,
+    },
+    /// The path of today's periodic note (the Daily notes plugin's folder
+    /// and format: a day, a week or a month), made from its template when
+    /// it is not there.
+    Daily {
+        /// Another day than today (YYYY-MM-DD).
+        #[arg(long)]
+        day: Option<String>,
+        /// Prints the path and makes nothing.
+        #[arg(long)]
+        no_create: bool,
+    },
     /// Removes pictures no note names, makes the others JPEGs under 1 MB and
     /// renames them in the notes, as notes-cli does.
     Images {
@@ -283,6 +343,39 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Status => {
             let status = repository(&root)?.status().map_err(|e| e.to_string())?;
             out!("{}\tahead {}\tbehind {}\tchanged {}", status.branch, status.ahead, status.behind, status.changed);
+        }
+        Command::RenameTag { old, new, dry_run } => {
+            let index = Vault::index(&root, None);
+            for path in vault_commands::rename_tag(&root, &index, &old, &new, dry_run)? {
+                out!("{path}");
+            }
+        }
+        Command::Replace { find, replacement, regex, match_case, whole_word, in_code, folder, dry_run } => {
+            let index = Vault::index(&root, None);
+            let options = ReplaceOptions { match_case, whole_word, regular_expression: regex, skip_code: !in_code };
+            for line in vault_commands::replace(&root, &index, &find, &replacement, options, folder.as_deref(), dry_run)? {
+                out!("{line}");
+            }
+        }
+        Command::SortTasks { note, dry_run } => {
+            let index = Vault::index(&root, None);
+            let path = note_path(&index, &note)?;
+            let moved = vault_commands::sort_tasks(&root, &path, dry_run)?;
+            out!("{path}\t{}", if moved { "sorted" } else { "in order already" });
+        }
+        Command::Postpone { note, line, by } => {
+            let index = Vault::index(&root, None);
+            let path = note_path(&index, &note)?;
+            let at = line.checked_sub(1).ok_or("lines count from 1")?;
+            out!("{}", vault_commands::postpone(&root, &path, at, &by, Day::today())?);
+        }
+        Command::Daily { day, no_create } => {
+            let index = Vault::index(&root, None);
+            let day = match day {
+                Some(text) => Day::parse(&text).ok_or(format!("{text} is not a day (YYYY-MM-DD)"))?,
+                None => Day::today(),
+            };
+            out!("{}", vault_commands::daily(&root, &index.files, day, !no_create, Clock::now())?);
         }
         Command::Images { folder, dry_run, keep_originals } => {
             let folder = if folder.is_absolute() { folder } else { root.join(folder) };
