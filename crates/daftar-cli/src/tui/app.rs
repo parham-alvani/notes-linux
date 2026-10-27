@@ -14,8 +14,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use daftar_core::{
-    Candidate, Day, Git, GitStatus, NoteParser, QueryTask, QuickSwitcher, SearchIndex, SyncFailure, TagNode, TaskLine, TasksQuery,
-    TreeNode, Vault, VaultEdits, VaultIndex, VaultTask,
+    Beautitab, Bookmarks, Candidate, Day, Git, GitStatus, NoteParser, QueryTask, QuickSwitcher, Quote, ReadingPlaces, SearchIndex,
+    SyncFailure, TagNode, TaskLine, TasksQuery, TreeNode, Vault, VaultEdits, VaultIndex, VaultTask, home, reading_places,
 };
 
 use super::markdown::{self, Block, Row};
@@ -105,6 +105,26 @@ pub enum Overlay {
     Help,
 }
 
+/// The note pane with no note, as the app's home page in text: the time, a
+/// greeting, the notes read last, the bookmarks and a quote, as the vault's
+/// Beautitab settings say.
+#[derive(Debug, Clone, Default)]
+pub struct Home {
+    pub settings: Beautitab,
+    /// The notes listed, under their headings: Recent, then Bookmarks.
+    pub lists: Vec<(&'static str, Vec<String>)>,
+    /// Of every note listed, in order.
+    pub selected: usize,
+    pub quote: Option<Quote>,
+}
+
+impl Home {
+    /// Every note listed, in order: the same note may be in both lists.
+    pub fn notes(&self) -> Vec<&String> {
+        self.lists.iter().flat_map(|(_, notes)| notes).collect()
+    }
+}
+
 /// Work the loop does with the terminal: an editor to hand the screen to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Job {
@@ -127,6 +147,9 @@ pub struct Areas {
     pub picker: Rect,
     pub list: Rect,
     pub list_items: Vec<usize>,
+    /// The home page's note on each row of the note pane, by its place in
+    /// `Home::notes`.
+    pub home_rows: Vec<Option<usize>>,
 }
 
 pub struct App {
@@ -141,6 +164,8 @@ pub struct App {
     pub tree_selected: usize,
     pub tree_scroll: usize,
     pub note: Option<OpenNote>,
+    /// What the note pane shows with no note.
+    pub home: Home,
     /// The notes before this one, and where the cursor was in each.
     pub history: Vec<(String, usize)>,
     pub recent: Vec<String>,
@@ -192,6 +217,7 @@ impl App {
             tree_selected: 0,
             tree_scroll: 0,
             note: None,
+            home: Home::default(),
             history: Vec::new(),
             recent: Vec::new(),
             focus: Focus::Sidebar,
@@ -207,6 +233,7 @@ impl App {
         };
         app.refresh_git();
         app.rebuild_tree();
+        app.refresh_home();
         app
     }
 
@@ -379,6 +406,68 @@ impl App {
         }
     }
 
+    /// H: the home page in the note pane, as the app's Home button; Back
+    /// returns to the note that was open.
+    pub fn go_home(&mut self) {
+        if let Some(note) = self.note.take() {
+            self.history.push((note.path, note.cursor));
+        }
+        self.home.quote = None;
+        self.home.selected = 0;
+        self.refresh_home();
+        self.focus = if self.home.notes().is_empty() { Focus::Sidebar } else { Focus::Note };
+    }
+
+    /// The home page's lists and settings read again: the notes opened here
+    /// first, then those the app read last, while they are in the vault.
+    pub fn refresh_home(&mut self) {
+        let settings = Beautitab::read(&self.root);
+        let selected = self.home.notes().get(self.home.selected).map(|p| p.to_string());
+        let files = &self.index.files;
+        let mut lists = Vec::new();
+        if settings.show_recent_files {
+            let read = fs::read_to_string(reading_places::state_file(&self.root, "places"))
+                .map(|data| ReadingPlaces::from_data(&data).recently_read(40))
+                .unwrap_or_default();
+            let recent = home::recent(&self.recent, &read, |p| files.contains(p), 8);
+            if !recent.is_empty() {
+                lists.push(("Recent", recent));
+            }
+        }
+        if settings.show_bookmarks {
+            let marked: Vec<String> = Bookmarks::load(&self.root)
+                .entries()
+                .into_iter()
+                .filter(|e| !e.folder && files.contains(&e.path))
+                .map(|e| e.path)
+                .take(8)
+                .collect();
+            if !marked.is_empty() {
+                lists.push(("Bookmarks", marked));
+            }
+        }
+        // One quote for each visit, kept while it is still one of them.
+        let quote = self.home.quote.take().filter(|q| settings.show_quote && settings.quotes.contains(q)).or_else(|| {
+            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() as usize).unwrap_or(0);
+            settings.show_quote.then(|| settings.quotes.get(at % settings.quotes.len().max(1)).cloned()).flatten()
+        });
+        self.home = Home { settings, lists, selected: 0, quote };
+        let notes = self.home.notes();
+        self.home.selected = selected.and_then(|path| notes.iter().position(|p| **p == path)).unwrap_or(0);
+    }
+
+    pub fn home_move(&mut self, by: isize) {
+        let last = self.home.notes().len().saturating_sub(1) as isize;
+        self.home.selected = (self.home.selected as isize + by).clamp(0, last.max(0)) as usize;
+    }
+
+    /// Enter on the home page: the note chosen opens.
+    pub fn home_activate(&mut self) {
+        if let Some(path) = self.home.notes().get(self.home.selected).map(|p| p.to_string()) {
+            self.open(&path, None, true);
+        }
+    }
+
     pub fn back(&mut self) {
         match self.history.pop() {
             Some((path, cursor)) => {
@@ -497,6 +586,7 @@ impl App {
                 self.message = Some((format!("{path} is gone"), false));
             }
         }
+        self.refresh_home();
         if let Some(at) = tree.0.and_then(|path| self.tree.iter().position(|row| row.path == path)) {
             self.tree_selected = at;
             self.tree_scroll = tree.1;

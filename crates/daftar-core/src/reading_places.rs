@@ -5,6 +5,7 @@
 //! `LIMIT`; a move or a rename takes its entry along.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
@@ -168,9 +169,35 @@ impl ReadingPlaces {
     }
 }
 
+/// The file of [kind] for the vault at [root] in Daftar's state folder,
+/// `places-<hash>.json` for the reading places: the app writes it, and the
+/// TUI reads the notes read last from it.
+pub fn state_file(root: &Path, kind: &str) -> PathBuf {
+    state_dir().join("daftar").join(format!("{kind}-{:016x}.json", fnv(&root.to_string_lossy())))
+}
+
+/// `$XDG_STATE_HOME`, else `~/.local/state`, as the XDG spec has it.
+fn state_dir() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| std::env::home_dir().unwrap_or_default().join(".local/state"))
+}
+
+/// FNV-1a, for a short stable file name from the vault's path.
+fn fnv(text: &str) -> u64 {
+    text.bytes().fold(0xcbf29ce484222325, |hash, byte| (hash ^ byte as u64).wrapping_mul(0x100000001b3))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_file_per_vault() {
+        assert_ne!(fnv("/home/a/vault"), fnv("/home/a/vault2"));
+        assert_eq!(fnv(""), 0xcbf29ce484222325);
+    }
 
     #[test]
     fn places_come_back_from_their_file() {

@@ -178,7 +178,7 @@ mod tests {
         assert_eq!(names, ["Projects", "Tasks", "Home"]);
         let shown = screen(&mut app);
         assert!(shown.contains("▸ Projects"), "{shown}");
-        assert!(shown.contains("Daftar"), "{shown}");
+        assert!(shown.contains("Find a note"), "{shown}");
         // A folder opens, and its folder note with it.
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Char('j'));
@@ -212,6 +212,63 @@ mod tests {
         assert!(shown.contains("#home"), "{shown}");
         press(&mut app, KeyCode::Backspace);
         assert_eq!(app.note.as_ref().map(|n| n.path.as_str()), Some("Tasks/Work.md"));
+    }
+
+    #[test]
+    fn home_shows_the_dashboard_and_back_returns_to_the_note() {
+        let dir = vault();
+        let mut app = app(&dir);
+        app.open("Tasks/Work.md", None, true);
+        app.open("Projects/Kite/Kite.md", None, true);
+        press(&mut app, KeyCode::Char('H'));
+        assert!(app.note.is_none());
+        assert_eq!(app.focus, Focus::Note);
+        let shown = screen(&mut app);
+        assert!(shown.contains("◷ Recent"), "{shown}");
+        assert!(shown.contains("▌ Kite  Projects/Kite"), "{shown}");
+        assert!(shown.contains("Work  Tasks"), "{shown}");
+        // The clock in blocks: a pane this tall has room for it.
+        assert!(shown.contains("███"), "{shown}");
+        // j, then Enter, opens the second note read last.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.note.as_ref().map(|n| n.path.as_str()), Some("Tasks/Work.md"));
+        // Home again, then Back: the note that was open.
+        press(&mut app, KeyCode::Char('H'));
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.note.as_ref().map(|n| n.path.as_str()), Some("Tasks/Work.md"));
+    }
+
+    #[test]
+    fn home_follows_the_vaults_beautitab_settings() {
+        let dir = vault();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".obsidian/plugins/beautitab")).unwrap();
+        fs::write(
+            root.join(".obsidian/plugins/beautitab/data.json"),
+            r#"{"greetingText": "Salaam, {{greeting}}", "timeFormat": "12-hour", "showRecentFiles": false, "showBookmarks": true,
+                "showQuote": true, "quoteSource": "My quotes", "customQuotes": [{"text": "Write it down", "author": "Daftar"}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join(".obsidian/bookmarks.json"),
+            r#"{"items": [{"type": "file", "path": "Home.md"}, {"type": "folder", "path": "Tasks"}]}"#,
+        )
+        .unwrap();
+        let mut app = app(&dir);
+        app.open("Tasks/Work.md", None, true);
+        press(&mut app, KeyCode::Char('H'));
+        let shown = screen(&mut app);
+        assert!(shown.contains("Salaam, "), "{shown}");
+        assert!(shown.contains("AM") || shown.contains("PM"), "{shown}");
+        assert!(shown.contains("★ Bookmarks"), "{shown}");
+        assert!(!shown.contains("Recent"), "{shown}");
+        assert!(shown.contains("“Write it down”"), "{shown}");
+        assert!(shown.contains("— Daftar"), "{shown}");
+        // A click on a bookmark opens it; a folder is not listed.
+        let at = find(&mut app, "Home  ");
+        click(&mut app, at);
+        assert_eq!(app.note.as_ref().map(|n| n.path.as_str()), Some("Home.md"));
     }
 
     #[test]
@@ -451,8 +508,9 @@ mod tests {
     fn a_click_opens_from_the_tree_and_ticks_a_box() {
         let dir = vault();
         let mut app = app(&dir);
-        let home = find(&mut app, "Home");
-        click(&mut app, home);
+        // The note in the tree, not the home page's title.
+        let (x, y) = find(&mut app, "│   Home");
+        click(&mut app, (x + 4, y));
         assert_eq!(app.note.as_ref().map(|n| n.path.as_str()), Some("Home.md"));
         app.open("Tasks/Work.md", None, true);
         // On the text, the cursor moves; on the box, the task ticks.

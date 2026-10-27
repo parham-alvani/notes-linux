@@ -92,6 +92,9 @@ fn draw_note(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let focused = app.focus == Focus::Note && app.overlay.is_none();
     let mut block = pane(&theme, focused);
+    if app.note.is_none() {
+        block = block.title(Line::from(Span::styled(" Home ", theme.heading(1))));
+    }
     if let Some(note) = &app.note {
         block = block
             .title(Line::from(Span::styled(format!(" {} ", Vault::title(&note.path)), theme.heading(1))))
@@ -103,7 +106,7 @@ fn draw_note(frame: &mut Frame, app: &mut App, area: Rect) {
     let height = inner.height as usize;
     app.layout(inner.width, height);
     let Some(note) = &app.note else {
-        draw_welcome(frame, &theme, inner);
+        draw_home(frame, app, inner, focused);
         return;
     };
     let lines: Vec<Line> = note
@@ -134,19 +137,137 @@ fn draw_note(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn draw_welcome(frame: &mut Frame, theme: &Theme, area: Rect) {
-    let lines = vec![
-        Line::from(Span::styled("دفتر", Style::new().fg(theme.accent).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("Daftar", theme.heading(1))),
-        Line::default(),
-        Line::from(vec![Span::styled("Ctrl+P ", Style::new().fg(theme.accent)), Span::styled("open a note", theme.muted())]),
-        Line::from(vec![Span::styled("/ ", Style::new().fg(theme.accent)), Span::styled("search the vault", theme.muted())]),
-        Line::from(vec![Span::styled("t ", Style::new().fg(theme.accent)), Span::styled("open tasks", theme.muted())]),
-        Line::from(vec![Span::styled("? ", Style::new().fg(theme.accent)), Span::styled("every key", theme.muted())]),
-    ];
-    let top = area.height.saturating_sub(lines.len() as u16) / 2;
-    let rect = Rect { y: area.y + top, height: area.height.saturating_sub(top), ..area };
-    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rect);
+/// Each digit and the colon in blocks, five rows high, for the home page's clock.
+const DIGITS: [[&str; 5]; 11] = [
+    ["███", "█ █", "█ █", "█ █", "███"],
+    ["  █", "  █", "  █", "  █", "  █"],
+    ["███", "  █", "███", "█  ", "███"],
+    ["███", "  █", "███", "  █", "███"],
+    ["█ █", "█ █", "███", "  █", "  █"],
+    ["███", "█  ", "███", "  █", "███"],
+    ["███", "█  ", "███", "█ █", "███"],
+    ["███", "  █", "  █", "  █", "  █"],
+    ["███", "█ █", "███", "█ █", "███"],
+    ["███", "█ █", "███", "  █", "███"],
+    [" ", "█", " ", "█", " "],
+];
+
+/// [time], `7:52` or `19:52`, in five rows of blocks.
+fn big_clock(time: &str) -> [String; 5] {
+    let glyphs: Vec<&[&str; 5]> =
+        time.chars().filter_map(|c| if c == ':' { Some(&DIGITS[10]) } else { c.to_digit(10).map(|d| &DIGITS[d as usize]) }).collect();
+    std::array::from_fn(|row| glyphs.iter().map(|glyph| glyph[row]).collect::<Vec<_>>().join(" "))
+}
+
+/// The note pane with no note: the time, a greeting, the notes read last,
+/// the bookmarks and a quote, as the app's home page shows them.
+fn draw_home(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
+    let theme = app.theme;
+    let home = &app.home;
+    let settings = &home.settings;
+    let now = chrono::Local::now();
+    let twenty_four_hour = settings.twenty_four_hour.unwrap_or(true);
+    let (time, half) = if twenty_four_hour {
+        (now.format("%H:%M").to_string(), String::new())
+    } else {
+        (now.format("%-I:%M").to_string(), now.format("%p").to_string())
+    };
+    let centered = |line: Line<'static>| (line, None, true);
+    let mut lines: Vec<(Line<'static>, Option<usize>, bool)> = Vec::new();
+    if settings.show_time {
+        let accent = Style::new().fg(theme.accent);
+        let clock = big_clock(&time);
+        // The clock in blocks when the pane is big enough, else in one line.
+        let lists = home.notes().len() + home.lists.len() * 2;
+        if area.height as usize >= lists + 16 && area.width as usize > clock[0].chars().count() + 4 {
+            for (row, text) in clock.into_iter().enumerate() {
+                let mut spans = vec![Span::styled(text, accent)];
+                if row == 4 && !half.is_empty() {
+                    spans.push(Span::styled(format!(" {half}"), theme.muted()));
+                }
+                lines.push(centered(Line::from(spans)));
+            }
+            lines.push(centered(Line::default()));
+        } else {
+            let text = if half.is_empty() { time.clone() } else { format!("{time} {half}") };
+            lines.push(centered(Line::from(Span::styled(text, accent.add_modifier(Modifier::BOLD)))));
+        }
+        lines.push(centered(Line::from(Span::styled(now.format("%A, %B %-d").to_string(), theme.muted()))));
+    }
+    if settings.show_greeting {
+        let greeting = daftar_core::home::greeting(&settings.greeting_text, chrono::Timelike::hour(&now));
+        lines.push(centered(Line::from(Span::styled(greeting, theme.heading(1)))));
+    }
+    if settings.show_search {
+        lines.push(centered(Line::default()));
+        lines.push(centered(Line::from(vec![
+            Span::styled(" ⌕ Find a note ", Style::new().fg(theme.muted).bg(theme.panel)),
+            Span::styled(" p ", Style::new().fg(theme.accent).bg(theme.panel)),
+        ])));
+    }
+    let mut at = 0;
+    for (title, notes) in &home.lists {
+        lines.push((Line::default(), None, false));
+        let mark = if *title == "Recent" { "◷" } else { "★" };
+        lines.push((
+            Line::from(Span::styled(format!("{mark} {title}"), Style::new().fg(theme.accent).add_modifier(Modifier::BOLD))),
+            None,
+            false,
+        ));
+        for path in notes {
+            let selected = focused && at == home.selected;
+            let mut spans = vec![
+                Span::styled(if selected { "▌ " } else { "  " }, Style::new().fg(theme.accent)),
+                Span::styled(Vault::title(path), Style::new().fg(theme.text).add_modifier(Modifier::BOLD)),
+            ];
+            let folder = QuickSwitcher::folder(path);
+            if !folder.is_empty() {
+                spans.push(Span::styled(format!("  {folder}"), theme.faint()));
+            }
+            let mut line = Line::from(spans);
+            if selected {
+                line = line.style(Style::new().bg(theme.panel));
+            }
+            lines.push((line, Some(at), false));
+            at += 1;
+        }
+    }
+    if let Some(quote) = &home.quote {
+        lines.push(centered(Line::default()));
+        lines.push(centered(Line::from(Span::styled(format!("“{}”", quote.text), theme.muted().add_modifier(Modifier::ITALIC)))));
+        if !quote.author.is_empty() {
+            lines.push(centered(Line::from(Span::styled(format!("— {}", quote.author), theme.faint()))));
+        }
+    }
+    lines.push(centered(Line::default()));
+    lines.push(centered(Line::from(vec![
+        Span::styled("H ", Style::new().fg(theme.accent)),
+        Span::styled("home  ", theme.faint()),
+        Span::styled("? ", Style::new().fg(theme.accent)),
+        Span::styled("every key", theme.faint()),
+    ])));
+    // The lists in a column in the middle, as wide as the widest of them.
+    let column = lines
+        .iter()
+        .filter(|(_, _, centered)| !centered)
+        .map(|(line, _, _)| line.width() as u16)
+        .max()
+        .unwrap_or(0)
+        .clamp(24.min(area.width), area.width);
+    let left = area.x + (area.width - column) / 2;
+    let top = area.y + area.height.saturating_sub(lines.len() as u16) / 2;
+    let mut rows = vec![None; area.height as usize];
+    for (offset, (line, note, centered)) in lines.into_iter().enumerate() {
+        let y = top + offset as u16;
+        if y >= area.bottom() {
+            break;
+        }
+        rows[(y - area.y) as usize] = note;
+        let rect = if centered { Rect { y, height: 1, ..area } } else { Rect { x: left, y, width: column, height: 1 } };
+        let alignment = if centered { Alignment::Center } else { Alignment::Left };
+        frame.render_widget(Paragraph::new(line).alignment(alignment), rect);
+    }
+    app.areas.home_rows = rows;
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -281,7 +402,7 @@ fn draw_picker(frame: &mut Frame, theme: &Theme, picker: &mut Picker, area: Rect
     (rect, list, items)
 }
 
-pub const KEYS: [(&str, &str); 25] = [
+pub const KEYS: [(&str, &str); 26] = [
     ("Ctrl+P  p", "open a note by name"),
     ("/  Ctrl+F", "search the text of every note"),
     ("t", "tasks: the note's queries, else every open task"),
@@ -295,6 +416,7 @@ pub const KEYS: [(&str, &str); 25] = [
     ("Enter  l  →", "follow the link; open a folder or a note"),
     ("h  ←", "close the folder"),
     ("Backspace  Alt+←", "back"),
+    ("H", "home: the notes read last, the bookmarks"),
     ("Space", "tick the task, or open it again"),
     ("Click", "open; tick a box; again on a line: follow"),
     ("Wheel", "scroll the tree, the note or the list"),

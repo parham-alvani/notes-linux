@@ -1,5 +1,5 @@
 //! What each key does, by where the keyboard is: a list, the help, the
-//! tree or the note.
+//! tree, the note or the home page.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -40,13 +40,16 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         KeyCode::Char('e') => app.edit(),
         KeyCode::Char('s') => app.start_sync(),
         KeyCode::Char('r') => app.reindex(),
+        KeyCode::Char('H') => app.go_home(),
         KeyCode::Tab | KeyCode::BackTab => {
-            app.focus = if app.focus == Focus::Sidebar && app.note.is_some() { Focus::Note } else { Focus::Sidebar };
+            let pane = app.note.is_some() || !app.home.notes().is_empty();
+            app.focus = if app.focus == Focus::Sidebar && pane { Focus::Note } else { Focus::Sidebar };
         }
         KeyCode::Backspace => app.back(),
         KeyCode::Left if alt => app.back(),
         _ => match app.focus {
             Focus::Sidebar => tree_key(app, key, ctrl),
+            Focus::Note if app.note.is_none() => home_key(app, key),
             Focus::Note => note_key(app, key, ctrl),
         },
     }
@@ -84,6 +87,19 @@ fn note_key(app: &mut App, key: KeyEvent, ctrl: bool) {
         KeyCode::Char('[') => app.note_jump(false),
         KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.follow(),
         KeyCode::Char(' ') => app.toggle_here(),
+        KeyCode::Char('h') | KeyCode::Left => app.focus = Focus::Sidebar,
+        _ => {}
+    }
+}
+
+/// The home page's lists: the notes read last and the bookmarks.
+fn home_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => app.home_move(1),
+        KeyCode::Char('k') | KeyCode::Up => app.home_move(-1),
+        KeyCode::Char('g') | KeyCode::Home => app.home.selected = 0,
+        KeyCode::Char('G') | KeyCode::End => app.home_move(isize::MAX / 2),
+        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.home_activate(),
         KeyCode::Char('h') | KeyCode::Left => app.focus = Focus::Sidebar,
         _ => {}
     }

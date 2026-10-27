@@ -86,6 +86,15 @@ fn click(app: &mut App, hit: Hit) {
         // clicked again follows its link.
         Hit::Note(row, column) => {
             let focused = app.focus == Focus::Note;
+            // On the home page, a note listed opens.
+            if app.note.is_none() {
+                if let Some(&Some(at)) = app.areas.home_rows.get(row) {
+                    app.message = None;
+                    app.home.selected = at;
+                    app.home_activate();
+                }
+                return;
+            }
             let Some(note) = &mut app.note else { return };
             let at = note.scroll + row;
             let Some(shown) = note.rows.get(at) else { return };
@@ -146,6 +155,7 @@ mod tests {
             picker: Rect::new(10, 3, 40, 8),
             list: Rect::new(12, 6, 36, 4),
             list_items: vec![0, 0, 2, 3],
+            home_rows: Vec::new(),
         }
     }
 
