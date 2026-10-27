@@ -623,7 +623,14 @@ impl Window {
             .unwrap_or(0);
         // A daily note's day, in the Solar Hijri calendar too when wanted.
         let persian = daftar_core::Day::parse(&Vault::title(path)).and_then(crate::settings::persian_date);
-        let length = (words >= 50).then(|| format!("{} words · {} min", grouped(words), (words as f64 / 220.0).round().max(1.0) as usize));
+        let mut length =
+            (words >= 50).then(|| format!("{} words · {} min", grouped(words), (words as f64 / 220.0).round().max(1.0) as usize));
+        // A Persian note counts in Persian digits, with the Persian calendar on.
+        if crate::settings::persian_date(daftar_core::Day::today()).is_some()
+            && daftar_core::text::direction::starts_rtl(&Vault::title(path))
+        {
+            length = length.map(|text| daftar_core::jalali::persian_digits(&text));
+        }
         [persian, length].into_iter().flatten().collect::<Vec<_>>().join(" · ")
     }
 
