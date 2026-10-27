@@ -1,5 +1,6 @@
 //! One task as it is written in the file, and the edits the app makes to it.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -111,8 +112,10 @@ impl TaskMetadata {
         // the text, as the Tasks plugin keeps them.
         let mut tags: Vec<String> = Vec::new();
         let mut kinds: HashSet<&str> = HashSet::new();
+        // Only the symbols in the line are looked for, not all of them at each step.
+        let present: Vec<&str> = SYMBOLS.keys().copied().filter(|symbol| line.contains(symbol)).collect();
         loop {
-            let last = SYMBOLS.keys().filter_map(|symbol| remaining.rfind(symbol).map(|at| (*symbol, at))).max_by_key(|(_, at)| *at);
+            let last = present.iter().filter_map(|symbol| remaining.rfind(symbol).map(|at| (*symbol, at))).max_by_key(|(_, at)| *at);
             let Some((symbol, at)) = last else { break };
             let kind = SYMBOLS[symbol];
             if kinds.contains(kind) {
@@ -170,9 +173,12 @@ impl TaskLine {
     }
 
     pub fn parse(raw: &str, line: usize, section: &str) -> Option<ParsedTask> {
+        if !raw.contains('[') {
+            return None;
+        }
         let caps = PATTERN.captures(raw)?;
         let status = caps[2].chars().next()?;
-        let body = BLOCK_ID.replace(&caps[3], "");
+        let body = if caps[3].contains('^') { BLOCK_ID.replace(&caps[3], "") } else { Cow::Borrowed(&caps[3]) };
         let (text, meta) = TaskMetadata::split(&body);
         let date = |emoji: &str| meta.iter().find(|m| m.emoji == emoji).map(|m| m.value.clone()).filter(|v| !v.is_empty());
         let prefix = &caps[1];

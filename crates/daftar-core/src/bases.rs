@@ -26,12 +26,107 @@ pub struct BaseView {
     pub sort: Vec<(String, bool)>,
     pub group_by: Option<(String, bool)>,
     pub limit: Option<i64>,
+    /// How a `cards` or `list` view draws its rows.
+    pub layout: BaseLayout,
 }
 
 impl Default for BaseView {
     fn default() -> BaseView {
-        BaseView { kind: "table".into(), name: "Table".into(), filter: None, order: vec![], sort: vec![], group_by: None, limit: None }
+        BaseView {
+            kind: "table".into(),
+            name: "Table".into(),
+            filter: None,
+            order: vec![],
+            sort: vec![],
+            group_by: None,
+            limit: None,
+            layout: BaseLayout::default(),
+        }
     }
+}
+
+impl BaseView {
+    /// The way the page draws the view: `table`, `cards` or `list`. A view
+    /// type the app does not know, a plugin's, is a table.
+    pub fn draws_as(&self) -> &'static str {
+        match self.kind.as_str() {
+            "cards" => "cards",
+            "list" => "list",
+            _ => "table",
+        }
+    }
+}
+
+/// The options of a `cards` or a `list` view, as Obsidian writes them in the
+/// view: `image`, `imageFit`, `imageAspectRatio` and `cardSize` for cards;
+/// `markers`, `indentProperties` and `separator` for a list. A value out of
+/// range or of the wrong kind keeps the default.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BaseLayout {
+    /// The property whose value is a card's cover: an image in the vault, a
+    /// web address or a `#hex` colour.
+    pub image: Option<String>,
+    /// `cover` crops the image to fill the cover; `contain` shows all of it.
+    pub image_fit: String,
+    /// The cover's height over its width.
+    pub image_aspect_ratio: f64,
+    /// The width of a card, in points.
+    pub card_size: f64,
+    /// `bullet`, `number` or `none`.
+    pub markers: String,
+    /// Each property on its own line under the first, not on one line.
+    pub indent_properties: bool,
+    pub separator: String,
+}
+
+impl Default for BaseLayout {
+    fn default() -> BaseLayout {
+        BaseLayout {
+            image: None,
+            image_fit: "cover".into(),
+            image_aspect_ratio: 1.0,
+            card_size: 200.0,
+            markers: "bullet".into(),
+            indent_properties: false,
+            separator: ",".into(),
+        }
+    }
+}
+
+impl BaseLayout {
+    fn new(node: &YamlNode) -> BaseLayout {
+        let mut layout = BaseLayout::default();
+        let text = |key: &str| node.get(key).and_then(YamlNode::string);
+        let number = |key: &str| text(key).and_then(|t| t.trim().parse::<f64>().ok()).filter(|n| n.is_finite() && *n > 0.0);
+        layout.image = text("image").filter(|i| !i.is_empty()).map(String::from);
+        if let Some(fit) = text("imageFit").map(str::to_lowercase).filter(|f| f == "cover" || f == "contain") {
+            layout.image_fit = fit;
+        }
+        if let Some(ratio) = number("imageAspectRatio") {
+            layout.image_aspect_ratio = ratio.clamp(0.1, 10.0);
+        }
+        if let Some(size) = number("cardSize") {
+            layout.card_size = size.clamp(50.0, 1000.0);
+        }
+        match text("markers").map(str::to_lowercase).as_deref() {
+            Some("number" | "numbers") => layout.markers = "number".into(),
+            Some("none") => layout.markers = "none".into(),
+            _ => {}
+        }
+        layout.indent_properties = text("indentProperties").is_some_and(|t| t.eq_ignore_ascii_case("true"));
+        if let Some(mark) = text("separator").filter(|m| !m.is_empty()) {
+            layout.separator = mark.to_string();
+        }
+        layout
+    }
+}
+
+/// A card's cover: an image in the vault, one on the web, or a colour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseImage {
+    File(String),
+    Url(String),
+    Color(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -81,6 +176,7 @@ impl Base {
                 view.group_by = Some((property.to_string(), !descending(group.get("direction"))));
             }
             view.limit = node.get("limit").and_then(YamlNode::string).and_then(|l| l.parse().ok());
+            view.layout = BaseLayout::new(node);
             base.views.push(view);
         }
         if base.views.is_empty() {
@@ -132,7 +228,11 @@ impl BaseFilter {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BaseTable {
     pub name: String,
+    /// The view's `type` as written.
     pub kind: String,
+    /// `table`, `cards` or `list`: how the page draws it.
+    pub draws_as: String,
+    pub layout: BaseLayout,
     pub columns: Vec<String>,
     pub groups: Vec<BaseGroup>,
     pub count: usize,
@@ -149,6 +249,8 @@ pub struct BaseGroup {
 pub struct BaseRow {
     pub path: String,
     pub cells: Vec<BaseCell>,
+    /// The card's cover, in a `cards` view with an `image`.
+    pub image: Option<BaseImage>,
 }
 
 /// One cell as the page draws it: text runs, some of them links.
@@ -223,6 +325,9 @@ const MONTHS: [&str; 12] =
     ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const LIST_TYPES: [&str; 3] = ["multitext", "tags", "aliases"];
+const IMAGE_TYPES: [&str; 11] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic", "tif", "tiff"];
+static HEX_COLOR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$").unwrap());
 
 impl<'a> BaseEngine<'a> {
     pub fn new(
@@ -308,11 +413,16 @@ impl<'a> BaseEngine<'a> {
         }
         let order_ids = if view.order.is_empty() { vec!["file.name".to_string()] } else { view.order.clone() };
         let columns: Vec<BaseExpr> = order_ids.iter().map(|id| column(id)).collect();
+        let cover = if view.draws_as() == "cards" { view.layout.image.as_deref().map(column) } else { None };
         let rows: Vec<BaseRow> = paths
             .iter()
             .map(|path| BaseRow {
                 path: path.clone(),
                 cells: order_ids.iter().zip(&columns).map(|(id, expression)| self.cell_at(id, expression, path)).collect(),
+                image: cover.as_ref().and_then(|c| {
+                    let value = self.value_of(c, path);
+                    self.image(&value, path)
+                }),
             })
             .collect();
         let count = rows.len();
@@ -349,9 +459,45 @@ impl<'a> BaseEngine<'a> {
         BaseTable {
             name: view.name.clone(),
             kind: view.kind.clone(),
+            draws_as: view.draws_as().into(),
+            layout: view.layout.clone(),
             columns: order_ids.iter().map(|id| base.display_names.get(id).cloned().unwrap_or_else(|| label(id))).collect(),
             groups,
             count,
+        }
+    }
+
+    /// A cover from a property's value: a link to a picture, a path or a
+    /// name the vault resolves, a web address, or a `#hex` colour. The first
+    /// of a list. A link to a note is no cover.
+    fn image(&self, value: &BaseValue, from: &str) -> Option<BaseImage> {
+        let picture = |file: &str| {
+            let extension = file.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+            IMAGE_TYPES.contains(&extension.as_str()).then(|| BaseImage::File(file.to_string()))
+        };
+        match value {
+            BaseValue::File(file) => picture(file),
+            BaseValue::Link { path: Some(file), .. } => picture(file),
+            BaseValue::Link { target, path: None, .. } => self.image(&BaseValue::String(target.clone()), from),
+            BaseValue::List(items) => items.first().and_then(|i| self.image(i, from)),
+            BaseValue::String(raw) => {
+                let mut text = raw.trim().to_string();
+                if HEX_COLOR.is_match(&text) {
+                    return Some(BaseImage::Color(text));
+                }
+                let lowered = text.to_lowercase();
+                if lowered.starts_with("https://") || lowered.starts_with("http://") {
+                    return Some(BaseImage::Url(text));
+                }
+                if let Some(rest) = text.strip_prefix('!') {
+                    text = rest.to_string();
+                }
+                if let Some(inner) = text.strip_prefix("[[").and_then(|t| t.strip_suffix("]]")) {
+                    text = Wikilink::new(inner).target;
+                }
+                self.index.resolve(&text, from).and_then(|p| picture(&p))
+            }
+            _ => None,
         }
     }
 
@@ -1675,6 +1821,59 @@ views:
         assert_eq!(tables[2].kind, "cards");
         assert!(engine.problems.iter().any(|p| p.contains("stage ==")), "{:?}", engine.problems);
         assert!(engine.problems.iter().any(|p| p.contains("loop uses itself")), "{:?}", engine.problems);
+    }
+
+    #[test]
+    fn cards_and_list_options() {
+        let base = Base::parse(
+            "views:\n  - type: cards\n    name: Gallery\n    image: note.cover\n    imageFit: contain\n    imageAspectRatio: 0.75\n    cardSize: 260\n  - type: list\n    name: Lines\n    markers: number\n    indentProperties: true\n    separator: \"|\"\n  - type: cards\n    name: Odd\n    imageFit: stretch\n    imageAspectRatio: -1\n    cardSize: wide\n  - type: kanban\n    name: Plugin\n",
+        );
+        assert_eq!(base.views.iter().map(BaseView::draws_as).collect::<Vec<_>>(), ["cards", "list", "cards", "table"]);
+        let cards = &base.views[0].layout;
+        assert_eq!(cards.image.as_deref(), Some("note.cover"));
+        assert_eq!((cards.image_fit.as_str(), cards.image_aspect_ratio, cards.card_size), ("contain", 0.75, 260.0));
+        let list = &base.views[1].layout;
+        assert!(list.markers == "number" && list.indent_properties && list.separator == "|");
+        // A value the app cannot read keeps the default.
+        assert_eq!(base.views[2].layout, BaseLayout::default());
+        assert_eq!(base.views[3].kind, "kanban");
+    }
+
+    #[test]
+    fn a_cards_cover_is_a_picture_a_web_address_or_a_colour() {
+        let mut index = VaultIndex::default();
+        let notes = [
+            ("A.md", "---\ncover: \"[[map.png]]\"\n---\n"),
+            ("B.md", "---\ncover: https://example.com/b.jpg\n---\n"),
+            ("C.md", "---\ncover: \"#ff5070\"\n---\n"),
+            ("D.md", "---\ncover: \"[[A]]\"\n---\n"),
+            ("E.md", "---\ncover: uploads/map.png\n---\n"),
+        ];
+        for (path, text) in notes {
+            let modified = now().into();
+            index.notes.insert(path.into(), NoteEntry { path: path.into(), modified, parsed: NoteParser::parse(text) });
+            index.files.insert(path.into());
+        }
+        index.files.insert("uploads/map.png".into());
+        index.derive();
+        let base = Base::parse(
+            "filters: file.ext == \"md\"\nviews:\n  - type: cards\n    name: C\n    image: note.cover\n  - type: table\n    name: T\n    image: note.cover\n",
+        );
+        let tables = BaseEngine::new(&index, now(), HashMap::new(), |_| None).run(&base, "");
+        let covers: Vec<Option<BaseImage>> = tables[0].groups[0].rows.iter().map(|r| r.image.clone()).collect();
+        assert_eq!(tables[0].draws_as, "cards");
+        assert_eq!(
+            covers,
+            [
+                Some(BaseImage::File("uploads/map.png".into())),
+                Some(BaseImage::Url("https://example.com/b.jpg".into())),
+                Some(BaseImage::Color("#ff5070".into())),
+                None,
+                Some(BaseImage::File("uploads/map.png".into())),
+            ]
+        );
+        // A table has no covers.
+        assert!(tables[1].groups[0].rows.iter().all(|r| r.image.is_none()));
     }
 
     #[test]

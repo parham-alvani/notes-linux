@@ -5,7 +5,7 @@
 //! step with the files after that, so it has no schema to migrate and cannot
 //! disagree with the files for longer than one change.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use rusqlite::{Connection, params};
@@ -71,10 +71,47 @@ impl SearchIndex {
     }
 
     /// Notes that hold every word of [query], best first. Each word matches
-    /// as a prefix, and a quoted phrase matches as written.
+    /// as a prefix, and a quoted phrase matches as written. The words side by
+    /// side, as typed, come first; then the words near each other; then the
+    /// notes that hold them anywhere. Within each, the title counts most.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Hit> {
-        let Some(expression) = Self::match_expression(query) else { return vec![] };
         let db = self.db.lock().unwrap();
+        let mut hits: Vec<Hit> = Vec::new();
+        let mut seen = HashSet::new();
+        for expression in Self::match_tiers(query) {
+            if hits.len() >= limit {
+                break;
+            }
+            for hit in Self::run(&db, &expression, limit) {
+                if seen.insert(hit.path.clone()) {
+                    hits.push(hit);
+                    if hits.len() == limit {
+                        break;
+                    }
+                }
+            }
+        }
+        hits
+    }
+
+    /// The FTS5 expressions [search] runs, best first: with two or more
+    /// unquoted words, the words as one phrase (the last one a prefix, as it
+    /// may be half typed) and the words within ten of each other, before
+    /// [match_expression]'s every word anywhere.
+    pub fn match_tiers(query: &str) -> Vec<String> {
+        let Some(every) = Self::match_expression(query) else { return vec![] };
+        let words: Vec<String> = if query.contains('"') { vec![] } else { query.split_whitespace().map(|w| w.replace('"', "")).collect() };
+        if words.len() < 2 {
+            return vec![every];
+        }
+        let quoted: Vec<String> = words.iter().map(|w| format!("\"{w}\"")).collect();
+        let (last, rest) = quoted.split_last().unwrap();
+        let phrase = format!("{} + {last}*", rest.join(" + "));
+        let near = format!("NEAR({} {last}*, 10)", rest.join(" "));
+        vec![phrase, near, every]
+    }
+
+    fn run(db: &Connection, expression: &str, limit: usize) -> Vec<Hit> {
         let Ok(mut statement) = db.prepare_cached(
             "SELECT path, snippet(note_fts, 2, char(1), char(2), '…', 16)
              FROM note_fts WHERE note_fts MATCH ?1
@@ -155,6 +192,29 @@ mod tests {
         assert_eq!(paths(index.search("\"pasta with\"", 100)), ["b.md"]);
         index.remove("a.md");
         assert!(index.search("pods", 100).is_empty());
+    }
+
+    /// The words side by side come first, then near each other, then
+    /// anywhere: "House II" finds the note that names it before one about a
+    /// house that mentions World War II.
+    #[test]
+    fn the_phrase_first() {
+        let index = SearchIndex::new();
+        index.put(
+            "war.md",
+            "History",
+            "A house burned down in the old town, and the long story of that night is told by the people who lived there through World War II.",
+        );
+        index.put("near.md", "Flats", "The house we call II is by the sea.");
+        index.put("flat.md", "Identity", "Address of House II: the second flat.");
+        index.put("other.md", "Other", "Nothing here.");
+        assert_eq!(paths(index.search("House II", 100)), ["flat.md", "near.md", "war.md"]);
+        // Half typed: the last word is a prefix in the phrase too.
+        assert_eq!(paths(index.search("house i", 100)).first().map(String::as_str), Some("flat.md"));
+        // Quotes keep their meaning and run alone.
+        assert_eq!(SearchIndex::match_tiers("\"House II\""), ["\"House II\""]);
+        assert_eq!(SearchIndex::match_tiers("house").len(), 1);
+        assert_eq!(index.search("house ii", 2).len(), 2);
     }
 
     #[test]

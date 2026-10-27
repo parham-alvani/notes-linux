@@ -133,7 +133,7 @@ fn search(folded: &[String], name: &str, from: usize) -> Option<Range<usize>> {
 }
 
 /// Character ranges of the protected text in [line].
-fn protected(line: &str) -> Vec<Range<usize>> {
+pub(crate) fn protected(line: &str) -> Vec<Range<usize>> {
     let chars = |bytes: Range<usize>| line[..bytes.start].chars().count()..line[..bytes.end].chars().count();
     let mut out = Vec::new();
     for (at, pattern) in PATTERNS.iter().enumerate() {

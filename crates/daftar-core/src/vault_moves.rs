@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
+use rayon::prelude::*;
 use regex::Regex;
 
 use crate::link_resolver::LinkResolver;
@@ -160,7 +161,7 @@ impl VaultMoves {
     pub fn relinked(
         index: &VaultIndex,
         moves: &BTreeMap<String, String>,
-        read: impl Fn(&str) -> Option<String>,
+        read: impl Fn(&str) -> Option<String> + Sync,
     ) -> BTreeMap<String, String> {
         if moves.is_empty() {
             return BTreeMap::new();
@@ -186,16 +187,18 @@ impl VaultMoves {
         }
         // A moved note's links to itself, and its relative links, change too.
         sources.extend(moves.keys().filter(|p| Vault::is_note(p)).cloned());
-        let mut out = BTreeMap::new();
-        for source in sources {
-            let Some(text) = read(&source) else { continue };
-            let target = moves.get(&source).unwrap_or(&source);
-            let new = relink(&text, &source, target, index, moves, &resolver, &unique);
-            if new != text {
-                out.insert(target.clone(), new);
-            }
-        }
-        out
+        // Each note is read and relinked on its own, several at a time: a
+        // much-linked note has thousands of notes that name it.
+        let sources: Vec<String> = sources.into_iter().collect();
+        sources
+            .par_iter()
+            .filter_map(|source| {
+                let text = read(source)?;
+                let target = moves.get(source).unwrap_or(source);
+                let new = relink(&text, source, target, index, moves, &resolver, &unique);
+                (new != text).then(|| (target.clone(), new))
+            })
+            .collect()
     }
 
     /// Moves the files on disk, then writes the notes whose links changed.
@@ -292,7 +295,10 @@ fn relink(
     let rebased = parent_parts(source) != parent_parts(new_source);
     let mut out: Vec<String> = Vec::new();
     for line in text.split('\n') {
-        if let Some(caps) = FENCE.captures(line) {
+        // The patterns run only on a line with the marks they need.
+        if (line.contains("```") || line.contains("~~~"))
+            && let Some(caps) = FENCE.captures(line)
+        {
             let marker = caps[1].to_string();
             match &open {
                 None => open = Some(marker),

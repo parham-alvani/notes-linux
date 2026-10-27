@@ -1,6 +1,7 @@
 //! What the index keeps of one note, from one pass over its lines. The
 //! reading view renders the note itself, in the web view.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
@@ -70,7 +71,7 @@ impl NoteParser {
 
         // A link in a property, `up: "[[Parent]]"`, is a link as Obsidian counts them.
         let inside = front.line_count.saturating_sub(1).max(1);
-        for (index, line) in lines.iter().enumerate().take(inside).skip(1) {
+        for (index, line) in lines.iter().enumerate().take(inside).skip(1).filter(|(_, line)| line.contains("[[")) {
             for caps in WIKILINK.captures_iter(line) {
                 let parts = Wikilink::new(&caps[2]);
                 note.links.push(Link { target: parts.target, anchor: parts.anchor, embed: !caps[1].is_empty(), line: index });
@@ -82,7 +83,12 @@ impl NoteParser {
         let mut in_comment = false;
         let mut section = String::new();
         for (index, raw) in lines.iter().enumerate().skip(front.line_count) {
-            if let Some(caps) = FENCE.captures(raw) {
+            // Each pattern runs only on a line that has the marks it needs:
+            // a regular expression on every line was most of the time a
+            // large vault took to open.
+            if (raw.contains("```") || raw.contains("~~~"))
+                && let Some(caps) = FENCE.captures(raw)
+            {
                 let marker = &caps[1];
                 match &fence_marker {
                     None => fence_marker = Some(marker.to_string()),
@@ -100,17 +106,21 @@ impl NoteParser {
                 continue;
             }
 
-            if let Some(caps) = HEADING.captures(&line) {
+            if line.starts_with('#')
+                && let Some(caps) = HEADING.captures(&line)
+            {
                 let text = caps[2].to_string();
                 note.headings.push(Heading { level: caps[1].len(), text: text.clone(), line: index });
                 section = text;
             }
-            let code = INLINE_CODE.replace_all(&line, "");
-            for caps in WIKILINK.captures_iter(&code) {
+            let code = if line.contains('`') { INLINE_CODE.replace_all(&line, "") } else { Cow::Borrowed(line.as_str()) };
+            let links = if code.contains("[[") { WIKILINK.captures_iter(&code).collect() } else { Vec::new() };
+            for caps in links {
                 let parts = Wikilink::new(&caps[2]);
                 note.links.push(Link { target: parts.target, anchor: parts.anchor, embed: !caps[1].is_empty(), line: index });
             }
-            for caps in MARKDOWN_LINK.captures_iter(&code) {
+            let links = if code.contains("](") { MARKDOWN_LINK.captures_iter(&code).collect() } else { Vec::new() };
+            for caps in links {
                 let url = &caps[2];
                 if SCHEME.is_match(url) || url.starts_with('#') {
                     continue;
@@ -122,7 +132,8 @@ impl NoteParser {
                 };
                 note.links.push(Link { target, anchor, embed: !caps[1].is_empty(), line: index });
             }
-            for caps in TAG.captures_iter(&code) {
+            let tags = if may_hold_tag(&code) { TAG.captures_iter(&code).collect() } else { Vec::new() };
+            for caps in tags {
                 let tag = &caps[1];
                 if !tag.chars().all(|c| c.is_numeric() || c == '/' || c == '-') {
                     note.tags.push(tag.to_string());
@@ -170,6 +181,12 @@ impl Wikilink {
         };
         Wikilink { target, anchor, alias, escaped }
     }
+}
+
+/// Whether a `#` here is followed by something a tag can start with: not a
+/// space, a tab, another `#` or the end. A heading's marks are not.
+fn may_hold_tag(line: &str) -> bool {
+    line.as_bytes().windows(2).any(|pair| pair[0] == b'#' && !matches!(pair[1], b' ' | b'\t' | b'#'))
 }
 
 /// [line] without its `%% comments %%`, which may run over several lines.

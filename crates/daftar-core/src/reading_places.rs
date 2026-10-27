@@ -1,14 +1,26 @@
-//! Where each note was being read: the source line of the reading cursor,
-//! kept across launches so a note opens where it was left. The notes read
-//! last are kept, up to `LIMIT`; a move or a rename takes its place along.
+//! What the app remembers of each note it showed, kept across launches: the
+//! source line of the reading cursor, so a note opens where it was left; the
+//! sections folded shut; and when the note was last read, so a note changed
+//! by a pull since then can say so. The notes read last are kept, up to
+//! `LIMIT`; a move or a rename takes its entry along.
 
 use std::collections::{BTreeMap, HashMap};
 
-use serde_json::{Value, json};
+use chrono::{DateTime, Utc};
+use serde_json::{Map, Value, json};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Entry {
+    pub line: Option<usize>,
+    /// Each folded heading as `level:text`, which an edit above it does not move.
+    pub folds: Option<Vec<String>>,
+    /// When the note was last on screen, in whole seconds since 1970.
+    pub read: Option<i64>,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReadingPlaces {
-    lines: HashMap<String, usize>,
+    entries: HashMap<String, Entry>,
     /// Read first to read last.
     order: Vec<String>,
 }
@@ -21,19 +33,61 @@ impl ReadingPlaces {
     }
 
     pub fn get(&self, path: &str) -> Option<usize> {
-        self.lines.get(path).copied()
+        self.entries.get(path).and_then(|e| e.line)
     }
 
     pub fn len(&self) -> usize {
-        self.lines.len()
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
+        self.entries.is_empty()
+    }
+
+    pub fn folds(&self, path: &str) -> Vec<String> {
+        self.entries.get(path).and_then(|e| e.folds.clone()).unwrap_or_default()
+    }
+
+    /// When [path] was last read, in seconds since 1970.
+    pub fn last_read(&self, path: &str) -> Option<i64> {
+        self.entries.get(path).and_then(|e| e.read)
+    }
+
+    /// The notes read last, newest first, up to [limit].
+    pub fn recently_read(&self, limit: usize) -> Vec<String> {
+        let mut read: Vec<(&String, i64, usize)> = self
+            .order
+            .iter()
+            .enumerate()
+            .filter_map(|(offset, path)| self.entries.get(path).and_then(|e| e.read).map(|date| (path, date, offset)))
+            .collect();
+        // The order breaks a tie: one second can hold many reads.
+        read.sort_by(|a, b| (b.1, b.2).cmp(&(a.1, a.2)));
+        read.into_iter().take(limit).map(|(path, _, _)| path.clone()).collect()
     }
 
     pub fn set(&mut self, path: &str, line: usize) {
-        if self.lines.insert(path.to_string(), line).is_some() {
+        self.update(path, |e| e.line = Some(line));
+    }
+
+    pub fn set_folds(&mut self, path: &str, folds: Vec<String>) {
+        self.update(path, |e| e.folds = if folds.is_empty() { None } else { Some(folds) });
+    }
+
+    /// [at] in seconds since 1970; whole seconds, as the file keeps them.
+    pub fn mark_read(&mut self, path: &str, at: i64) {
+        self.update(path, |e| e.read = Some(at));
+    }
+
+    fn update(&mut self, path: &str, change: impl FnOnce(&mut Entry)) {
+        let before = self.entries.get(path).cloned();
+        let mut entry = before.clone().unwrap_or_default();
+        change(&mut entry);
+        if before.as_ref() == Some(&entry) {
+            return;
+        }
+        self.entries.insert(path.to_string(), entry);
+        if before.is_some() {
             if self.order.last().map(String::as_str) == Some(path) {
                 return;
             }
@@ -42,7 +96,7 @@ impl ReadingPlaces {
         self.order.push(path.to_string());
         while self.order.len() > Self::LIMIT {
             let oldest = self.order.remove(0);
-            self.lines.remove(&oldest);
+            self.entries.remove(&oldest);
         }
     }
 
@@ -54,11 +108,11 @@ impl ReadingPlaces {
 
     /// After a move or a rename: [moves] maps each file's old path to its new one.
     pub fn moved(&mut self, moves: &BTreeMap<String, String>) {
-        if !moves.keys().any(|k| self.lines.contains_key(k)) {
+        if !moves.keys().any(|k| self.entries.contains_key(k)) {
             return;
         }
         let rename = |p: &String| moves.get(p).unwrap_or(p).clone();
-        self.lines = self.lines.iter().map(|(path, line)| (rename(path), *line)).collect();
+        self.entries = self.entries.drain().map(|(path, entry)| (rename(&path), entry)).collect();
         self.order = self.order.iter().map(rename).collect();
     }
 
@@ -66,20 +120,36 @@ impl ReadingPlaces {
     pub fn forget(&mut self, path: &str) {
         let gone = |other: &str| other == path || other.starts_with(&format!("{path}/"));
         self.order.retain(|p| !gone(p));
-        self.lines.retain(|p, _| !gone(p));
+        self.entries.retain(|p, _| !gone(p));
     }
 
-    /// `{"places": [{"Folder/Note.md": 12}, …]}`, read first to read last.
+    /// `{"notes": [{"path": "Folder/Note.md", "line": 12, "folds": ["2:Plan"], "read": "2027-01-15T08:00:00Z"}, …]}`,
+    /// read first to read last.
     pub fn data(&self) -> String {
-        let places: Vec<Value> = self
+        let notes: Vec<Value> = self
             .order
             .iter()
-            .filter_map(|path| self.lines.get(path).map(|line| Value::Object([(path.clone(), json!(line))].into_iter().collect())))
+            .filter_map(|path| {
+                let entry = self.entries.get(path)?;
+                let mut note = Map::new();
+                note.insert("path".into(), json!(path));
+                if let Some(line) = entry.line {
+                    note.insert("line".into(), json!(line));
+                }
+                if let Some(folds) = &entry.folds {
+                    note.insert("folds".into(), json!(folds));
+                }
+                if let Some(read) = entry.read.and_then(|s| DateTime::<Utc>::from_timestamp(s, 0)) {
+                    note.insert("read".into(), json!(read.format("%Y-%m-%dT%H:%M:%SZ").to_string()));
+                }
+                Some(Value::Object(note))
+            })
             .collect();
-        json!({ "places": places }).to_string()
+        json!({ "notes": notes }).to_string()
     }
 
-    /// Places from [data]; none from a file that is missing or broken.
+    /// Entries from [data]; none from a file that is missing or broken. The
+    /// first format, lines only (`{"places": [{"Folder/Note.md": 12}]}`), is read too.
     pub fn from_data(data: &str) -> ReadingPlaces {
         let mut places = ReadingPlaces::new();
         let Ok(file) = serde_json::from_str::<Value>(data) else { return places };
@@ -89,6 +159,18 @@ impl ReadingPlaces {
                     places.set(path, line as usize);
                 }
             }
+        }
+        for note in file.get("notes").and_then(Value::as_array).into_iter().flatten() {
+            let Some(path) = note.get("path").and_then(Value::as_str) else { continue };
+            let entry = Entry {
+                line: note.get("line").and_then(Value::as_u64).map(|l| l as usize),
+                folds: note
+                    .get("folds")
+                    .and_then(Value::as_array)
+                    .map(|folds| folds.iter().filter_map(|f| f.as_str().map(String::from)).collect()),
+                read: note.get("read").and_then(Value::as_str).and_then(|t| DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp()),
+            };
+            places.update(path, |e| *e = entry);
         }
         places
     }
@@ -150,5 +232,29 @@ mod tests {
         assert_eq!(places.get("Old/Sub/Deep.md"), None);
         assert_eq!(places.get("Keep.md"), Some(1));
         assert_eq!(ReadingPlaces::from_data(&places.data()), places);
+    }
+
+    #[test]
+    fn folds_and_read_times_come_back() {
+        let mut places = ReadingPlaces::new();
+        places.set_folds("Plan.md", vec!["2:Done".into(), "3:Old ideas".into()]);
+        places.mark_read("Plan.md", 1_800_000_000);
+        places.set("Plan.md", 4);
+        let back = ReadingPlaces::from_data(&places.data());
+        assert_eq!(back, places);
+        assert_eq!(back.folds("Plan.md"), vec!["2:Done", "3:Old ideas"]);
+        assert_eq!(back.last_read("Plan.md"), Some(1_800_000_000));
+        assert_eq!(back.get("Plan.md"), Some(4));
+        places.set_folds("Plan.md", vec![]);
+        assert!(places.folds("Plan.md").is_empty());
+        places.moved(&BTreeMap::from([("Plan.md".to_string(), "Roadmap.md".to_string())]));
+        assert!(places.last_read("Roadmap.md").is_some());
+    }
+
+    #[test]
+    fn the_first_format_is_still_read() {
+        let old = ReadingPlaces::from_data(r#"{"places":[{"A.md":3},{"B.md":9}]}"#);
+        assert_eq!(old.get("A.md"), Some(3));
+        assert_eq!(old.get("B.md"), Some(9));
     }
 }

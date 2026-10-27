@@ -87,6 +87,10 @@ pub struct VaultIndex {
     tree: Vec<TreeNode>,
     tags: HashMap<String, usize>,
     tag_tree: Vec<TagNode>,
+    /// What the resolver and the tree were made from. A saved note changes
+    /// neither, and with 20,000 files they took most of a second to make.
+    resolved: Option<(BTreeSet<String>, HashMap<String, Vec<String>>)>,
+    treed: Option<(BTreeSet<String>, BTreeSet<String>)>,
 }
 
 impl VaultIndex {
@@ -165,19 +169,35 @@ impl VaultIndex {
             .filter(|note| !note.parsed.aliases.is_empty())
             .map(|note| (note.path.clone(), note.parsed.aliases.clone()))
             .collect();
-        self.resolver = LinkResolver::new(&self.files, &aliases);
+        if self.resolved.as_ref().is_none_or(|(files, known)| *files != self.files || *known != aliases) {
+            self.resolver = LinkResolver::new(&self.files, &aliases);
+            self.resolved = Some((self.files.clone(), aliases));
+        }
 
+        // Each note's links are resolved on their own, several notes at a time.
+        let resolver = &self.resolver;
+        let found: Vec<(String, Backlink)> = self
+            .notes
+            .par_iter()
+            .flat_map_iter(|(_, note)| {
+                let mut seen = HashSet::new();
+                note.parsed
+                    .links
+                    .iter()
+                    .filter_map(|link| {
+                        let target = resolver.resolve(&link.target, &note.path)?;
+                        (target != note.path && seen.insert(target.clone()))
+                            .then(|| (target, Backlink { source: note.path.clone(), line: link.line }))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let mut back: HashMap<String, Vec<Backlink>> = HashMap::new();
+        for (target, link) in found {
+            back.entry(target).or_default().push(link);
+        }
         let mut tags: HashMap<String, usize> = HashMap::new();
         for note in self.notes.values() {
-            let mut seen = HashSet::new();
-            for link in &note.parsed.links {
-                let Some(target) = self.resolver.resolve(&link.target, &note.path) else { continue };
-                if target == note.path || !seen.insert(target.clone()) {
-                    continue;
-                }
-                back.entry(target).or_default().push(Backlink { source: note.path.clone(), line: link.line });
-            }
             for tag in &note.parsed.tags {
                 *tags.entry(tag.clone()).or_default() += 1;
             }
@@ -188,7 +208,10 @@ impl VaultIndex {
         self.backlinks = back;
         self.tags = tags;
         self.tag_tree = TagNode::tree_of_notes(self.notes.values().map(|note| note.parsed.tags.as_slice()));
-        self.tree = Vault::tree(&self.files, &self.empty_folders);
+        if self.treed.as_ref().is_none_or(|(files, empty)| *files != self.files || *empty != self.empty_folders) {
+            self.tree = Vault::tree(&self.files, &self.empty_folders);
+            self.treed = Some((self.files.clone(), self.empty_folders.clone()));
+        }
     }
 }
 
@@ -237,10 +260,10 @@ impl Vault {
         path.to_lowercase().ends_with(".base")
     }
 
-    /// A note or a base: a file the app shows itself rather than handing it
-    /// to the app the system gives it to.
+    /// A note, a base or a canvas: a file the app shows itself rather than
+    /// handing it to the app the system gives it to.
     pub fn opens_in_app(path: &str) -> bool {
-        Self::is_note(path) || Self::is_base(path)
+        Self::is_note(path) || Self::is_base(path) || crate::canvas::Canvas::is_canvas(path)
     }
 
     /// Whether a vault path is one the app reads at all.

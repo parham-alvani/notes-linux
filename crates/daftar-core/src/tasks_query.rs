@@ -169,24 +169,25 @@ impl TasksQuery {
     /// `sort by`, open tasks come before finished ones and sooner before later;
     /// ties keep the order they were given in.
     pub fn run<T>(&self, tasks: impl IntoIterator<Item = T>, today: Day, view: impl Fn(&T) -> QueryTask) -> Vec<T> {
-        let mut kept: Vec<(T, QueryTask)> = tasks
+        // Each task's groups are worked out once, not in every comparison of the sort.
+        let mut kept: Vec<(T, QueryTask, Vec<String>)> = tasks
             .into_iter()
-            .map(|t| {
+            .filter_map(|t| {
                 let task = view(&t);
-                (t, task)
+                self.filters.iter().all(|f| f(&task, today)).then(|| {
+                    let groups = self.groups(&task);
+                    (t, task, groups)
+                })
             })
-            .filter(|(_, task)| self.filters.iter().all(|f| f(task, today)))
             .collect();
-        kept.sort_by(|(_, a), (_, b)| {
-            self.groupers
-                .iter()
-                .map(|group| group(a).cmp(&group(b)))
-                .chain(self.sorts.iter().map(|sort| sort(a, b)))
-                .chain(std::iter::once(default_order(a, b)))
-                .find(|o| o.is_ne())
-                .unwrap_or(Ordering::Equal)
+        // Stable, so ties keep the order they were given in.
+        kept.sort_by(|(_, a, groups_a), (_, b, groups_b)| {
+            groups_a
+                .cmp(groups_b)
+                .then_with(|| self.sorts.iter().map(|sort| sort(a, b)).find(|o| o.is_ne()).unwrap_or(Ordering::Equal))
+                .then_with(|| default_order(a, b))
         });
-        let sorted = kept.into_iter().map(|(t, _)| t);
+        let sorted = kept.into_iter().map(|(t, _, _)| t);
         match self.limit {
             Some(limit) => sorted.take(limit).collect(),
             None => sorted.collect(),
@@ -317,8 +318,22 @@ fn filter(line: &str) -> Option<Filter> {
         let relation = caps.get(2).map_or("on".to_string(), |m| m.as_str().trim().to_lowercase());
         let phrase = caps[3].trim().to_string();
         DateRange::new(&phrase, Day::new(2000, 1, 1).unwrap())?;
+        // The range is made once for each day the query runs on, rather than
+        // once for each task it tests.
+        let last: std::sync::Mutex<Option<(Day, Option<DateRange>)>> = std::sync::Mutex::new(None);
         return Some(Box::new(move |task, today| {
-            let (Some(range), Some(day)) = (DateRange::new(&phrase, today), field(task).as_deref().and_then(Day::parse)) else {
+            let range = {
+                let mut last = last.lock().unwrap();
+                match *last {
+                    Some((day, range)) if day == today => range,
+                    _ => {
+                        let range = DateRange::new(&phrase, today);
+                        *last = Some((today, range));
+                        range
+                    }
+                }
+            };
+            let (Some(range), Some(day)) = (range, field(task).as_deref().and_then(Day::parse)) else {
                 return false;
             };
             range.relation(&relation, day).unwrap_or(false)
