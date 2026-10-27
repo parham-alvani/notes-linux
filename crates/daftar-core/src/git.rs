@@ -473,6 +473,8 @@ mod tests {
             git(&dir, &["config", "user.email", "test@example.com"]);
             git(&dir, &["config", "user.name", "Test"]);
             git(&dir, &["config", "commit.gpgsign", "false"]);
+            // Windows' git writes \r\n into the files it checks out.
+            git(&dir, &["config", "core.autocrlf", "false"]);
             git(&dir, &["checkout", "-q", "-b", "main"]);
         }
         let one = Git::new(base.path().join("one"));
@@ -655,6 +657,7 @@ mod tests {
         git.run(&["config", "user.email", "test@example.com"]).unwrap();
         git.run(&["config", "user.name", "Test"]).unwrap();
         git.run(&["config", "commit.gpgsign", "false"]).unwrap();
+        git.run(&["config", "core.autocrlf", "false"]).unwrap();
         fs::create_dir_all(base.path().join("Old")).unwrap();
         fs::write(base.path().join("Old/Nöte.md"), "one\n").unwrap();
         git.run(&["add", "-A"]).unwrap();
