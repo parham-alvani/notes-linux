@@ -32,6 +32,9 @@ pub struct Sidebar {
     shared: Rc<Shared>,
 }
 
+/// Hears the tag a click picks.
+type TagHandler = Rc<dyn Fn(&str)>;
+
 /// What the rows read when they are drawn.
 #[derive(Default)]
 struct Shared {
@@ -40,7 +43,7 @@ struct Shared {
     /// The vault's folder, for the file a dragged row carries.
     root: RefCell<Option<std::path::PathBuf>>,
     /// What a click on a tag does: the window lists its notes.
-    on_tag: RefCell<Option<Rc<dyn Fn(&str)>>>,
+    on_tag: RefCell<Option<TagHandler>>,
 }
 
 fn node_of(item: &glib::Object) -> Option<TreeNode> {
