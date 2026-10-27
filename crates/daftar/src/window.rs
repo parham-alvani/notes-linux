@@ -81,13 +81,27 @@ impl Window {
         apply_theme(&settings.borrow().theme());
         crate::style::install();
 
-        let window = adw::ApplicationWindow::builder().application(app).title("Daftar").default_width(1200).default_height(800).build();
+        let window = adw::ApplicationWindow::builder().title("Daftar").default_width(1200).default_height(800).build();
         let title = adw::WindowTitle::new("Daftar", "");
         let toasts = adw::ToastOverlay::new();
         let split = adw::NavigationSplitView::new();
 
         // The window, filled in once the sidebar exists.
         let opener: Rc<RefCell<Option<Window>>> = Rc::new(RefCell::new(None));
+        // Neovim's Ctrl keys (Ctrl+O, Ctrl+R, Ctrl+W, Ctrl+[) reach it before
+        // the app's shortcuts: this runs first because it is added before the
+        // application gives the window its shortcuts.
+        {
+            let keys = gtk::EventControllerKey::new();
+            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let opener = opener.clone();
+            keys.connect_key_pressed(move |_, key, _, state| {
+                let Some(this) = opener.borrow().clone() else { return glib::Propagation::Proceed };
+                if this.tab().editor.takes_from_window(key, state) { glib::Propagation::Stop } else { glib::Propagation::Proceed }
+            });
+            window.add_controller(keys);
+        }
+        window.set_application(Some(app));
         let sidebar = {
             let opener = opener.clone();
             Rc::new(Sidebar::new(move |path| {

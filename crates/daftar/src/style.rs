@@ -92,6 +92,9 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-column .column-head { border-radius: 12px; padding: 8px 12px; }\n\
          .daftar-column .column-dot { border-radius: 999px; min-width: 9px; min-height: 9px; }\n\
          image.folder-logo { border-radius: 3px; }\n\
+         .daftar-vim-cursor { background-color: alpha(@daftar_accent, 0.45); border-radius: 2px; }\n\
+         .daftar-vim-cursor.bar { background-color: @daftar_accent; border-radius: 1px; }\n\
+         .daftar-vim-message label { padding: 6px 10px; }\n\
          .board-card { background-color: @daftar_panel; border-radius: 11px; padding: 10px; border: 1px solid alpha(@daftar_text, 0.06); }\n\
          .board-card.is-closed .board-text { color: @daftar_muted; text-decoration: line-through; }\n\
          .board-card:focus-visible { box-shadow: inset 0 0 0 2px @daftar_accent; background-color: alpha(@daftar_accent, 0.08); }\n\

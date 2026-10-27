@@ -38,9 +38,10 @@ mod media;
 
 use crate::editor_popup::{Choice, Popup};
 use crate::editor_style::Styler;
-use crate::neovim_session::{self, Event, NeovimSession};
+use crate::neovim_session::{self, Event, MenuItem, NeovimSession};
 use crate::settings::AppSettings;
 use crate::store::{VaultStore, file_in};
+use crate::vim_glide::{Glide, Shape};
 
 /// How long typing must stop before the note is saved.
 const AFTER_TYPING: Duration = Duration::from_secs(1);
@@ -81,6 +82,9 @@ struct Vim {
     /// The line to put the cursor on once Neovim has the file.
     start_line: usize,
     save_soon: Option<glib::SourceId>,
+    /// The top line the wheel left the page at, so Neovim's answer does not
+    /// pull the page to it again.
+    wheel_top: Option<usize>,
 }
 
 /// Hears Neovim's mode as the bar names it, or `None` without Neovim.
@@ -113,6 +117,10 @@ pub struct Editor {
     font_css: gtk::CssProvider,
     mode_label: gtk::Label,
     message: gtk::Label,
+    /// A message of more than one line, over the bar until the next key.
+    long_message: gtk::Popover,
+    long_text: gtk::Label,
+    glide: Rc<Glide>,
     counts: gtk::Label,
     on_mode: RefCell<Option<ModeListener>>,
     pictures: media::Pictures,
@@ -162,6 +170,24 @@ impl Editor {
         widget.append(&scroller);
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         widget.append(&bar);
+        let long_text = gtk::Label::builder().xalign(0.0).selectable(true).css_classes(["monospace"]).build();
+        let long_message = gtk::Popover::builder()
+            .child(
+                &gtk::ScrolledWindow::builder()
+                    .hscrollbar_policy(gtk::PolicyType::Never)
+                    .propagate_natural_height(true)
+                    .propagate_natural_width(true)
+                    .max_content_height(360)
+                    .child(&long_text)
+                    .build(),
+            )
+            .autohide(false)
+            .has_arrow(false)
+            .can_focus(false)
+            .position(gtk::PositionType::Top)
+            .css_classes(["daftar-vim-message"])
+            .build();
+        long_message.set_parent(&message);
         let block_tag = gtk::TextTag::builder().name("daftar:vim-block").build();
         buffer.tag_table().add(&block_tag);
         let font_css = gtk::CssProvider::new();
@@ -171,6 +197,7 @@ impl Editor {
             widget,
             styler: Styler::new(buffer.upcast_ref()),
             popup: Popup::new(&view),
+            glide: Glide::new(&view),
             view,
             buffer,
             completing: Cell::new(Completing::Nothing),
@@ -189,6 +216,8 @@ impl Editor {
             font_css,
             mode_label,
             message,
+            long_message,
+            long_text,
             counts,
             on_mode: RefCell::new(None),
             pictures: media::Pictures::default(),
@@ -201,6 +230,15 @@ impl Editor {
         editor.connect_clicks();
         editor.connect_drop();
         editor.connect_pictures();
+        let this = Rc::downgrade(&editor);
+        editor.glide.connect_wheel_stopped(move |top| {
+            let Some(this) = this.upgrade() else { return };
+            let mut vim = this.vim.borrow_mut();
+            if let Some(vim) = vim.as_mut().filter(|vim| vim.mirror.is_some()) {
+                vim.wheel_top = Some(top);
+                vim.session.set_top(top);
+            }
+        });
         editor
     }
 
@@ -1184,7 +1222,9 @@ impl Editor {
             (self.notice)("Neovim was not found, so the note is edited without it. Set editor.nvim in the settings to its path.");
             return;
         };
-        *self.vim.borrow_mut() = Some(Vim { session, mirror: None, mode: "n".into(), start_line: line, save_soon: None });
+        *self.vim.borrow_mut() = Some(Vim { session, mirror: None, mode: "n".into(), start_line: line, save_soon: None, wheel_top: None });
+        self.glide.set_on(true);
+        self.glide.set_shape(Shape::Block);
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
         self.set_bar("NEOVIM", "Starting Neovim…");
@@ -1209,6 +1249,9 @@ impl Editor {
         self.generation.set(self.generation.get() + 1);
         self.buffer.remove_tag(&self.block_tag, &self.buffer.start_iter(), &self.buffer.end_iter());
         self.view.set_overwrite(false);
+        self.glide.set_on(false);
+        self.popup.close();
+        self.long_message.popdown();
         self.mode_label.set_visible(false);
         self.message.set_label("");
         self.tell_mode(None);
@@ -1261,13 +1304,23 @@ impl Editor {
             }
             Event::Cursor { mode, row, column, visual } => self.vim_cursor(mode, row, column, visual),
             Event::Scroll(top) => {
-                let offset = self.vim.borrow().as_ref().and_then(|v| v.mirror.as_ref()).map(|m| m.offset(top, 0));
+                let offset = {
+                    let mut vim = self.vim.borrow_mut();
+                    let Some(vim) = vim.as_mut() else { return };
+                    // Where the wheel left the page: it stays there.
+                    if vim.wheel_top.take() == Some(top) {
+                        return;
+                    }
+                    vim.mirror.as_ref().map(|m| m.offset(top, 0))
+                };
                 if let Some(offset) = offset {
-                    let mut at = self.iter(offset);
-                    self.view.scroll_to_iter(&mut at, 0.0, true, 0.0, 0.0);
+                    self.glide.scroll_to_line(offset);
                 }
             }
-            Event::Status(text) => self.message.set_label(&text),
+            Event::Status(text) => self.vim_status(&text),
+            Event::Menu { items, selected, cmdline } => self.vim_menu(items, selected, cmdline),
+            Event::MenuSelect(at) => self.popup.select(at),
+            Event::MenuHide => self.popup.close(),
             Event::Failed(error) => {
                 self.stop_vim();
                 (self.notice)(&format!("Neovim did not start, so the note is edited without it: {error}"));
@@ -1363,15 +1416,82 @@ impl Editor {
                 self.buffer.place_cursor(&self.iter(cursor));
             }
         }
-        // A block cursor in normal mode, a bar while inserting.
-        self.view.set_overwrite(neovim_session::is_normal(&mode));
-        self.view.scroll_mark_onscreen(&self.buffer.get_insert());
+        // A block cursor in normal mode, a bar while inserting, gliding there.
+        self.glide.set_shape(Shape::of(&mode));
+        self.glide.cursor_moved();
         let name = neovim_session::mode_name(&mode);
         if let Some(vim) = self.vim.borrow_mut().as_mut() {
             vim.mode = mode;
         }
         self.set_bar(name, &self.message.label());
         self.tell_mode(Some(name));
+    }
+
+    /// Neovim's line: the command line or a message. One of more lines shows
+    /// whole over the bar until the next key, as Neovim's own would.
+    fn vim_status(&self, text: &str) {
+        let first = text.lines().next().unwrap_or("");
+        self.message.set_label(first);
+        if text.contains('\n') {
+            self.long_text.set_text(text);
+            self.long_message.popup();
+        } else {
+            self.long_message.popdown();
+        }
+    }
+
+    /// Neovim's completion menu: at the cursor for the text, over the bar
+    /// for the command line. A click chooses as Neovim would.
+    fn vim_menu(self: &Rc<Self>, items: Vec<MenuItem>, selected: Option<usize>, cmdline: bool) {
+        let choices: Vec<Choice> = items
+            .iter()
+            .enumerate()
+            .map(|(at, item)| Choice {
+                title: glib::markup_escape_text(&item.word).to_string(),
+                subtitle: [item.kind.as_str(), item.menu.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join("  "),
+                value: at.to_string(),
+            })
+            .collect();
+        let (at, below) = if cmdline {
+            (gdk::Rectangle::new(24, self.view.height() - 8, 1, 1), false)
+        } else {
+            let at = self.cursor_rectangle();
+            (at, at.y() + at.height() + 320 < self.view.height())
+        };
+        let this = Rc::downgrade(self);
+        self.popup.show(at, below, choices, move |choice| {
+            let Some(this) = this.upgrade() else { return };
+            if let (Some(vim), Ok(index)) = (this.vim.borrow().as_ref(), choice.value.parse()) {
+                vim.session.choose(index);
+            }
+        });
+        self.popup.select(selected);
+    }
+
+    /// A key the window has a shortcut for, that Neovim has first while it
+    /// edits here: Ctrl with a letter or a bracket, but for Ctrl+E (back to
+    /// reading), Ctrl+S and Ctrl+Q. With Shift or Alt, it is the app's.
+    pub fn takes_from_window(self: &Rc<Self>, key: gdk::Key, state: gdk::ModifierType) -> bool {
+        let running = self.vim.borrow().as_ref().is_some_and(|v| v.mirror.is_some());
+        if !running || !self.view.has_focus() {
+            return false;
+        }
+        let only_control = state
+            & (gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::SHIFT_MASK
+                | gdk::ModifierType::ALT_MASK
+                | gdk::ModifierType::SUPER_MASK)
+            == gdk::ModifierType::CONTROL_MASK;
+        let neovims = match key.to_lower().to_unicode() {
+            Some('e' | 's' | 'q') => false,
+            Some(c) => c.is_ascii_lowercase() || c == '[' || c == ']',
+            None => false,
+        };
+        if !only_control || !neovims {
+            return false;
+        }
+        self.vim_key(key, true, false, false, false);
+        true
     }
 
     /// Keys in Neovim mode go to Neovim, but for the window's own Ctrl+E,
@@ -1397,6 +1517,8 @@ impl Editor {
             });
             return glib::Propagation::Stop;
         }
+        // A message over the bar goes with the next key, as a hit-enter prompt does.
+        self.long_message.popdown();
         let name = key.name().map(|n| n.to_string()).unwrap_or_default();
         if let Some(keys) = neovim_session::vim_key(&name, key.to_unicode(), control, alt, super_, shift)
             && let Some(vim) = self.vim.borrow().as_ref()

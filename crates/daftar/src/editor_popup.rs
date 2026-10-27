@@ -109,6 +109,17 @@ impl Popup {
         }
     }
 
+    /// The row at [at] selected and in sight, or none, as Neovim's menu says.
+    pub fn select(&self, at: Option<usize>) {
+        match at.and_then(|at| self.list.row_at_index(at as i32)) {
+            Some(row) => {
+                self.list.select_row(Some(&row));
+                self.reveal(&row);
+            }
+            None => self.list.unselect_all(),
+        }
+    }
+
     pub fn close(&self) {
         if self.open.replace(false) {
             self.popover.popdown();

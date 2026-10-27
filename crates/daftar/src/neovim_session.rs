@@ -38,10 +38,29 @@ pub enum Event {
     },
     /// The first line in Neovim's window, from 1.
     Scroll(usize),
-    /// The command line, or the last message; empty clears it.
+    /// The command line, or the last message; empty clears it. A message
+    /// of more than one line (`:ls`, an error's trace) has them all.
     Status(String),
+    /// Neovim's completion menu: its items, the one selected, and whether
+    /// it completes the command line rather than the text.
+    Menu {
+        items: Vec<MenuItem>,
+        selected: Option<usize>,
+        cmdline: bool,
+    },
+    /// Another item of the menu selected, or none.
+    MenuSelect(Option<usize>),
+    MenuHide,
     Failed(String),
     Ended,
+}
+
+/// An item of Neovim's completion menu: the word, its kind and its source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    pub word: String,
+    pub kind: String,
+    pub menu: String,
 }
 
 enum Command {
@@ -70,6 +89,16 @@ vim.api.nvim_create_autocmd('WinScrolled', { group = group, callback = function(
 end })
 vim.o.autoread = true
 send()
+"#;
+
+/// Scrolls the window to start at the line given.
+const SCROLL_TO: &str = r#"
+local by = ... - vim.fn.line('w0')
+if by > 0 then
+  vim.cmd('normal! ' .. by .. '\5')
+elseif by < 0 then
+  vim.cmd('normal! ' .. -by .. '\25')
+end
 "#;
 
 impl NeovimSession {
@@ -180,6 +209,18 @@ impl NeovimSession {
         }
     }
 
+    /// The menu's item [index] chosen, as a click on it chooses.
+    pub fn choose(&self, index: usize) {
+        self.notify("nvim_select_popupmenu_item", vec![MsgValue::Int(index as i64), true.into(), true.into(), MsgValue::Map(vec![])]);
+    }
+
+    /// The window to start at [top] (from 1), as the wheel left the page:
+    /// scrolled with Ctrl-E or Ctrl-Y, which bring the cursor along, as
+    /// Neovim's own wheel does.
+    pub fn set_top(&self, top: usize) {
+        self.notify("nvim_exec_lua", vec![SCROLL_TO.into(), MsgValue::Array(vec![MsgValue::Int(top as i64)])]);
+    }
+
     pub fn resize(&self, rows: i64, columns: i64) {
         self.notify("nvim_ui_try_resize", vec![MsgValue::Int(columns), MsgValue::Int(rows)]);
     }
@@ -210,7 +251,10 @@ impl NeovimSession {
 /// reads its lines; the autocommands follow. Blocks: the worker runs it.
 fn open(client: &NeovimClient, path: &str, rows: i64, columns: i64) -> Result<(Vec<String>, bool), NeovimFailure> {
     let options = MsgValue::Map(
-        ["ext_linegrid", "ext_cmdline", "ext_messages", "rgb"].iter().map(|key| (MsgValue::from(*key), MsgValue::Bool(true))).collect(),
+        ["ext_linegrid", "ext_cmdline", "ext_messages", "ext_popupmenu", "rgb"]
+            .iter()
+            .map(|key| (MsgValue::from(*key), MsgValue::Bool(true)))
+            .collect(),
     );
     client.request("nvim_ui_attach", vec![MsgValue::Int(columns), MsgValue::Int(rows), options])?;
     let channel = client.request("nvim_get_api_info", vec![])?.as_array().and_then(|a| a.first()).and_then(MsgValue::as_int).unwrap_or(0);
@@ -252,31 +296,71 @@ fn translate(note: &NeovimNotification) -> Vec<Event> {
     }
 }
 
-/// The command line and messages, from the UI events; the grid itself is
-/// not drawn, the text view is the screen.
+/// The command line's caret, drawn where Neovim says it is.
+pub const CARET: char = '▏';
+
+/// The command line, messages and the completion menu, from the UI events;
+/// the grid itself is not drawn, the text view is the screen. The messages
+/// of one redraw are said together, a line each.
 fn redraw(batches: &[MsgValue]) -> Vec<Event> {
     let mut out = Vec::new();
+    let mut messages: Option<Vec<String>> = None;
     for batch in batches {
         let Some(items) = batch.as_array() else { continue };
         let Some(name) = items.first().and_then(MsgValue::as_str) else { continue };
         for args in items.iter().skip(1).filter_map(MsgValue::as_array) {
+            let int = |at: usize| args.get(at).and_then(MsgValue::as_int);
             match name {
                 "cmdline_show" => {
                     let content = chunks(args.first());
                     let firstc = args.get(2).and_then(MsgValue::as_str).unwrap_or("");
                     let prompt = args.get(3).and_then(MsgValue::as_str).unwrap_or("");
-                    out.push(Event::Status(format!("{firstc}{prompt}{content}")));
+                    // The caret at its byte, or the end when that is not a character's start.
+                    let at = int(1).map(|p| p.max(0) as usize).filter(|p| content.is_char_boundary(*p)).unwrap_or(content.len());
+                    out.push(Event::Status(format!("{firstc}{prompt}{}{CARET}{}", &content[..at], &content[at..])));
                 }
-                "cmdline_hide" | "msg_clear" => out.push(Event::Status(String::new())),
+                "cmdline_pos" => {}
+                "cmdline_hide" | "msg_clear" => {
+                    messages = None;
+                    out.push(Event::Status(String::new()));
+                }
                 "msg_show" => {
                     let text = chunks(args.get(1));
+                    let replace = args.get(2).and_then(MsgValue::as_bool).unwrap_or(false);
+                    let said = messages.get_or_insert_with(Vec::new);
+                    if replace {
+                        said.pop();
+                    }
                     if !text.is_empty() {
-                        out.push(Event::Status(text));
+                        said.push(text.trim_end_matches('\n').to_string());
                     }
                 }
+                "popupmenu_show" => {
+                    let items = args
+                        .first()
+                        .and_then(MsgValue::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(MsgValue::as_array)
+                                .map(|item| {
+                                    let field = |at: usize| item.get(at).and_then(MsgValue::as_str).unwrap_or("").to_string();
+                                    MenuItem { word: field(0), kind: field(1), menu: field(2) }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let selected = int(1).filter(|i| *i >= 0).map(|i| i as usize);
+                    out.push(Event::Menu { items, selected, cmdline: int(4) == Some(-1) });
+                }
+                "popupmenu_select" => out.push(Event::MenuSelect(int(0).filter(|i| *i >= 0).map(|i| i as usize))),
+                "popupmenu_hide" => out.push(Event::MenuHide),
                 _ => {}
             }
         }
+    }
+    if let Some(said) = messages.filter(|said| !said.is_empty()) {
+        out.push(Event::Status(said.join("\n")));
     }
     out
 }
@@ -397,7 +481,35 @@ mod tests {
                 "".into(),
             ]),
         ]);
-        assert_eq!(translate(&note("redraw", vec![show])), [Event::Status(":w".into())]);
+        assert_eq!(translate(&note("redraw", vec![show])), [Event::Status(":w▏".into())]);
+        let chunk = |text: &str| MsgValue::Array(vec![MsgValue::Array(vec![MsgValue::Int(0), text.into()])]);
+        let message = |text: &str, replace: bool| MsgValue::Array(vec!["echo".into(), chunk(text), replace.into()]);
+        let said = MsgValue::Array(vec!["msg_show".into(), message("one", false), message("two\n", false)]);
+        let replaced = MsgValue::Array(vec!["msg_show".into(), message("three", true)]);
+        assert_eq!(translate(&note("redraw", vec![said, replaced])), [Event::Status("one\nthree".into())]);
+        let item = |word: &str| MsgValue::Array(vec![word.into(), "v".into(), "[LSP]".into(), "".into()]);
+        let menu = MsgValue::Array(vec![
+            "popupmenu_show".into(),
+            MsgValue::Array(vec![
+                MsgValue::Array(vec![item("alpha"), item("beta")]),
+                MsgValue::Int(-1),
+                MsgValue::Int(3),
+                MsgValue::Int(0),
+                MsgValue::Int(-1),
+            ]),
+        ]);
+        let select = MsgValue::Array(vec!["popupmenu_select".into(), MsgValue::Array(vec![MsgValue::Int(1)])]);
+        assert_eq!(
+            translate(&note("redraw", vec![menu, select])),
+            [
+                Event::Menu {
+                    items: ["alpha", "beta"].map(|w| MenuItem { word: w.into(), kind: "v".into(), menu: "[LSP]".into() }).to_vec(),
+                    selected: None,
+                    cmdline: true,
+                },
+                Event::MenuSelect(Some(1)),
+            ]
+        );
         let lines = note(
             "nvim_buf_lines_event",
             vec![MsgValue::Int(1), MsgValue::Int(4), MsgValue::Int(2), MsgValue::Int(3), MsgValue::Array(vec!["new".into()]), false.into()],
