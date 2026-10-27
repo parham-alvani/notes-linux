@@ -612,6 +612,10 @@ impl Window {
             };
             let folder = root;
             let store = Rc::new(VaultStore::new(folder.clone(), index, search));
+            {
+                let (names, show) = this.hidden_settings();
+                store.set_hidden(&names, show);
+            }
             let watcher = {
                 let this = this.clone();
                 FileWatcher::new(&folder, move |changed| this.files_changed(changed))
@@ -621,7 +625,7 @@ impl Window {
                 Err(error) => this.toasts.add_toast(adw::Toast::new(&format!("Changes on disk are not followed: {error}"))),
             }
             this.recent.borrow_mut().clear();
-            this.sidebar.set_tree(store.index().tree());
+            this.sidebar.set_tree(&store.tree());
             {
                 let git = this.git.clone();
                 store.connect_wrote(move || git.edited());
@@ -1008,6 +1012,38 @@ impl Window {
         }
     }
 
+    /// `files.hidden` and `files.show_hidden`, as the settings file has them.
+    fn hidden_settings(&self) -> (Vec<String>, bool) {
+        let settings = self.settings.borrow();
+        let names = settings.file.strings("files.hidden").unwrap_or_else(|| daftar_core::HIDDEN_NAMES.map(String::from).to_vec());
+        (names, settings.file.bool("files.show_hidden").unwrap_or(false))
+    }
+
+    /// The hidden files read again from the settings: the tree, the lists
+    /// and the pages follow.
+    fn refresh_hidden(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let (names, show) = self.hidden_settings();
+        store.set_hidden(&names, show);
+        if let Some(action) = self.window.lookup_action("show-hidden").and_downcast::<gio::SimpleAction>() {
+            action.set_state(&show.to_variant());
+        }
+        self.sidebar.set_tree(&store.tree());
+        self.refresh_updated();
+        self.refresh_homes();
+        self.refresh_inspector();
+    }
+
+    /// Ctrl+Shift+.: the hidden and the excluded files shown in the lists, or not.
+    fn toggle_hidden(&self) {
+        let show = !self.hidden_settings().1;
+        let result = self.settings.borrow_mut().set("files.show_hidden", daftar_core::Value::Bool(show));
+        if let Err(error) = result {
+            self.toasts.add_toast(adw::Toast::new(&format!("The settings were not saved: {error}")));
+        }
+        self.refresh_hidden();
+    }
+
     fn reload_readers(&self) {
         let tabs = self.tabs.borrow().clone();
         for tab in &tabs {
@@ -1051,12 +1087,11 @@ impl Window {
         self.refresh_inspector();
         let moved = {
             let index = store.index();
-            let moved = index.files != files || index.empty_folders != folders;
-            if moved {
-                self.sidebar.set_tree(index.tree());
-            }
-            moved
+            index.files != files || index.empty_folders != folders
         };
+        if moved {
+            self.sidebar.set_tree(&store.tree());
+        }
         if moved {
             self.refresh_marks();
         }
@@ -1184,6 +1219,10 @@ impl Window {
                 let this = self.clone();
                 move || this.restart_editors()
             }),
+            hidden: Box::new({
+                let this = self.clone();
+                move || this.refresh_hidden()
+            }),
             notice: Box::new({
                 let toasts = self.toasts.clone();
                 move |text| toasts.add_toast(adw::Toast::new(text))
@@ -1200,7 +1239,12 @@ impl Window {
         // sessions, as the home page lists them.
         let recent = {
             let files = &store.index().files;
-            daftar_core::home::recent(&self.recent.borrow(), &store.places.recently_read(40), |p| files.contains(p), 40)
+            daftar_core::home::recent(
+                &self.recent.borrow(),
+                &store.places.recently_read(40),
+                |p| files.contains(p) && !store.is_hidden(p),
+                40,
+            )
         };
         palette::present(&self.window, mode, store, recent, query, move |path| this.open(path, None));
     }
@@ -1296,6 +1340,10 @@ impl Window {
         let this = self.clone();
         commands.connect_activate(move |_, _| this.commands());
         self.window.add_action(&commands);
+        let hidden = gio::SimpleAction::new_stateful("show-hidden", None, &self.hidden_settings().1.to_variant());
+        let this = self.clone();
+        hidden.connect_activate(move |_, _| this.toggle_hidden());
+        self.window.add_action(&hidden);
         let edit = gio::SimpleAction::new_stateful("edit", None, &false.to_variant());
         let this = self.clone();
         edit.connect_activate(move |_, _| this.toggle_edit());

@@ -92,7 +92,7 @@ impl Today {
             self.content.remove(&child);
         }
         let today = Day::today();
-        let groups = TaskGroups::new(store.index().tasks(), today, 7);
+        let groups = TaskGroups::new(store.listed_tasks(), today, 7);
         let days = store.calendar_days(today, 2);
         let day = days.iter().find(|d| d.day == today);
         let tomorrow = days.iter().find(|d| d.day == today.adding_days(1));

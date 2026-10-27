@@ -21,6 +21,8 @@ pub struct Hooks {
     pub git: Box<dyn Fn(bool, u32)>,
     /// The notes being edited, opened again with the editor as now set.
     pub editor: Box<dyn Fn()>,
+    /// The lists, after the hidden files changed.
+    pub hidden: Box<dyn Fn()>,
     pub notice: Box<dyn Fn(&str)>,
 }
 
@@ -110,6 +112,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     git.add(&pull);
     git.add(&interval);
     page.add(&git);
+    page.add(&files_group(&settings, write.clone(), hooks.clone()));
     page.add(&capture_group(&settings, write.clone()));
     page.add(&wakatime_group(&settings, write.clone()));
 
@@ -128,6 +131,38 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     page.add(&file);
 
     dialog.present(Some(parent));
+}
+
+/// Settings › Files: the names hidden in any folder, and showing them anyway.
+fn files_group(
+    settings: &Rc<RefCell<AppSettings>>,
+    write: impl Fn(&str, Value) + Clone + 'static,
+    hooks: Rc<Hooks>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Files")
+        .description("Files with these names, in any folder, and Obsidian's excluded files are not in the file tree, quick open, search or the graph. A link to one still opens it.")
+        .build();
+    let file = &settings.borrow().file;
+    let names = file.strings("files.hidden").unwrap_or_else(|| daftar_core::HIDDEN_NAMES.map(String::from).to_vec());
+    let row = adw::EntryRow::builder().title("Hidden files, with commas between them").show_apply_button(true).build();
+    row.set_text(&names.join(", "));
+    let show = adw::SwitchRow::builder().title("Show hidden files").active(file.bool("files.show_hidden").unwrap_or(false)).build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        row.connect_apply(move |row| {
+            let names: Vec<String> = row.text().split(',').map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
+            write("files.hidden", Value::Strings(names));
+            (hooks.hidden)();
+        });
+    }
+    show.connect_active_notify(move |row| {
+        write("files.show_hidden", Value::Bool(row.is_active()));
+        (hooks.hidden)();
+    });
+    group.add(&row);
+    group.add(&show);
+    group
 }
 
 /// What `editor.nvim_config` may be, and how each reads.

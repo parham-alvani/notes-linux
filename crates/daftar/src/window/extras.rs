@@ -46,6 +46,12 @@ impl Window {
             ),
             command("Export the Note as PDF", "Note", "win.export-pdf", "Ctrl+Shift+E"),
             command("Quick Capture", "File", "app.capture", ""),
+            command(
+                if self.hidden_settings().1 { "Hide Hidden Files" } else { "Show Hidden Files" },
+                "View",
+                "win.show-hidden",
+                "Ctrl+Shift+.",
+            ),
         ];
         if neovide().is_some() {
             commands.push(command("Open in Neovide", "Note", "win.neovide", ""));

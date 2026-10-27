@@ -37,15 +37,16 @@ impl NoteGraph {
         Self::build(index, &paths, &HashMap::new())
     }
 
-    /// [center] and the notes [depth] links away, in either direction.
-    pub fn local(index: &VaultIndex, center: &str, depth: usize) -> NoteGraph {
+    /// [center] and the notes [depth] links away, in either direction,
+    /// without the excluded ones (but [center] itself, which is open).
+    pub fn local(index: &VaultIndex, center: &str, depth: usize, excluded: Option<&ExcludedFiles>) -> NoteGraph {
         let mut distances: HashMap<String, usize> = HashMap::from([(center.to_string(), 0)]);
         let mut frontier = vec![center.to_string()];
         for step in 1..=depth.max(1) {
             let mut next = Vec::new();
             for path in &frontier {
                 for neighbour in Self::neighbours(path, index) {
-                    if !distances.contains_key(&neighbour) {
+                    if !distances.contains_key(&neighbour) && excluded.is_none_or(|e| !e.contains(&neighbour)) {
                         distances.insert(neighbour.clone(), step);
                         next.push(neighbour);
                     }
@@ -256,10 +257,10 @@ mod tests {
     #[test]
     fn around_one_note() {
         let index = make_index();
-        let one = NoteGraph::local(&index, "Projects/Alpha.md", 1);
+        let one = NoteGraph::local(&index, "Projects/Alpha.md", 1, None);
         assert_eq!(one.nodes.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), ["Projects/Alpha.md", "Home.md", "Projects/Plan.md"]);
         assert_eq!(one.nodes.iter().map(|n| n.distance).collect::<Vec<_>>(), [Some(0), Some(1), Some(1)]);
-        let two = NoteGraph::local(&index, "Projects/Alpha.md", 2);
+        let two = NoteGraph::local(&index, "Projects/Alpha.md", 2, None);
         let paths: HashSet<&str> = two.nodes.iter().map(|n| n.path.as_str()).collect();
         assert_eq!(paths, HashSet::from(["Projects/Alpha.md", "Home.md", "Projects/Plan.md", "Work/Beta.md", "Work/Far.md"]));
     }

@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use daftar_core::{
-    BoardDrop, Bookmarks, CalendarDay, CalendarWeek, Clock, DailyNotes, Day, Failure, Iconic, PeriodicNotes, ReplaceMatch, ReplacePattern,
-    SearchIndex, TagRename, TaskFields, TaskSorter, Templates, Vault, VaultEdits, VaultIndex, VaultReplace, VaultTask,
+    BoardDrop, Bookmarks, CalendarDay, CalendarWeek, Clock, DailyNotes, Day, ExcludedFiles, Failure, Iconic, PeriodicNotes, ReplaceMatch,
+    ReplacePattern, SearchIndex, TagRename, TaskFields, TaskSorter, Templates, Vault, VaultEdits, VaultIndex, VaultReplace, VaultTask,
 };
 
 use crate::places::PlaceBook;
@@ -32,6 +32,9 @@ pub struct VaultStore {
     pub periodic: PeriodicNotes,
     /// The Templates plugin's folder and formats.
     pub templates: Templates,
+    /// What the lists leave out: Obsidian's excluded files and the files for
+    /// AI agents (`files.hidden`), or nothing while hidden files are shown.
+    excluded: RefCell<ExcludedFiles>,
 }
 
 impl VaultStore {
@@ -48,7 +51,39 @@ impl VaultStore {
             places,
             periodic,
             templates,
+            excluded: RefCell::new(ExcludedFiles::default()),
         }
+    }
+
+    /// The files the lists leave out: Obsidian's excluded files and those
+    /// named [names] in any folder; none when [show] is on.
+    pub fn set_hidden(&self, names: &[String], show: bool) {
+        *self.excluded.borrow_mut() = if show { ExcludedFiles::default() } else { ExcludedFiles::load_with_names(&self.root, names) };
+    }
+
+    /// Whether the lists leave [path] out. A link to it still opens it.
+    pub fn is_hidden(&self, path: &str) -> bool {
+        self.excluded.borrow().contains(path)
+    }
+
+    pub fn excluded(&self) -> Ref<'_, ExcludedFiles> {
+        self.excluded.borrow()
+    }
+
+    /// The file tree without the hidden files.
+    pub fn tree(&self) -> Vec<daftar_core::TreeNode> {
+        let index = self.index();
+        let excluded = self.excluded.borrow();
+        if excluded.is_empty() {
+            return index.tree().to_vec();
+        }
+        excluded.tree(&index.files, &index.empty_folders)
+    }
+
+    /// The open tasks' notes' tasks, without the hidden notes', for Today and the board.
+    pub fn listed_tasks(&self) -> Vec<VaultTask> {
+        let excluded = self.excluded.borrow();
+        self.index().tasks().into_iter().filter(|task| !excluded.contains(&task.path)).collect()
     }
 
     /// The periodic note of the period [day] falls in, made from the Daily
@@ -104,6 +139,9 @@ impl VaultStore {
             .notes
             .values()
             .filter_map(|note| {
+                if self.is_hidden(&note.path) {
+                    return None;
+                }
                 let read = self.places.last_read(&note.path)?;
                 let modified = note.modified.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
                 // Two seconds, as on the Mac: a save the app made a moment after a read is not news.

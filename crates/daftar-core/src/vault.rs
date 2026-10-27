@@ -148,12 +148,7 @@ impl VaultIndex {
 
     /// The folder at [path] in the tree; "" is the vault itself.
     pub fn folder(&self, path: &str) -> Option<&[TreeNode]> {
-        let mut level: &[TreeNode] = &self.tree;
-        for part in path.split('/').filter(|p| !p.is_empty()) {
-            let next = level.iter().find(|n| n.is_folder() && n.name == part)?;
-            level = next.children.as_deref().unwrap_or(&[]);
-        }
-        Some(level)
+        Vault::folder(path, &self.tree)
     }
 
     /// Every task in the vault.
@@ -409,6 +404,16 @@ impl Vault {
 
     /// The folder tree. A folder note `X/X.md` is not listed inside its
     /// folder; the folder opens it, as the folder-notes plugin does.
+    /// The folder at [path] in [tree]; "" is the vault itself.
+    pub fn folder<'a>(path: &str, tree: &'a [TreeNode]) -> Option<&'a [TreeNode]> {
+        let mut level = tree;
+        for part in path.split('/').filter(|p| !p.is_empty()) {
+            let next = level.iter().find(|n| n.is_folder() && n.name == part)?;
+            level = next.children.as_deref().unwrap_or(&[]);
+        }
+        Some(level)
+    }
+
     pub fn tree(files: &BTreeSet<String>, empty_folders: &BTreeSet<String>) -> Vec<TreeNode> {
         #[derive(Default)]
         struct Folder {
@@ -462,17 +467,32 @@ impl Vault {
     }
 }
 
-/// Obsidian's "excluded files" (`userIgnoreFilters` in `.obsidian/app.json`):
-/// folders and files kept out of search and the switcher, though they stay
-/// in the tree and links to them still work. A filter is a path prefix, or
-/// a regular expression between slashes.
+/// The names `files.hidden` has when the settings file says none: the
+/// files for AI agents.
+pub const HIDDEN_NAMES: [&str; 4] = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", "CLAUDE.local.md"];
+
+/// Obsidian's "excluded files" (`userIgnoreFilters` in `.obsidian/app.json`)
+/// and the files for AI agents and other tools (`files.hidden` in the
+/// config, by name in any folder): kept out of the tree, search, the
+/// switcher and the graph. Links to them still work, and they still open
+/// by their path. A filter is a path prefix (`uploads/` hides the folder and
+/// all in it), or a regular expression between slashes.
 #[derive(Debug, Clone, Default)]
 pub struct ExcludedFiles {
     pub prefixes: Vec<String>,
     pub patterns: Vec<Regex>,
+    /// Whole file names, folded: `CLAUDE.md` hides `Work/CLAUDE.md`, not `MyCLAUDE.md`.
+    pub names: HashSet<String>,
 }
 
 impl ExcludedFiles {
+    /// [filters] as Obsidian has them, and the file [names] hidden in any folder.
+    pub fn with_names<S: AsRef<str>, N: AsRef<str>>(filters: &[S], names: &[N]) -> ExcludedFiles {
+        let mut excluded = ExcludedFiles::new(filters);
+        excluded.names = names.iter().map(|n| slugs::fold(n.as_ref().trim())).filter(|n| !n.is_empty()).collect();
+        excluded
+    }
+
     pub fn new<S: AsRef<str>>(filters: &[S]) -> ExcludedFiles {
         let mut excluded = ExcludedFiles::default();
         for filter in filters {
@@ -486,6 +506,51 @@ impl ExcludedFiles {
             }
         }
         excluded
+    }
+
+    /// Obsidian's filters for the vault at [root], and the file [names].
+    pub fn load_with_names<N: AsRef<str>>(root: &Path, names: &[N]) -> ExcludedFiles {
+        let mut excluded = ExcludedFiles::load(root);
+        excluded.names = ExcludedFiles::with_names::<&str, N>(&[], names).names;
+        excluded
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.prefixes.is_empty() && self.patterns.is_empty() && self.names.is_empty()
+    }
+
+    /// The folder at [path] is excluded itself, as `uploads/` excludes `uploads`.
+    pub fn contains_folder(&self, path: &str) -> bool {
+        let folded = slugs::fold(path) + "/";
+        let folder = format!("{path}/");
+        self.prefixes.iter().any(|p| folded.starts_with(p.as_str())) || self.patterns.iter().any(|r| r.is_match(&folder))
+    }
+
+    /// The tree without the excluded files and folders. A folder that holds
+    /// only hidden files (a `CLAUDE.md`) stays, as an empty folder.
+    pub fn tree(&self, files: &BTreeSet<String>, empty_folders: &BTreeSet<String>) -> Vec<TreeNode> {
+        if self.is_empty() {
+            return Vault::tree(files, empty_folders);
+        }
+        let mut shown = BTreeSet::new();
+        let mut empty = BTreeSet::new();
+        for path in files {
+            if !self.contains(path) {
+                shown.insert(path.clone());
+                continue;
+            }
+            // The nearest folder above a hidden file that is not hidden itself.
+            let mut folder = path.as_str();
+            while let Some(slash) = folder.rfind('/') {
+                folder = &folder[..slash];
+                if !self.contains_folder(folder) {
+                    empty.insert(folder.to_string());
+                    break;
+                }
+            }
+        }
+        empty.extend(empty_folders.iter().filter(|f| !self.contains_folder(f)).cloned());
+        Vault::tree(&shown, &empty)
     }
 
     pub fn load(root: &Path) -> ExcludedFiles {
@@ -503,7 +568,9 @@ impl ExcludedFiles {
 
     pub fn contains(&self, path: &str) -> bool {
         let folded = slugs::fold(path);
-        self.prefixes.iter().any(|p| folded.starts_with(p.as_str())) || self.patterns.iter().any(|r| r.is_match(path))
+        self.prefixes.iter().any(|p| folded.starts_with(p.as_str()))
+            || (!self.names.is_empty() && self.names.contains(last_part(&folded)))
+            || self.patterns.iter().any(|r| r.is_match(path))
     }
 }
 
@@ -551,6 +618,92 @@ mod tests {
         let alpha = &projects.children.as_ref().unwrap()[0];
         assert_eq!(alpha.folder_note.as_deref(), Some("Projects/Alpha/Alpha.md"));
         assert_eq!(names(alpha.children.as_ref().unwrap()), ["Plan"]);
+    }
+
+    fn hidden() -> ExcludedFiles {
+        ExcludedFiles::with_names(&["uploads/", "node_modules/"], &HIDDEN_NAMES)
+    }
+
+    #[test]
+    fn a_folder_filter_hides_the_folder_and_all_in_it() {
+        let hidden = hidden();
+        assert!(hidden.contains("uploads/a.png") && hidden.contains("uploads/2026/b.pdf"));
+        assert!(hidden.contains_folder("uploads") && hidden.contains_folder("uploads/2026") && hidden.contains_folder("node_modules"));
+        assert!(!hidden.contains_folder("Notes") && !hidden.contains_folder("Notes/uploads"));
+        assert!(!hidden.contains("Notes/uploads/a.png") && !hidden.contains("uploads.md"));
+    }
+
+    #[test]
+    fn a_name_hides_the_file_in_any_folder() {
+        let hidden = hidden();
+        for path in [
+            "CLAUDE.md",
+            "Work/CLAUDE.md",
+            "Work/Projects/Alpha/AGENTS.md",
+            "Calendar/GEMINI.md",
+            "Notes/CLAUDE.local.md",
+            "Notes/claude.md",
+        ] {
+            assert!(hidden.contains(path), "{path}");
+        }
+        // Only the whole name: a note that has it in its name is a note.
+        for path in ["MyCLAUDE.md", "Work/CLAUDE.md.bak", "Work/CLAUDE", "CLAUDE.md/Plan.md"] {
+            assert!(!hidden.contains(path), "{path}");
+        }
+        assert!(!hidden.contains_folder("Work"));
+        let none = ExcludedFiles::with_names::<&str, &str>(&[], &[" ", ""]);
+        assert!(none.is_empty() && !none.contains("CLAUDE.md"));
+        assert!(!ExcludedFiles::new(&["uploads/"]).contains("CLAUDE.md"));
+    }
+
+    #[test]
+    fn the_tree_leaves_them_out() {
+        let files = set(&[
+            "Home.md",
+            "CLAUDE.md",
+            "AGENTS.md",
+            "MyCLAUDE.md",
+            "Work/Plan.md",
+            "Work/CLAUDE.md",
+            "Work/CLAUDE.md.bak",
+            "Agents/CLAUDE.md",
+            "uploads/a.png",
+            "uploads/2026/b.pdf",
+        ]);
+        let tree = hidden().tree(&files, &set(&["uploads/empty", "Empty"]));
+        assert_eq!(tree.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), ["Agents", "Empty", "Work", "Home.md", "MyCLAUDE.md"]);
+        let work = Vault::folder("Work", &tree).unwrap();
+        assert_eq!(work.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), ["Work/CLAUDE.md.bak", "Work/Plan.md"]);
+        // A folder with only a hidden file in it is still there, empty.
+        assert!(Vault::folder("Agents", &tree).unwrap().is_empty());
+        assert!(Vault::folder("uploads", &tree).is_none());
+        assert_eq!(ExcludedFiles::default().tree(&files, &BTreeSet::new()), Vault::tree(&files, &BTreeSet::new()));
+    }
+
+    #[test]
+    fn links_to_hidden_files_still_resolve() {
+        let root = tempfile::tempdir().unwrap();
+        for (path, text) in [
+            ("Home.md", "![[diagram.png]] and [[CLAUDE]] and [[Work/CLAUDE.md|rules]]"),
+            ("uploads/diagram.png", "png"),
+            ("Work/CLAUDE.md", "Rules for agents. See [[Home]]."),
+            (".obsidian/app.json", r#"{"userIgnoreFilters":["uploads/","node_modules/"]}"#),
+        ] {
+            let file = root.path().join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, text).unwrap();
+        }
+        let excluded = ExcludedFiles::load_with_names(root.path(), &HIDDEN_NAMES);
+        assert!(excluded.contains("uploads/diagram.png") && excluded.contains("Work/CLAUDE.md"));
+        let index = Vault::index(root.path(), None);
+        assert_eq!(index.resolve("diagram.png", "Home.md").as_deref(), Some("uploads/diagram.png"));
+        assert_eq!(index.resolve("CLAUDE", "Home.md").as_deref(), Some("Work/CLAUDE.md"));
+        let paths = |graph: crate::NoteGraph| graph.nodes.into_iter().map(|n| n.path).collect::<Vec<_>>();
+        assert_eq!(paths(crate::NoteGraph::vault(&index, Some(&excluded))), ["Home.md"]);
+        assert_eq!(paths(crate::NoteGraph::local(&index, "Home.md", 2, Some(&excluded))), ["Home.md"]);
+        assert_eq!(paths(crate::NoteGraph::local(&index, "Home.md", 2, None)), ["Home.md", "Work/CLAUDE.md"]);
+        // Opened by its path, a hidden note is the centre of its own graph.
+        assert_eq!(paths(crate::NoteGraph::local(&index, "Work/CLAUDE.md", 2, Some(&excluded))), ["Work/CLAUDE.md", "Home.md"]);
     }
 
     #[test]

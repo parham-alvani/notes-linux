@@ -108,7 +108,7 @@ impl Window {
         let Some(store) = self.store.borrow().clone() else { return };
         match store.periodic_note(Day::today()) {
             Ok(path) => {
-                self.sidebar.set_tree(store.index().tree());
+                self.sidebar.set_tree(&store.tree());
                 self.open(&path, None);
             }
             Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The note could not be made: {error}"))),
@@ -122,7 +122,7 @@ impl Window {
         let folder = self.settings.borrow().file.string("scratchpad.folder").unwrap_or_else(|| "Scratchpad".into());
         match store.scratchpad(Day::today(), &folder) {
             Ok(path) => {
-                self.sidebar.set_tree(store.index().tree());
+                self.sidebar.set_tree(&store.tree());
                 self.open(&path, None);
                 if !self.tab().editing() {
                     self.toggle_edit();

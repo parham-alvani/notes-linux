@@ -44,6 +44,7 @@ fn candidates(store: &VaultStore) -> Vec<Candidate> {
     index
         .files
         .iter()
+        .filter(|path| !store.is_hidden(path))
         .map(|path| {
             let aliases = index.notes.get(path).map(|n| n.parsed.aliases.clone()).unwrap_or_default();
             Candidate::new(path, &Vault::title(path), &aliases)
@@ -90,6 +91,7 @@ pub fn present(
                 .search
                 .search(query, LIMIT)
                 .into_iter()
+                .filter(|hit| !store.is_hidden(&hit.path))
                 .map(|hit| Row {
                     title: glib::markup_escape_text(&Vault::title(&hit.path)).into(),
                     subtitle: snippet(&hit.snippet),

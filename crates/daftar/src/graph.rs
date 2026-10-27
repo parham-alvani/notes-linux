@@ -11,7 +11,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use daftar_core::{ExcludedFiles, GraphLayout, GraphNode, NoteGraph, Vault};
+use daftar_core::{GraphLayout, GraphNode, NoteGraph, Vault};
 
 use crate::store::VaultStore;
 
@@ -136,8 +136,8 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, center: Op
             let graph = {
                 let index = store.index();
                 match center.as_deref().filter(|_| !whole.get()) {
-                    Some(path) => NoteGraph::local(&index, path, depth.get()),
-                    None => NoteGraph::vault(&index, Some(&ExcludedFiles::load(&store.root))),
+                    Some(path) => NoteGraph::local(&index, path, depth.get(), Some(&store.excluded())),
+                    None => NoteGraph::vault(&index, Some(&store.excluded())),
                 }
             };
             let name = match center.as_deref().filter(|_| !whole.get()) {

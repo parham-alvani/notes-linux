@@ -90,7 +90,7 @@ pub use task_sorter::TaskSorter;
 pub use tasks_query::{DateRange, QueryTask, TaskState, TasksQuery};
 pub use templates::Templates;
 pub use unlinked_mentions::{Mention, UnlinkedMentions};
-pub use vault::{Backlink, ExcludedFiles, NoteEntry, TreeNode, Vault, VaultIndex, VaultTask};
+pub use vault::{Backlink, ExcludedFiles, HIDDEN_NAMES, NoteEntry, TreeNode, Vault, VaultIndex, VaultTask};
 pub use vault_edits::{Failure, VaultEdits};
 pub use vault_moves::{MoveFailure, VaultMoves};
 pub use vault_replace::{ReplaceFailure, ReplaceMatch, ReplaceOptions, ReplacePattern, VaultReplace};

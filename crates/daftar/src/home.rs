@@ -160,7 +160,7 @@ impl HomePage {
         }
         let files = store.index().files.clone();
         if settings.show_recent_files {
-            let recent = home::recent(opened, &store.places.recently_read(40), |p| files.contains(p), 8);
+            let recent = home::recent(opened, &store.places.recently_read(40), |p| files.contains(p) && !store.is_hidden(p), 8);
             if !recent.is_empty() {
                 self.lists.append(&self.list("Recent", "document-open-recent-symbolic", &recent));
             }

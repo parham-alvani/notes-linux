@@ -17,7 +17,7 @@ impl Window {
     pub(super) fn after_load(&self, store: &Rc<VaultStore>) {
         self.sidebar.set_root(store.root.clone());
         self.sidebar.set_iconic(store.iconic.borrow().clone());
-        self.sidebar.set_tree(store.index().tree());
+        self.sidebar.set_tree(&store.tree());
         self.refresh_marks();
     }
 

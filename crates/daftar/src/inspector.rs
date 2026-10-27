@@ -66,7 +66,7 @@ impl Inspector {
         };
 
         // Backlinks, each with the line that links.
-        let backlinks = store.index().backlinks(path).to_vec();
+        let backlinks: Vec<_> = store.index().backlinks(path).iter().filter(|b| !store.is_hidden(&b.source)).cloned().collect();
         self.content.append(&title("Backlinks", backlinks.len()));
         let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
         for link in &backlinks {
@@ -179,7 +179,8 @@ fn candidates(store: &VaultStore, path: &str) -> (Vec<String>, Vec<String>) {
             sources.insert(hit.path);
         }
     }
-    let candidates = sources.into_iter().filter(|s| s != path && !linking.contains(s.as_str()) && Vault::is_note(s)).collect();
+    let candidates =
+        sources.into_iter().filter(|s| s != path && !linking.contains(s.as_str()) && Vault::is_note(s) && !store.is_hidden(s)).collect();
     (names, candidates)
 }
 

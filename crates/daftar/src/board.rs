@@ -308,7 +308,7 @@ impl Board {
     pub fn show(&self, store: Rc<VaultStore>) {
         *self.store.borrow_mut() = Some(store.clone());
         // The notes that hold tasks, by title, for the file filter.
-        let mut paths: Vec<String> = store.index().tasks().into_iter().map(|t| t.path).collect();
+        let mut paths: Vec<String> = store.listed_tasks().into_iter().map(|t| t.path).collect();
         paths.sort_by(|a, b| daftar_core::text::standard_compare(&Vault::title(a), &Vault::title(b)).then(a.cmp(b)));
         paths.dedup();
         if *self.file_paths.borrow() != paths {
@@ -334,7 +334,7 @@ impl Board {
 
     fn draw(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
-        let tasks = shown(store.index().tasks(), self.chosen_file().as_deref(), &self.query.borrow());
+        let tasks = shown(store.listed_tasks(), self.chosen_file().as_deref(), &self.query.borrow());
         let open = tasks.iter().filter(|t| t.task.is_open()).count();
         self.count.set_label(&format!("{open} open {}", if open == 1 { "task" } else { "tasks" }));
         let within = (!self.all_closed.is_active()).then_some(CLOSED_WITHIN);

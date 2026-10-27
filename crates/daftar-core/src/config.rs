@@ -19,12 +19,19 @@ pub enum Value {
     String(String),
     Int(i64),
     Bool(bool),
+    /// A one-line list of strings, `["a", "b"]`.
+    Strings(Vec<String>),
+}
+
+fn quoted(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 impl Value {
     fn toml(&self) -> String {
         match self {
-            Value::String(text) => format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\"")),
+            Value::String(text) => quoted(text),
+            Value::Strings(list) => format!("[{}]", list.iter().map(|t| quoted(t)).collect::<Vec<_>>().join(", ")),
             Value::Int(number) => number.to_string(),
             Value::Bool(flag) => flag.to_string(),
         }
@@ -82,6 +89,13 @@ impl ConfigFile {
     pub fn int(&self, path: &str) -> Option<i64> {
         match self.get(path) {
             Some(Value::Int(number)) => Some(number),
+            _ => None,
+        }
+    }
+
+    pub fn strings(&self, path: &str) -> Option<Vec<String>> {
+        match self.get(path) {
+            Some(Value::Strings(list)) => Some(list),
             _ => None,
         }
     }
@@ -231,6 +245,15 @@ target = "daily"
 # end of the note when it is missing; empty is the end of the note.
 heading = ""
 
+[files]
+# Files for AI agents and other tools, by name, in any folder. They
+# are not shown in the file tree, quick open, search, the graph or
+# the recent notes, as Obsidian's excluded files (Settings > Files
+# and links) are not. A link to one still opens it.
+hidden = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", "CLAUDE.local.md"]
+# Show the hidden and the excluded files anyway (Ctrl+Shift+.).
+show_hidden = false
+
 [wakatime]
 # Send the time spent in each note to WakaTime, with wakatime-cli and the
 # key in ~/.wakatime.cfg, as Obsidian's WakaTime plugin does. The note's
@@ -265,25 +288,23 @@ fn assignment(line: &str) -> Option<(&str, &str)> {
 
 fn value(raw: &str) -> Option<Value> {
     if let Some(rest) = raw.strip_prefix('"') {
-        let mut out = String::new();
-        let mut escaped = false;
-        for c in rest.chars() {
-            if escaped {
-                out.push(match c {
-                    'n' => '\n',
-                    't' => '\t',
-                    other => other,
-                });
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                return Some(Value::String(out));
-            } else {
-                out.push(c);
+        return string(rest).map(|(text, _)| Value::String(text));
+    }
+    if let Some(rest) = raw.strip_prefix('[') {
+        // `["a", "b"]`: quoted strings, a comma between them.
+        let mut list = Vec::new();
+        let mut rest = rest.trim_start();
+        while !rest.starts_with(']') {
+            let (item, after) = string(rest.strip_prefix('"')?)?;
+            list.push(item);
+            rest = after.trim_start();
+            if let Some(next) = rest.strip_prefix(',') {
+                rest = next.trim_start();
+            } else if !rest.starts_with(']') {
+                return None;
             }
         }
-        return None;
+        return Some(Value::Strings(list));
     }
     let bare = raw.split('#').next().unwrap_or("").trim();
     match bare {
@@ -291,6 +312,30 @@ fn value(raw: &str) -> Option<Value> {
         "false" => Some(Value::Bool(false)),
         _ => bare.replace('_', "").parse().ok().map(Value::Int),
     }
+}
+
+/// The text of a quoted string whose opening quote is gone, and what
+/// follows its closing quote; `None` when it is not closed.
+fn string(raw: &str) -> Option<(String, &str)> {
+    let mut out = String::new();
+    let mut escaped = false;
+    for (at, c) in raw.char_indices() {
+        if escaped {
+            out.push(match c {
+                'n' => '\n',
+                't' => '\t',
+                other => other,
+            });
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return Some((out, &raw[at + 1..]));
+        } else {
+            out.push(c);
+        }
+    }
+    None
 }
 
 /// A `# comment` after the value, outside any quotes.
@@ -325,6 +370,16 @@ mod tests {
 
     #[test]
     fn reads_the_template() {
+        let template = ConfigFile::new(ConfigFile::TEMPLATE);
+        assert_eq!(template.strings("files.hidden").unwrap(), crate::vault::HIDDEN_NAMES);
+        assert_eq!(template.bool("files.show_hidden"), Some(false));
+        let mut list = ConfigFile::new("[files]\nhidden = [ \"A.md\" ,\"b \\\"c\\\".md\" ] # mine\n");
+        assert_eq!(list.strings("files.hidden").unwrap(), ["A.md", "b \"c\".md"]);
+        list.set("files.hidden", Value::Strings(vec!["CLAUDE.md".into(), "x, y.md".into()]));
+        assert_eq!(list.text(), "[files]\nhidden = [\"CLAUDE.md\", \"x, y.md\"] # mine\n");
+        list.set("files.hidden", Value::Strings(vec![]));
+        assert_eq!(list.strings("files.hidden"), Some(vec![]));
+        assert_eq!(ConfigFile::new("x = [\"a\", 1]").strings("x"), None);
         let file = ConfigFile::new(ConfigFile::TEMPLATE);
         assert_eq!(file.string("vault").as_deref(), Some(""));
         assert_eq!(file.string("appearance.theme").as_deref(), Some("system"));
