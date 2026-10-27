@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use daftar_core::{Day, QueryTask, SearchIndex, TasksQuery, Vault, VaultMoves};
+use daftar_core::{Day, MarkdownHighlighter, QueryTask, SearchIndex, TasksQuery, Vault, VaultMoves};
 
 /// SplitMix64, from a fixed seed.
 struct Seeded(u64);
@@ -177,4 +177,17 @@ fn twenty_thousand_notes() {
     let changed = time("relink the hub", || VaultMoves::relinked(&index, &moves, |p| fs::read_to_string(root.join(p)).ok()));
     println!("  {} notes relinked", changed.len());
     time("search", || search.search("deploy kafka", 100));
+
+    // A note of 20,000 lines in the editor: styled whole, then one line at its end.
+    let long: String = (0..20_000).map(|i| format!("Line {i}: some **bold** text with a [[link]] and `code` #tag\n")).collect();
+    let total = long.chars().count();
+    time("highlight 20,000 lines", || MarkdownHighlighter::spans(&long));
+    time("highlight the last line", || MarkdownHighlighter::spans_in(&long, total - 10..total));
+    time("12 parts of 12,000", || {
+        let mut at = 0;
+        for _ in 0..12 {
+            MarkdownHighlighter::spans_in(&long, at..(at + 12_000).min(total));
+            at += 12_000;
+        }
+    });
 }

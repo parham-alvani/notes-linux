@@ -108,6 +108,9 @@ pub struct Editor {
     restyle_soon: Cell<bool>,
     /// A cursor move waiting for the idle that tints its line.
     reveal_soon: Cell<bool>,
+    /// Edits so far, and the counts of words and characters at one of them.
+    text_version: Cell<u64>,
+    counted: Cell<Option<(u64, usize, usize)>>,
     open: RefCell<Option<Open>>,
     pending: RefCell<Option<glib::SourceId>>,
     settings: Rc<RefCell<AppSettings>>,
@@ -226,6 +229,8 @@ impl Editor {
             dirty: Cell::new(None),
             restyle_soon: Cell::new(false),
             reveal_soon: Cell::new(false),
+            text_version: Cell::new(0),
+            counted: Cell::new(None),
             open: RefCell::new(None),
             pending: RefCell::new(None),
             settings,
@@ -548,6 +553,7 @@ impl Editor {
         let this = Rc::downgrade(self);
         self.buffer.connect_changed(move |_| {
             if let Some(this) = this.upgrade() {
+                this.text_version.set(this.text_version.get() + 1);
                 this.schedule_restyle();
                 if this.vim.borrow().is_none() {
                     this.schedule_save();
@@ -559,7 +565,6 @@ impl Editor {
             if let Some(this) = this.upgrade()
                 && (mark.name().as_deref() == Some("insert") || mark.name().as_deref() == Some("selection_bound"))
             {
-                this.update_counts();
                 this.schedule_reveal();
             }
         });
@@ -583,6 +588,7 @@ impl Editor {
                 |(a, b)| (a.offset() as usize, b.offset() as usize),
             );
             this.styler.reveal((a, b));
+            this.update_counts();
         });
     }
 
@@ -615,9 +621,17 @@ impl Editor {
 
     fn update_counts(&self) {
         let selection = self.selection();
-        let text = self.text();
-        let words = text.split_whitespace().count();
-        let characters = text.chars().count();
+        // The note's counts, again only after an edit: a cursor move keeps them.
+        let version = self.text_version.get();
+        let (words, characters) = match self.counted.get() {
+            Some((counted, words, characters)) if counted == version => (words, characters),
+            _ => {
+                let text = self.text();
+                let counts = (text.split_whitespace().count(), self.buffer.char_count().max(0) as usize);
+                self.counted.set(Some((version, counts.0, counts.1)));
+                counts
+            }
+        };
         let (word, character) = (plural(words, "word"), plural(characters, "character"));
         let line = if selection.is_empty() {
             format!("{words} {word} · {characters} {character}")

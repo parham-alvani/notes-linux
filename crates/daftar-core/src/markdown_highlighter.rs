@@ -94,10 +94,46 @@ static BLOCK_ID: LazyLock<Regex> = LazyLock::new(|| make(r"\s(\^[A-Za-z0-9-]+)\s
 pub struct MarkdownHighlighter;
 
 impl MarkdownHighlighter {
-    /// The state the line starting at character [location] begins in.
+    /// The state the line starting at character [location] begins in. Read
+    /// line by line in place: only a line that can open or close a block is
+    /// looked at closely, so the end of a long note is found quickly.
     pub fn block_state(location: usize, text: &str) -> BlockState {
-        let chars: Vec<char> = text.chars().collect();
-        Self::state_before(location, &chars)
+        let mut state = BlockState::Normal;
+        let mut at = 0;
+        for (index, line) in text.split_inclusive('\n').enumerate() {
+            if at >= location {
+                break;
+            }
+            at += line.chars().count();
+            let plain = state == BlockState::Normal && index > 0 && !line.contains(['`', '~', '$', '%']);
+            if !plain {
+                state = Self::next(line.trim_end_matches(['\n', '\r']), &state, index == 0);
+            }
+        }
+        state
+    }
+
+    /// The spans of [lines], whole lines of a note that start at character
+    /// [offset], in the block [state] the first of them begins in; and the
+    /// state after the last. A note styled a part at a time carries the
+    /// state from one part to the next instead of reading it from the top.
+    pub fn spans_of_lines(lines: &str, offset: usize, state: BlockState) -> (Vec<Span>, BlockState) {
+        let chars: Vec<char> = lines.chars().collect();
+        let mut state = state;
+        let mut out = Vec::new();
+        let mut start = 0;
+        while start < chars.len() {
+            let range = line_range(&chars, start..start);
+            if range.is_empty() {
+                break;
+            }
+            let line = content(&chars, &range);
+            let before = state.clone();
+            state = Self::next(&line, &state, offset + range.start == 0);
+            style(&line, offset + range.start, &before, &state, &mut out);
+            start = range.end;
+        }
+        (out, state)
     }
 
     fn state_before(location: usize, chars: &[char]) -> BlockState {
@@ -393,6 +429,32 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_note_styled_in_parts_is_styled_as_a_whole() {
+        let text = "---\ntags: [a]\n---\n# T\n**b** and `c`\n```rust\nlet x = 1;\n```\n$$\nx^2\n$$\na %% hidden\nstill %% b\n- [ ] task\n";
+        let whole = MarkdownHighlighter::spans(text);
+        // In parts of three lines, the state carried from part to part.
+        let lines: Vec<&str> = text.split_inclusive('\n').collect();
+        let (mut parts, mut state, mut offset) = (Vec::new(), BlockState::Normal, 0);
+        for chunk in lines.chunks(3) {
+            let joined = chunk.concat();
+            let (spans, next) = MarkdownHighlighter::spans_of_lines(&joined, offset, state);
+            parts.extend(spans);
+            state = next;
+            offset += joined.chars().count();
+        }
+        assert_eq!(parts, whole);
+        // The state each line starts in, read from the top, matches.
+        let mut at = 0;
+        let mut carried = BlockState::Normal;
+        for (index, line) in lines.iter().enumerate() {
+            assert_eq!(MarkdownHighlighter::block_state(at, text), carried, "line {index}");
+            let (_, next) = MarkdownHighlighter::spans_of_lines(line, at, carried);
+            carried = next;
+            at += line.chars().count();
+        }
+    }
+
     use super::*;
     use std::collections::HashMap;
 

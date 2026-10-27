@@ -16,7 +16,7 @@ use adw::prelude::*;
 use gtk::{glib, pango};
 
 use daftar_core::text::direction;
-use daftar_core::{HighlightKind, HighlightSpan, MarkdownHighlighter};
+use daftar_core::{BlockState, HighlightKind, HighlightSpan, MarkdownHighlighter};
 
 /// A color of the palette by name: (dark, light), as `NSPalette.pairs`.
 fn pair(name: &str) -> (u32, u32) {
@@ -156,9 +156,14 @@ pub struct Styler {
     /// The cursor's lines, as characters from the start of the first to
     /// past the end of the last, where every mark shows.
     revealed: std::cell::Cell<(usize, usize)>,
+    /// The cursor's first and last line, and whether it selects, as last revealed.
+    revealed_lines: std::cell::Cell<Option<((i32, i32), bool)>>,
     /// The tint of the cursor's line, as the Mac draws it.
     line: gtk::TextTag,
 }
+
+/// Lines a paragraph is taken to reach up or down, at most.
+const PARAGRAPH_LINES: usize = 200;
 
 /// Characters styled at once; the rest of a long note follows between frames.
 const PART: usize = 12_000;
@@ -175,6 +180,7 @@ impl Styler {
             pending: RefCell::new(None),
             live: std::cell::Cell::new(false),
             revealed: std::cell::Cell::new((0, 0)),
+            revealed_lines: std::cell::Cell::new(None),
             line: gtk::TextTag::new(Some("daftar:cursor-line")),
         });
         styler.line.set_paragraph_background_rgba(Some(&rgba("orange", 0.07, manager.is_dark())));
@@ -218,30 +224,31 @@ impl Styler {
         tag
     }
 
-    /// Styles the whole note: the first part now, the rest between frames.
+    /// Styles the whole note: the first part now, the rest between frames,
+    /// each part from where the one before left the block state.
     pub fn restyle_all(self: &Rc<Self>) {
         self.cancel();
-        let text = self.text();
-        *self.structure.borrow_mut() = structure(&text);
-        let total = text.chars().count();
-        let first = paragraph_end(&text, PART.min(total));
-        self.style(&text, 0..first);
+        *self.structure.borrow_mut() = structure(&self.text());
+        let total = self.buffer.char_count().max(0) as usize;
+        let first = self.line_end_after(PART.min(total));
+        let state = self.style(0..first, Some(BlockState::Normal));
         if first >= total {
             return;
         }
         let this = Rc::downgrade(self);
         let done = std::cell::Cell::new(first);
+        let carried = RefCell::new(state);
         let id = glib::idle_add_local(move || {
             let Some(this) = this.upgrade() else { return glib::ControlFlow::Break };
-            let text = this.text();
-            let total = text.chars().count();
+            let total = this.buffer.char_count().max(0) as usize;
             let start = done.get();
             if start >= total {
                 this.pending.take();
                 return glib::ControlFlow::Break;
             }
-            let end = paragraph_end(&text, (start + PART).min(total));
-            this.style(&text, start..end);
+            let end = this.line_end_after((start + PART).min(total));
+            let next = this.style(start..end, Some(carried.borrow().clone()));
+            *carried.borrow_mut() = next;
             done.set(end);
             if end >= total {
                 this.pending.take();
@@ -258,15 +265,62 @@ impl Styler {
     pub fn restyle_after(self: &Rc<Self>, range: Range<usize>) {
         let text = self.text();
         let now = structure(&text);
-        let total = text.chars().count();
-        let (start, end) = paragraph(&text, range.start.min(total), range.end.min(total));
+        let total = self.buffer.char_count().max(0) as usize;
+        let (start, end) = self.paragraph(range.start.min(total), range.end.min(total));
+        let state = MarkdownHighlighter::block_state(start, &text);
         if *self.structure.borrow() != now {
             *self.structure.borrow_mut() = now;
             self.cancel();
-            self.style(&text, start..total);
+            self.style(start..total, Some(state));
         } else {
-            self.style(&text, start..end);
+            self.style(start..end, Some(state));
         }
+    }
+
+    /// The end of the line that holds character [at], past its newline.
+    fn line_end_after(&self, at: usize) -> usize {
+        let mut iter = self.buffer.iter_at_offset(at as i32);
+        if !iter.starts_line() {
+            if !iter.ends_line() {
+                iter.forward_to_line_end();
+            }
+            iter.forward_char();
+        }
+        iter.offset() as usize
+    }
+
+    /// The lines from [start] to [end], and the lines around them up to a
+    /// blank one, at most `PARAGRAPH_LINES` each way; found by the buffer's
+    /// lines, not by reading the note.
+    fn paragraph(&self, start: usize, end: usize) -> (usize, usize) {
+        let blank = |line: i32| -> bool {
+            let Some(from) = self.buffer.iter_at_line(line) else { return true };
+            let mut to = from;
+            if !to.ends_line() {
+                to.forward_to_line_end();
+            }
+            self.buffer.text(&from, &to, true).trim().is_empty()
+        };
+        let mut first = self.buffer.iter_at_offset(start as i32).line();
+        let mut last = self.buffer.iter_at_offset(end as i32).line();
+        let lines = self.buffer.line_count();
+        let mut walked = 0;
+        while first > 0 && walked < PARAGRAPH_LINES && !blank(first - 1) {
+            first -= 1;
+            walked += 1;
+        }
+        walked = 0;
+        while last + 1 < lines && walked < PARAGRAPH_LINES && !blank(last + 1) {
+            last += 1;
+            walked += 1;
+        }
+        let from = self.buffer.iter_at_line(first).map_or(0, |i| i.offset() as usize);
+        let mut to = self.buffer.iter_at_line(last).unwrap_or_else(|| self.buffer.end_iter());
+        if !to.ends_line() {
+            to.forward_to_line_end();
+        }
+        to.forward_char();
+        (from, to.offset() as usize)
     }
 
     fn cancel(&self) {
@@ -279,18 +333,27 @@ impl Styler {
         self.buffer.text(&self.buffer.start_iter(), &self.buffer.end_iter(), true).to_string()
     }
 
-    /// The tags of the lines in characters [range] of [text], again. A tag's
-    /// priority is the order it was made in; the marks are raised to the top
-    /// each time a tag is made, so they dim over everything.
-    fn style(&self, text: &str, range: Range<usize>) {
-        let iter = |offset: usize| self.buffer.iter_at_offset(offset as i32);
-        // [range] is whole lines: a paragraph, or a part that ends with one.
-        let spans = MarkdownHighlighter::spans_in(text, range.clone());
-        let (from, to) = (iter(range.start), iter(range.end));
+    /// The tags of the lines in characters [range], again, [state] the
+    /// block state its first line begins in (read from the note when not
+    /// given); the state after its last line. Only [range]'s own text is
+    /// read: the spans are in its characters, and `base` puts them in the
+    /// buffer. A tag's priority is the order it was made in; the marks are
+    /// raised to the top each time a tag is made, so they dim over everything.
+    fn style(&self, range: Range<usize>, state: Option<BlockState>) -> BlockState {
+        let base = range.start;
+        let iter = |offset: usize| self.buffer.iter_at_offset((base + offset) as i32);
+        let state = state.unwrap_or_else(|| MarkdownHighlighter::block_state(range.start, &self.text()));
+        let (from, to) = (self.buffer.iter_at_offset(range.start as i32), self.buffer.iter_at_offset(range.end as i32));
+        let lines = self.buffer.text(&from, &to, true).to_string();
+        let (mut spans, next) = MarkdownHighlighter::spans_of_lines(&lines, range.start, state);
+        for span in &mut spans {
+            span.range = span.range.start - base..span.range.end - base;
+        }
         for (tag, _) in self.tags.borrow().values() {
             self.buffer.remove_tag(tag, &from, &to);
         }
-        let chars: Vec<char> = text.chars().collect();
+        let chars: Vec<char> = lines.chars().collect();
+        let local = 0..chars.len();
         let highlights: Vec<Range<usize>> = spans.iter().filter(|s| s.kind == HighlightKind::Highlight).map(|s| s.range.clone()).collect();
         for span in &spans {
             if span.range.end > chars.len() || span.range.is_empty() {
@@ -300,10 +363,11 @@ impl Styler {
                 self.buffer.apply_tag(&tag, &iter(span.range.start), &iter(span.range.end));
             }
         }
-        self.style_script(&chars, range.clone());
+        self.style_script(&chars, local.clone(), base);
         if self.live.get() {
-            self.hide_marks(&spans, &chars, range);
+            self.hide_marks(&spans, &chars, local, base);
         }
+        next
     }
 
     /// Live preview on or off; the note is styled again for it.
@@ -318,23 +382,42 @@ impl Styler {
     /// again and the ones it is on show them. Run from an idle, never while
     /// the view lays out.
     pub fn reveal(self: &Rc<Self>, selection: (usize, usize)) {
-        let text = self.text();
-        let chars: Vec<char> = text.chars().collect();
-        let (from, to) = (selection.0.min(chars.len()), selection.1.min(chars.len()));
-        let start = chars[..from].iter().rposition(|&c| c == '\n').map_or(0, |n| n + 1);
-        let end = chars[to..].iter().position(|&c| c == '\n').map_or(chars.len(), |n| to + n + 1).min(chars.len());
-        let (all_start, all_end) = self.buffer.bounds();
-        self.buffer.remove_tag(&self.line, &all_start, &all_end);
-        if from == to {
-            self.buffer.apply_tag(&self.line, &self.buffer.iter_at_offset(start as i32), &self.buffer.iter_at_offset(end as i32));
+        // The lines by the buffer's own index, not by reading the text: a
+        // note of 20,000 lines would be copied at every key.
+        let (first, last) = (self.buffer.iter_at_offset(selection.0 as i32), self.buffer.iter_at_offset(selection.1 as i32));
+        let lines = (first.line(), last.line());
+        let start_iter = self.buffer.iter_at_line(lines.0).unwrap_or(first);
+        let mut end_iter = self.buffer.iter_at_line(lines.1).unwrap_or(last);
+        if !end_iter.ends_line() {
+            end_iter.forward_to_line_end();
         }
-        let old = self.revealed.replace((start, end));
-        if !self.live.get() || old == (start, end) {
+        end_iter.forward_char();
+        let (start, end) = (start_iter.offset() as usize, end_iter.offset() as usize);
+        let selecting = selection.0 != selection.1;
+        // Typing on the line keeps it: only where it ends moves.
+        if self.revealed_lines.replace(Some((lines, selecting))) == Some((lines, selecting)) {
+            self.revealed.set((start, end));
             return;
         }
+        let (all_start, all_end) = self.buffer.bounds();
+        self.buffer.remove_tag(&self.line, &all_start, &all_end);
+        if !selecting {
+            self.buffer.apply_tag(&self.line, &start_iter, &end_iter);
+        }
+        let old = self.revealed.replace((start, end));
+        if !self.live.get() {
+            return;
+        }
+        let text = self.text();
+        let total = self.buffer.char_count() as usize;
         for (a, b) in [old, (start, end)] {
-            if b <= chars.len() && a < b {
-                self.style(&text, a..b);
+            let (a, b) = (a.min(total), b.min(total));
+            if a < b {
+                // Whole lines: the old place may have moved with an edit.
+                let a = self.buffer.iter_at_offset(a as i32).line();
+                let a = self.buffer.iter_at_line(a).map_or(0, |i| i.offset() as usize);
+                let b = self.line_end_after(b);
+                self.style(a..b, Some(MarkdownHighlighter::block_state(a, &text)));
             }
         }
     }
@@ -342,10 +425,11 @@ impl Styler {
     /// Away from the cursor's lines the marks go -- `**`, `==`, `[[` and a
     /// link's target, a heading's `#` -- as the Mac's `hideMarks`. A quote's
     /// `>` and a callout's type stay: they say what the line is.
-    fn hide_marks(&self, spans: &[HighlightSpan], chars: &[char], range: Range<usize>) {
+    fn hide_marks(&self, spans: &[HighlightSpan], chars: &[char], range: Range<usize>, base: usize) {
         let (shown_from, shown_to) = self.revealed.get();
+        let (shown_from, shown_to) = (shown_from.saturating_sub(base), shown_to.saturating_sub(base));
         let hidden = self.tag("hidden", || Look { hidden: true, ..Look::default() });
-        let iter = |offset: usize| self.buffer.iter_at_offset(offset as i32);
+        let iter = |offset: usize| self.buffer.iter_at_offset((base + offset) as i32);
         let hide = |from: usize, to: usize| {
             if from < to && to <= chars.len() && (to <= shown_from || from >= shown_to) && from >= range.start && to <= range.end {
                 self.buffer.apply_tag(&hidden, &iter(from), &iter(to));
@@ -388,8 +472,8 @@ impl Styler {
     /// Each line on the side its text reads from, whatever its syntax starts
     /// with (`- [x] سلام` is right to left), Persian in its face, and a
     /// table's rows in the code font.
-    fn style_script(&self, chars: &[char], range: Range<usize>) {
-        let iter = |offset: usize| self.buffer.iter_at_offset(offset as i32);
+    fn style_script(&self, chars: &[char], range: Range<usize>, base: usize) {
+        let iter = |offset: usize| self.buffer.iter_at_offset((base + offset) as i32);
         let mut start = range.start;
         while start < range.end.min(chars.len()) {
             let end = chars[start..].iter().position(|&c| c == '\n').map_or(chars.len(), |n| start + n);
@@ -531,7 +615,13 @@ fn apply_look(tag: &gtk::TextTag, look: &Look, dark: bool, code_font: &str) {
         tag.set_family(Some(PERSIAN_FONT));
     }
     if look.hidden {
-        tag.set_invisible(true);
+        // Next to nothing and clear, as the Mac hides them. GtkTextView's
+        // own `invisible` aborts the app ("byte index off the end of the
+        // line") when it lays out a long note whose lines end in hidden
+        // marks, so the marks stay text, too small to see.
+        tag.set_scale(0.01);
+        tag.set_foreground_rgba(Some(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0)));
+        tag.set_letter_spacing(0);
     }
 }
 
@@ -562,51 +652,6 @@ pub fn structure(text: &str) -> Vec<String> {
     marks.into_iter().map(|(_, line)| line).collect()
 }
 
-/// The paragraph around characters [start, end): from the blank line before
-/// to the blank line after, in characters.
-fn paragraph(text: &str, start: usize, end: usize) -> (usize, usize) {
-    let chars: Vec<char> = text.chars().collect();
-    let blank_before = |at: usize| -> usize {
-        let mut i = at.min(chars.len());
-        // Back to the start of this line, then up while lines have text.
-        while i > 0 && chars[i - 1] != '\n' {
-            i -= 1;
-        }
-        while i > 0 {
-            let mut j = i - 1;
-            while j > 0 && chars[j - 1] != '\n' {
-                j -= 1;
-            }
-            if chars[j..i - 1].iter().all(|c| c.is_whitespace()) {
-                break;
-            }
-            i = j;
-        }
-        i
-    };
-    let blank_after = |at: usize| -> usize {
-        let mut i = at.min(chars.len());
-        while i < chars.len() {
-            let mut j = i;
-            while j < chars.len() && chars[j] != '\n' {
-                j += 1;
-            }
-            let blank = chars[i..j].iter().all(|c| c.is_whitespace());
-            i = (j + 1).min(chars.len());
-            if blank && j > at {
-                break;
-            }
-        }
-        i
-    };
-    (blank_before(start), blank_after(end))
-}
-
-/// The end of the paragraph that holds character [at].
-fn paragraph_end(text: &str, at: usize) -> usize {
-    paragraph(text, at, at).1
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,14 +662,6 @@ mod tests {
         assert_eq!(structure(text), ["---", "---", "```swift", "```", "$$ x $$\n", "a %% b\n"]);
         // A new line above a fence changes where it is, not the structure.
         assert_eq!(structure(&format!("\n{text}")), structure(text));
-    }
-
-    #[test]
-    fn a_paragraph_runs_between_blank_lines() {
-        let text = "one\n\ntwo\nthree\n\nfour\n";
-        // "three" is at 9..14: its paragraph is "two\nthree\n\n".
-        assert_eq!(paragraph(text, 10, 10), (5, 16));
-        assert_eq!(paragraph(text, 0, 0), (0, 5));
     }
 
     #[test]
