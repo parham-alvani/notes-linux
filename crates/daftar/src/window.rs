@@ -605,26 +605,23 @@ impl Window {
     /// or more, its words and minutes to read at 220 a minute, as
     /// the Mac's breadcrumb has them.
     fn reading_subtitle(&self, path: &str) -> String {
-        // The folder is in the breadcrumb above.
-        let folder = "";
-        let Some(store) = self.store.borrow().clone() else { return folder.to_string() };
+        let Some(store) = self.store.borrow().clone() else { return String::new() };
         let words = Vault::is_note(path)
             .then(|| std::fs::read_to_string(store.root.join(path)).ok())
             .flatten()
             .map(|text| words_of(&text))
             .unwrap_or(0);
         if words < 50 {
-            return folder.to_string();
+            return String::new();
         }
-        let length = format!("{} words · {} min", grouped(words), (words as f64 / 220.0).round().max(1.0) as usize);
-        if folder.is_empty() { length } else { format!("{folder} · {length}") }
+        format!("{} words · {} min", grouped(words), (words as f64 / 220.0).round().max(1.0) as usize)
     }
 
     fn set_subtitle(&self, tab: &Tab, subtitle: &str) {
         let title = tab.title.borrow().0.clone();
         tab.title.borrow_mut().1 = subtitle.to_string();
         if self.is_chosen(tab) {
-            self.title.set(&title, crumb_path(&tab).as_deref());
+            self.title.set(&title, crumb_path(tab).as_deref());
             self.title.set_subtitle(subtitle);
         }
     }
