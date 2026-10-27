@@ -263,7 +263,10 @@ fn postpone_button(dialog: &adw::Dialog, store: &Rc<VaultStore>, path: &str, lin
     let choices = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
     let popover = gtk::Popover::builder().child(&choices).build();
     for amount in Postpone::ALL {
-        let button = gtk::Button::builder().label(format!("By {}", amount.title())).css_classes(["flat"]).build();
+        let button = gtk::Button::builder()
+            .child(&gtk::Label::builder().label(format!("By {}", amount.title())).xalign(0.0).build())
+            .css_classes(["flat"])
+            .build();
         let (dialog, store, path, saved, popover) = (dialog.clone(), store.clone(), path.to_string(), saved.clone(), popover.clone());
         button.connect_clicked(move |_| {
             popover.popdown();

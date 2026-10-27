@@ -300,6 +300,11 @@ impl Editor {
             Saved::Written => {
                 note.on_disk = text;
                 self.buffer.set_modified(false);
+                // The editor's own save does not make the note "updated since you read".
+                let store = self.store.borrow().clone();
+                if let Some(store) = store {
+                    store.places.mark_read(&note.path);
+                }
             }
             Saved::ChangedOnDisk => (self.conflict)(&format!("{} changed on disk, so your edit was not saved.", note.path)),
             Saved::Failed(error) => (self.notice)(&format!("{} was not saved: {error}", note.path)),
@@ -1077,6 +1082,12 @@ impl Editor {
             return true;
         }
         false
+    }
+
+    /// Ctrl+Shift+H, which the window's shortcut gives here while editing:
+    /// the selection marked `==`, or the mark taken off.
+    pub fn highlight(&self) {
+        self.wrap("==");
     }
 
     /// Ctrl+Shift+V: the clipboard's text as it is.

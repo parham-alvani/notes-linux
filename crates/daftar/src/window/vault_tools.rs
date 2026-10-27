@@ -38,6 +38,19 @@ impl Window {
         let this = self.clone();
         replace.connect_activate(move |_, _| this.replace_in_vault());
         self.window.add_action(&replace);
+        // Ctrl+Shift+H: the editor's highlight while it is open, as on the
+        // Mac, where the text view takes the key first; else Replace in Vault.
+        let replace_key = gio::SimpleAction::new("replace-key", None);
+        let this = self.clone();
+        replace_key.connect_activate(move |_, _| {
+            let tab = this.tab();
+            if tab.editing() {
+                tab.editor.highlight();
+            } else {
+                this.replace_in_vault();
+            }
+        });
+        self.window.add_action(&replace_key);
         // `path`, a tab, the line from 0, a tab and the amount's name.
         let postpone = gio::SimpleAction::new("postpone", Some(glib::VariantTy::STRING));
         let this = self.clone();

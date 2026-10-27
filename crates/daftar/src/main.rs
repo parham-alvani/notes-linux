@@ -56,7 +56,7 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.periodic", &["<Ctrl>3"]);
     app.set_accels_for_action("win.periodic-previous", &["<Ctrl><Alt>Left"]);
     app.set_accels_for_action("win.periodic-next", &["<Ctrl><Alt>Right"]);
-    app.set_accels_for_action("win.replace-in-vault", &["<Ctrl><Shift>h"]);
+    app.set_accels_for_action("win.replace-key", &["<Ctrl><Shift>h"]);
     // The file commands act on the note on screen: an empty target.
     app.set_accels_for_action("win.new-note::", &["<Ctrl>n"]);
     app.set_accels_for_action("win.new-folder::", &["<Ctrl><Shift>n"]);

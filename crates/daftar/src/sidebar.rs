@@ -188,8 +188,13 @@ impl Sidebar {
             let on_open = on_open.clone();
             updated.connect_row_activated(move |_, row| on_open(row.widget_name().trim_start_matches("u:")));
         }
-        let updated_title =
-            gtk::Label::builder().xalign(0.0).hexpand(true).margin_start(14).css_classes(["caption-heading", "dim-label"]).build();
+        let updated_title = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .margin_start(14)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["caption-heading", "dim-label"])
+            .build();
         let read_all = gtk::Button::builder()
             .label("Mark All as Read")
             .css_classes(["flat", "caption"])
