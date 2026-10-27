@@ -29,6 +29,7 @@ mod task_edit;
 mod terminal;
 mod today;
 mod vault_dialogs;
+mod vim_floats;
 mod vim_glide;
 mod wakatime;
 mod watcher;

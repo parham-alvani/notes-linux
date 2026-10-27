@@ -125,6 +125,11 @@ pub struct Editor {
     long_message: gtk::Popover,
     long_text: gtk::Label,
     glide: Rc<Glide>,
+    /// Over the text: Neovim's floating windows, as `vim_floats` gives them.
+    stage: gtk::Overlay,
+    floats: RefCell<Vec<gtk::Widget>>,
+    /// Neovim's background behind the floats' rows, and between them.
+    float_css: gtk::CssProvider,
     counts: gtk::Label,
     on_mode: RefCell<Option<ModeListener>>,
     pictures: media::Pictures,
@@ -170,8 +175,10 @@ impl Editor {
         bar.append(&mode_label);
         bar.append(&message);
         bar.append(&counts);
+        // Neovim's floating windows stand over the text.
+        let stage = gtk::Overlay::builder().child(&scroller).vexpand(true).build();
         let widget = gtk::Box::builder().orientation(gtk::Orientation::Vertical).css_classes(["daftar-page"]).build();
-        widget.append(&scroller);
+        widget.append(&stage);
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         widget.append(&bar);
         let long_text = gtk::Label::builder().xalign(0.0).selectable(true).css_classes(["monospace"]).build();
@@ -202,6 +209,15 @@ impl Editor {
             styler: Styler::new(buffer.upcast_ref()),
             popup: Popup::new(&view),
             glide: Glide::new(&view),
+            stage,
+            floats: RefCell::new(Vec::new()),
+            float_css: {
+                let provider = gtk::CssProvider::new();
+                if let Some(display) = gtk::gdk::Display::default() {
+                    gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+                }
+                provider
+            },
             view,
             buffer,
             completing: Cell::new(Completing::Nothing),
@@ -1290,11 +1306,71 @@ impl Editor {
         self.buffer.remove_tag(&self.block_tag, &self.buffer.start_iter(), &self.buffer.end_iter());
         self.view.set_overwrite(false);
         self.glide.set_on(false);
+        self.draw_floats(&crate::vim_floats::Floats::default());
         self.popup.close();
         self.long_message.popdown();
         self.mode_label.set_visible(false);
         self.message.set_label("");
         self.tell_mode(None);
+    }
+
+    /// Neovim's floating windows over the text: one on the editor's screen
+    /// where its cells put it, one anchored to the window beside the cursor,
+    /// as far from it in cells as Neovim puts it. Each is its grid's rows
+    /// in the code font and Neovim's colors.
+    fn draw_floats(&self, floats: &crate::vim_floats::Floats) {
+        for old in self.floats.borrow_mut().drain(..) {
+            self.stage.remove_overlay(&old);
+        }
+        if floats.views.is_empty() {
+            return;
+        }
+        let (family, size) = {
+            let settings = self.settings.borrow();
+            let code = settings.file.string("appearance.code_font").filter(|f| !f.is_empty()).unwrap_or_else(|| "monospace".into());
+            (code, settings.text_size())
+        };
+        if let Some(background) = floats.views.iter().find_map(|view| view.background.clone()) {
+            self.float_css.load_from_string(&format!(".daftar-vim-float {{ background-color: {background}; }}"));
+        }
+        let origin = self
+            .view
+            .compute_point(&self.stage, &gtk::graphene::Point::new(0.0, 0.0))
+            .map(|p| (p.x() as f64, p.y() as f64))
+            .unwrap_or((0.0, 0.0));
+        let (cursor_x, cursor_y) = self.glide.cursor_point();
+        let (bound_w, bound_h) = (self.stage.width() as f64, self.stage.height() as f64);
+        for view in &floats.views {
+            let markup = format!("<span font=\"{} {}px\">{}</span>", glib::markup_escape_text(&family), size, view.rows.join("\n"));
+            let label = gtk::Label::builder().use_markup(true).label(&markup).xalign(0.0).yalign(0.0).build();
+            let (width, height) = label.layout().pixel_size();
+            let (cell_w, cell_h) = (width as f64 / view.width.max(1) as f64, height as f64 / view.height.max(1) as f64);
+            let (mut x, mut y) = if view.on_editor {
+                (origin.0 + self.view.left_margin() as f64 + view.column * cell_w, origin.1 + view.row * cell_h)
+            } else {
+                let (row, column) = floats.window_cursor.unwrap_or((0, 0));
+                (origin.0 + cursor_x + (view.column - column as f64) * cell_w, origin.1 + cursor_y + (view.row - row as f64) * cell_h)
+            };
+            if view.corner.ends_with('E') {
+                x -= width as f64;
+            }
+            if view.corner.starts_with('S') {
+                y -= height as f64;
+            }
+            let x = x.clamp(0.0, (bound_w - width as f64).max(0.0));
+            let y = y.clamp(0.0, (bound_h - height as f64).max(0.0));
+            let frame = gtk::Box::builder()
+                .halign(gtk::Align::Start)
+                .valign(gtk::Align::Start)
+                .margin_start(x as i32)
+                .margin_top(y as i32)
+                .can_target(false)
+                .css_classes(["daftar-vim-float"])
+                .build();
+            frame.append(&label);
+            self.stage.add_overlay(&frame);
+            self.floats.borrow_mut().push(frame.upcast());
+        }
     }
 
     /// Rows and columns the view shows, so `<C-d>`, `zz` and `H`/`L` move by
@@ -1366,6 +1442,7 @@ impl Editor {
             Event::Menu { items, selected, cmdline } => self.vim_menu(items, selected, cmdline),
             Event::MenuSelect(at) => self.popup.select(at),
             Event::MenuHide => self.popup.close(),
+            Event::Floats(floats) => self.draw_floats(&floats),
             Event::Failed(error) => {
                 self.stop_vim();
                 (self.notice)(&format!("Neovim did not start, so the note is edited without it: {error}"));

@@ -151,7 +151,9 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-capture .capture-error { color: @daftar_red; }\n\
          .daftar-crumbs .daftar-crumb { padding: 0 5px; min-height: 22px; }\n\
          .daftar-crumbs .daftar-crumb-note { color: @daftar_accent; }\n\
-         .daftar-drop { background-color: alpha(@daftar_accent, 0.2); border-radius: 6px; }\n",
+         .daftar-drop { background-color: alpha(@daftar_accent, 0.2); border-radius: 6px; }\n\
+         .daftar-vim-float { border-radius: 6px; box-shadow: 0 4px 16px alpha(black, 0.25); }\n\
+         .daftar-vim-float > label { border-radius: 6px; }\n",
     );
     out
 }

@@ -53,6 +53,9 @@ pub enum Event {
     /// Another item of the menu selected, or none.
     MenuSelect(Option<usize>),
     MenuHide,
+    /// Neovim's floating windows (Telescope, blink.cmp, a hover), drawn
+    /// over the note: see `vim_floats`.
+    Floats(crate::vim_floats::Floats),
     Failed(String),
     Ended,
 }
@@ -195,11 +198,18 @@ impl NeovimSession {
             {
                 let events = events.clone();
                 std::thread::spawn(move || {
+                    let mut floats = crate::vim_floats::FloatState::default();
                     for note in notifications {
                         for event in translate(&note) {
                             if events.send_blocking(event).is_err() {
                                 return;
                             }
+                        }
+                        if note.method == "redraw"
+                            && let Some(now) = floats.apply(&note.params)
+                            && events.send_blocking(Event::Floats(now)).is_err()
+                        {
+                            return;
                         }
                     }
                     let _ = events.send_blocking(Event::Ended);
@@ -301,7 +311,7 @@ impl NeovimSession {
 /// reads its lines; the autocommands follow. Blocks: the worker runs it.
 fn open(client: &NeovimClient, path: &str, rows: i64, columns: i64) -> Result<(Vec<String>, bool), NeovimFailure> {
     let options = MsgValue::Map(
-        ["ext_linegrid", "ext_cmdline", "ext_messages", "ext_popupmenu", "rgb"]
+        ["ext_linegrid", "ext_multigrid", "ext_cmdline", "ext_messages", "ext_popupmenu", "rgb"]
             .iter()
             .map(|key| (MsgValue::from(*key), MsgValue::Bool(true)))
             .collect(),

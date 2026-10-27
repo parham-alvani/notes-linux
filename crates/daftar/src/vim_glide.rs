@@ -162,6 +162,14 @@ impl Glide {
         self.follow();
     }
 
+    /// The cursor's top left in the view's own coordinates, for what is
+    /// drawn near it (a float anchored to Neovim's window).
+    pub fn cursor_point(&self) -> (f64, f64) {
+        let [x, y, _, _] = self.target();
+        let (x, y) = self.view.buffer_to_window_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        (x as f64, y as f64)
+    }
+
     /// Where the cursor should be: the insert mark's character, as wide as
     /// it (or a space past the end of a line) for a block.
     fn target(&self) -> Frame {
