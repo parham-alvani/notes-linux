@@ -686,6 +686,7 @@ fn menu(path: &str, folder: bool, bookmarked: bool) -> gio::Menu {
         create.append_item(&item_for("New Folder…", "win.new-folder", path));
         menu.append_section(None, &create);
         let find = gio::Menu::new();
+        find.append_item(&item_for("Folder Overview", "win.open-note", &format!("{path}/")));
         find.append_item(&item_for("Replace in Folder…", "win.replace-in-folder", path));
         menu.append_section(None, &find);
     }

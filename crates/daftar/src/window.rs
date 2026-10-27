@@ -971,7 +971,9 @@ impl Window {
         if !self.leave_editor_in(tab) {
             return;
         }
-        if !Vault::opens_in_app(path) {
+        // `Books/` is the folder's overview, shown as a base.
+        let overview = path.ends_with('/');
+        if !overview && !Vault::opens_in_app(path) {
             let file = gio::File::for_path(store.root.join(path));
             gtk::FileLauncher::new(Some(&file)).launch(Some(&self.window), gio::Cancellable::NONE, |_| {});
             return;
@@ -993,8 +995,13 @@ impl Window {
             tab.back.borrow_mut().push(current);
             tab.forward.borrow_mut().clear();
         }
-        *tab.crumb.borrow_mut() = Some(path.to_string());
-        self.set_titles(tab, &Vault::title(path), &self.reading_subtitle(path));
+        *tab.crumb.borrow_mut() = (!overview).then(|| path.to_string());
+        if overview {
+            let name = Vault::title(path.trim_end_matches('/'));
+            self.set_titles(tab, if name.is_empty() { "Every note" } else { &name }, "Folder overview");
+        } else {
+            self.set_titles(tab, &Vault::title(path), &self.reading_subtitle(path));
+        }
         tab.stack.set_visible_child_name("reader");
         self.split.set_show_content(true);
         // A note opens where it was being read, unless a link names a place in it.

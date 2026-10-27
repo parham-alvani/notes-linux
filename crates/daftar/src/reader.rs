@@ -207,12 +207,16 @@ impl Reader {
         let Some(store) = state.store.clone() else { return };
         let shows = state.shows;
         drop(state);
-        let Some(text) = store.text(&request.path) else { return };
+        // `Books/`: the folder's overview, a base made from its notes.
+        let overview = request.path.ends_with('/');
+        let text =
+            if overview { Some(daftar_core::FolderOverview::base(&store.index(), &request.path)) } else { store.text(&request.path) };
+        let Some(text) = text else { return };
         if Canvas::is_canvas(&request.path) {
             self.draw_canvas(&store, &request, keep_scroll, &text);
             return;
         }
-        if !Vault::is_base(&request.path) {
+        if !Vault::is_base(&request.path) && !overview {
             self.draw(&store, &request, keep_scroll, &text, None);
             return;
         }
@@ -235,7 +239,7 @@ impl Reader {
     fn draw(&self, store: &VaultStore, request: &Request, keep_scroll: bool, text: &str, base: Option<Value>) {
         let note = if let Some(base) = base {
             json!({
-                "path": request.path, "title": Vault::title(&request.path), "text": "", "links": {}, "properties": [],
+                "path": request.path, "title": Vault::title(request.path.trim_end_matches('/')), "text": "", "links": {}, "properties": [],
                 "base": base,
             })
         } else {
