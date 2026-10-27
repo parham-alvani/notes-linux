@@ -86,6 +86,7 @@ fn main() -> glib::ExitCode {
     app.set_accels_for_action("win.quick-open", &["<Ctrl>p", "<Ctrl>o"]);
     app.set_accels_for_action("win.search", &["<Ctrl><Shift>f"]);
     app.set_accels_for_action("win.open-vault", &["<Ctrl><Shift>o"]);
+    app.set_accels_for_action("win.home", &["<Ctrl><Shift>d", "<Alt>Home"]);
     app.set_accels_for_action("win.today", &["<Ctrl>1"]);
     app.set_accels_for_action("win.board", &["<Ctrl>2"]);
     app.set_accels_for_action("win.periodic", &["<Ctrl>3"]);

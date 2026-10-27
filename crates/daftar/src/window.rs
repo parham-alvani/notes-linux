@@ -94,6 +94,8 @@ impl Window {
             gtk::Button::builder().icon_name("go-previous-symbolic").tooltip_text("Back (Ctrl+[)").action_name("win.back").build();
         let go_forward =
             gtk::Button::builder().icon_name("go-next-symbolic").tooltip_text("Forward (Ctrl+])").action_name("win.forward").build();
+        let go_home =
+            gtk::Button::builder().icon_name("go-home-symbolic").tooltip_text("Home (Ctrl+Shift+D)").action_name("win.home").build();
         let terminal = {
             let settings = settings.borrow();
             TerminalPane::new(
@@ -160,6 +162,7 @@ impl Window {
         history.append(&go_back);
         history.append(&go_forward);
         header.pack_start(&history);
+        header.pack_start(&go_home);
         header.pack_start(
             &gtk::Button::builder().icon_name("tab-new-symbolic").tooltip_text("New Tab (Ctrl+T)").action_name("win.new-tab").build(),
         );
@@ -338,6 +341,17 @@ impl Window {
             });
         }
         self.follow_focus(&tab);
+        {
+            // Home is greyed out while the pane already shows the home page.
+            let (this, weak) = (self.clone(), Rc::downgrade(&tab));
+            tab.stack.connect_visible_child_name_notify(move |_| {
+                if let Some(tab) = weak.upgrade()
+                    && this.is_chosen(&tab)
+                {
+                    this.update_history();
+                }
+            });
+        }
         {
             let toasts = self.toasts.clone();
             tab.reader.connect_notice(move |text| toasts.add_toast(adw::Toast::new(text)));
@@ -851,6 +865,9 @@ impl Window {
         if let Some(action) = self.window.lookup_action("forward").and_downcast::<gio::SimpleAction>() {
             action.set_enabled(!tab.forward.borrow().is_empty());
         }
+        if let Some(action) = self.window.lookup_action("home").and_downcast::<gio::SimpleAction>() {
+            action.set_enabled(tab.showing().as_deref() != Some("empty"));
+        }
     }
 
     /// Every tab's reader drawn again, as a new text size or font asks.
@@ -950,7 +967,7 @@ impl Window {
             command("Search the Notes", "Go", "win.search", "Ctrl+Shift+F"),
             command("Today", "Go", "win.today", "Ctrl+1"),
             command("Task Board", "Go", "win.board", "Ctrl+2"),
-            command("Home", "Go", "win.home", ""),
+            command("Home", "Go", "win.home", "Ctrl+Shift+D"),
             command("Back", "Go", "win.back", "Ctrl+["),
             command("Forward", "Go", "win.forward", "Ctrl+]"),
             command("New Tab", "Tab", "win.new-tab", "Ctrl+T"),
@@ -1157,9 +1174,16 @@ impl Window {
         self.window.add_action(&today);
         let home = gio::SimpleAction::new("home", None);
         let this = self.clone();
+        // The home page in the focused pane, as on the Mac: Back returns to
+        // the note that was open.
         home.connect_activate(move |_, _| {
             if this.leave_editor() {
                 let tab = this.tab();
+                if let Some(current) = tab.current() {
+                    tab.back.borrow_mut().push(current);
+                    tab.forward.borrow_mut().clear();
+                }
+                crate::read_aloud::left(&tab.reader.view, None);
                 this.show_home(&tab);
                 tab.home.focus();
             }
