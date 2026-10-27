@@ -19,6 +19,8 @@ pub struct Hooks {
     /// The home pages, after a new picture.
     pub home: Box<dyn Fn()>,
     pub git: Box<dyn Fn(bool, u32)>,
+    /// The notes being edited, opened again with the editor as now set.
+    pub editor: Box<dyn Fn()>,
     pub notice: Box<dyn Fn(&str)>,
 }
 
@@ -78,6 +80,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     }
     page.add(&looks);
     page.add(&home_group(&settings, root, write.clone(), hooks.clone()));
+    page.add(&editor_group(&settings, write.clone(), hooks.clone()));
 
     let git = adw::PreferencesGroup::builder()
         .title("Git")
@@ -125,6 +128,79 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     page.add(&file);
 
     dialog.present(Some(parent));
+}
+
+/// What `editor.nvim_config` may be, and how each reads.
+const NVIM_CONFIGS: [(&str, &str); 2] = [("user", "Mine (init.lua)"), ("clean", "None (--clean)")];
+
+/// Settings › Editor: Neovim mode, the nvim it runs and the config it loads,
+/// as the Mac's Settings › Editor has them.
+fn editor_group(
+    settings: &Rc<RefCell<AppSettings>>,
+    write: impl Fn(&str, Value) + Clone + 'static,
+    hooks: Rc<Hooks>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Editor")
+        .description("Your Neovim owns the buffer and writes the file; the editor shows it, with its colors and right-to-left text. Your config sees g:daftar = 1. Ctrl shortcuts stay with the app.")
+        .build();
+    let file = &settings.borrow().file;
+    let vim = adw::SwitchRow::builder().title("Edit with Neovim").active(file.bool("editor.vim_mode").unwrap_or(false)).build();
+    let path = adw::EntryRow::builder().title("nvim (empty finds it on $PATH)").show_apply_button(true).build();
+    path.set_text(&file.string("editor.nvim").unwrap_or_default());
+    let found = adw::ActionRow::builder().title("Runs").build();
+    let show_found = {
+        let found = found.clone();
+        move |configured: &str| match daftar_core::NeovimClient::locate(configured) {
+            Some(nvim) => {
+                found.set_subtitle(&nvim.to_string_lossy());
+                found.remove_css_class("error");
+            }
+            None => {
+                found.set_subtitle("nvim is not found: pacman -S neovim");
+                found.add_css_class("error");
+            }
+        }
+    };
+    show_found(&path.text());
+    // A path of the person's own, as the file may name, is kept as a third choice.
+    let configured = file.string("editor.nvim_config").unwrap_or_else(|| "user".into());
+    let mut choices: Vec<(String, String)> = NVIM_CONFIGS.iter().map(|(key, name)| (key.to_string(), name.to_string())).collect();
+    if !NVIM_CONFIGS.iter().any(|(key, _)| *key == configured) {
+        choices.push((configured.clone(), configured.clone()));
+    }
+    let names: Vec<&str> = choices.iter().map(|(_, name)| name.as_str()).collect();
+    let config = adw::ComboRow::builder()
+        .title("Configuration")
+        .model(&gtk::StringList::new(&names))
+        .selected(choices.iter().position(|(key, _)| *key == configured).unwrap_or(0) as u32)
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        vim.connect_active_notify(move |row| {
+            write("editor.vim_mode", Value::Bool(row.is_active()));
+            (hooks.editor)();
+        });
+    }
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        path.connect_apply(move |row| {
+            let text = row.text().trim().to_string();
+            show_found(&text);
+            write("editor.nvim", Value::String(text));
+            (hooks.editor)();
+        });
+    }
+    config.connect_selected_notify(move |row| {
+        let Some((key, _)) = choices.get(row.selected() as usize) else { return };
+        write("editor.nvim_config", Value::String(key.clone()));
+        (hooks.editor)();
+    });
+    group.add(&vim);
+    group.add(&path);
+    group.add(&found);
+    group.add(&config);
+    group
 }
 
 /// Settings › Quick Capture: the note a capture goes to, and the heading.

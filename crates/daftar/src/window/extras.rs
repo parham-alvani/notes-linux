@@ -16,6 +16,7 @@ impl Window {
             ("conflicts", Window::conflicts),
             ("read-aloud", Window::read_aloud),
             ("export-pdf", Window::export_pdf),
+            ("neovide", Window::open_in_neovide),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let this = self.clone();
@@ -46,6 +47,9 @@ impl Window {
             command("Export the Note as PDF", "Note", "win.export-pdf", "Ctrl+Shift+E"),
             command("Quick Capture", "File", "app.capture", ""),
         ];
+        if neovide().is_some() {
+            commands.push(command("Open in Neovide", "Note", "win.neovide", ""));
+        }
         if self.git.button.is_visible() {
             commands.push(command("Show the Note's History", "Git", "win.history", "Ctrl+Alt+Y"));
         }
@@ -53,6 +57,45 @@ impl Window {
             commands.push(command("Resolve Sync Conflicts", "Git", "win.conflicts", ""));
         }
         commands
+    }
+
+    /// The note in Neovide, at the line in view, with the person's own
+    /// Neovim config. The editor here closes first, so one program owns the
+    /// file; what Neovide writes shows in the reader as it is saved.
+    fn open_in_neovide(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let Some(neovide) = neovide() else {
+            self.notice("Neovide is not installed: pacman -S neovide.");
+            return;
+        };
+        let tab = self.tab();
+        let Some(path) = tab.current().filter(|path| Vault::is_note(path)) else {
+            self.notice("Open a note first.");
+            return;
+        };
+        let line = if tab.editing() {
+            let line = tab.editor.line();
+            self.toggle_edit();
+            if tab.editing() {
+                return;
+            }
+            line
+        } else {
+            store.places.get(&path).unwrap_or(0)
+        };
+        let spawned = std::process::Command::new(neovide)
+            .current_dir(&store.root)
+            .arg("--")
+            .arg(format!("+{}", line + 1))
+            .arg(store.root.join(&path))
+            .spawn();
+        match spawned {
+            // Neovide leaves its first process at once; it is waited for off the window.
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+            }
+            Err(error) => self.notice(&format!("Neovide did not start: {error}")),
+        }
     }
 
     fn notice(&self, text: &str) {
@@ -143,4 +186,9 @@ impl Window {
             toasts.add_toast(adw::Toast::new(text))
         });
     }
+}
+
+/// The `neovide` on $PATH, if there is one.
+fn neovide() -> Option<std::path::PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join("neovide")).find(|file| file.is_file())
 }

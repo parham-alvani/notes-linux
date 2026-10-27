@@ -980,6 +980,20 @@ impl Window {
     }
 
     /// Every tab's reader drawn again, as a new text size or font asks.
+    /// The notes being edited, loaded again where they were: Neovim starts
+    /// or stops as the settings now say. With Neovim, a split keeps one editor.
+    fn restart_editors(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let tabs = self.tabs.borrow().clone();
+        for tab in &tabs {
+            if !tab.editing() || !self.one_editor(tab) {
+                continue;
+            }
+            let Some(path) = tab.editor.path() else { continue };
+            tab.editor.load(&store.root, &path, Some(tab.editor.line()));
+        }
+    }
+
     fn reload_readers(&self) {
         let tabs = self.tabs.borrow().clone();
         for tab in &tabs {
@@ -1151,6 +1165,10 @@ impl Window {
             git: Box::new({
                 let git = self.git.clone();
                 move |_, interval| git.reconfigure(interval)
+            }),
+            editor: Box::new({
+                let this = self.clone();
+                move || this.restart_editors()
             }),
             notice: Box::new({
                 let toasts = self.toasts.clone();
