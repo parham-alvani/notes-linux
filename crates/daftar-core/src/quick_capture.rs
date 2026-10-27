@@ -79,9 +79,12 @@ impl QuickCapture {
         if path.starts_with('/') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
             return Err(format!("{path} is not a note in the vault."));
         }
-        // "inbox" is Inbox.md, as the quick switcher finds it.
-        if !root.join(&path).exists()
-            && let Some(found) = Vault::index(root, None).files.iter().find(|file| file.to_lowercase() == path.to_lowercase())
+        // "inbox" is Inbox.md, as the quick switcher finds it. A folder that
+        // ignores case (macOS, Windows) opens inbox.md too, so the name is
+        // taken from the vault, never from whether the file opens.
+        let files = Vault::index(root, None).files;
+        if !files.contains(&path)
+            && let Some(found) = files.iter().find(|file| file.to_lowercase() == path.to_lowercase())
         {
             path = found.clone();
         }
