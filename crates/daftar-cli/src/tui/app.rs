@@ -14,8 +14,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use daftar_core::{
-    Candidate, Day, Git, GitStatus, NoteParser, QueryTask, QuickSwitcher, SearchIndex, TagNode, TaskLine, TasksQuery, TreeNode, Vault,
-    VaultEdits, VaultIndex, VaultTask,
+    Candidate, Day, Git, GitStatus, NoteParser, QueryTask, QuickSwitcher, SearchIndex, SyncFailure, TagNode, TaskLine, TasksQuery, TreeNode,
+    Vault, VaultEdits, VaultIndex, VaultTask,
 };
 
 use super::markdown::{self, Block, Row};
@@ -571,7 +571,8 @@ impl App {
                     }
                     (if steps.is_empty() { "Up to date".to_string() } else { format!("Synced: {}", steps.join(", ")) }, false)
                 }
-                Err(failure) => (format!("Sync failed: {}", failure.output.lines().last().unwrap_or("")), true),
+                Err(SyncFailure::Stopped(stopped)) => (format!("{stopped} Resolve it in Daftar, or run daftar-cli sync --abort"), true),
+                Err(SyncFailure::Git(failure)) => (format!("Sync failed: {}", failure.output.lines().last().unwrap_or("")), true),
             })
         });
     }

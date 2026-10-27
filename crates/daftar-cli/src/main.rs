@@ -23,8 +23,8 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use daftar_core::{
-    Candidate, Clock, ConfigFile, Day, Git, QueryTask, QuickSwitcher, ReplaceOptions, SearchIndex, TaskLine, TasksQuery, Vault, VaultEdits,
-    VaultIndex, VaultTask,
+    Candidate, Clock, ConfigFile, DailyNotes, Day, Git, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions, SearchIndex, Side,
+    SyncFailure, TaskLine, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
 };
 
 #[derive(Parser)]
@@ -93,10 +93,35 @@ enum Command {
     Tags,
     /// Commits every change, pulls with a rebase and pushes, as obsidian-git
     /// and the Mac app do. Uses your git config, credentials and SSH agent.
+    /// A pull that stops on a conflict keeps its rebase open and lists the
+    /// files; resolve them in the app, or `--abort`.
     Sync {
         /// The commit message; else `update notes @ <time> on <host>`.
         #[arg(short, long)]
         message: Option<String>,
+        /// Ends a sync stopped on a conflict: the branch is as it was before
+        /// the pull, and the next sync pulls again.
+        #[arg(long, conflicts_with = "message")]
+        abort: bool,
+    },
+    /// The commits that changed a note, newest first, across renames:
+    /// the hash, the date, the author and the subject.
+    History {
+        note: String,
+        /// The note's text at this commit instead.
+        #[arg(long)]
+        show: Option<String>,
+        #[arg(short = 'n', long, default_value_t = 300)]
+        limit: usize,
+    },
+    /// Adds a line to the capture note (`[capture]` in the config file:
+    /// today's daily note at first), as the app's quick capture does.
+    Capture {
+        /// The line; with none, read from stdin.
+        text: Vec<String>,
+        /// As a task, `- [ ] text`.
+        #[arg(short, long)]
+        task: bool,
     },
     /// The branch, how far it is from its remote, and how many files changed.
     Status,
@@ -320,10 +345,27 @@ fn run(cli: Cli) -> Result<(), String> {
                 out!("{count}\t#{tag}");
             }
         }
-        Command::Sync { message } => {
+        Command::Sync { message: _, abort: true } => {
+            let git = repository(&root)?;
+            if !git.rebase_in_progress().map_err(|e| e.to_string())? {
+                return Err("no sync is stopped".into());
+            }
+            git.abort_rebase().map_err(|e| e.to_string())?;
+            out!("aborted: your commits are as they were before the pull");
+        }
+        Command::Sync { message, abort: false } => {
             let git = repository(&root)?;
             let message = message.unwrap_or_else(|| Git::message(chrono::Local::now(), &Git::host()));
-            let done = git.sync(&message).map_err(|e| e.to_string())?;
+            let done = match git.sync(&message) {
+                Ok(done) => done,
+                Err(SyncFailure::Stopped(stopped)) => {
+                    for file in &stopped.conflicts {
+                        out!("{}\t{} on the remote, {} here", file.path, side(file.remote), side(file.mine));
+                    }
+                    return Err(format!("{stopped} Resolve it in Daftar, or run `daftar-cli sync --abort`."));
+                }
+                Err(failure) => return Err(failure.to_string()),
+            };
             let status = git.status().map_err(|e| e.to_string())?;
             let mut steps = Vec::new();
             if done.committed {
@@ -339,6 +381,39 @@ fn run(cli: Cli) -> Result<(), String> {
                 steps.push("up to date".to_string());
             }
             out!("{}: {}", status.branch, steps.join(", "));
+        }
+        Command::History { note, show, limit } => {
+            let git = repository(&root)?;
+            let index = Vault::index(&root, None);
+            let path = note_path(&index, &note)?;
+            let history = git.history(&path, limit).map_err(|e| e.to_string())?;
+            match show {
+                Some(hash) => {
+                    // A commit before a rename knows the note by its old path.
+                    let revision = history.iter().find(|r| r.hash.starts_with(&hash)).ok_or(format!("no commit {hash} changed {path}"))?;
+                    let text = git.content(&revision.path, &revision.hash).map_err(|e| e.to_string())?;
+                    print!("{text}");
+                }
+                None => {
+                    for revision in history {
+                        let moved = if revision.path == path { String::new() } else { format!("\t{}", revision.path) };
+                        out!("{}\t{}\t{}\t{}{moved}", &revision.hash[..12.min(revision.hash.len())], revision.date.format("%Y-%m-%d %H:%M"), revision.author, revision.subject);
+                    }
+                }
+            }
+        }
+        Command::Capture { text, task } => {
+            let typed = if text.is_empty() {
+                let mut input = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).map_err(|e| e.to_string())?;
+                input
+            } else {
+                text.join(" ")
+            };
+            let line = QuickCapture::line(&typed, task).ok_or("nothing to capture")?;
+            let config = ConfigFile::new(fs::read_to_string(ConfigFile::default_path()).unwrap_or_default());
+            let path = capture(&root, &config, &line)?;
+            out!("{path}\t{line}");
         }
         Command::Status => {
             let status = repository(&root)?.status().map_err(|e| e.to_string())?;
@@ -403,6 +478,46 @@ fn emit(line: std::fmt::Arguments) {
 fn snippet(text: &str, terminal: bool) -> String {
     let (open, close) = if terminal { ("\x1b[1m", "\x1b[0m") } else { ("", "") };
     text.replace('\n', " ").replace('\u{1}', open).replace('\u{2}', close)
+}
+
+fn side(side: Side) -> &'static str {
+    match side {
+        Side::Changed => "changed",
+        Side::Added => "added",
+        Side::Deleted => "deleted",
+    }
+}
+
+/// Adds [line] to the capture note of [config], made first when it is not
+/// there: the daily note from its template, a named note empty. Never
+/// outside the vault. The note's vault path.
+fn capture(root: &std::path::Path, config: &ConfigFile, line: &str) -> Result<String, String> {
+    let now = chrono::Local::now();
+    let target = config.string("capture.target").unwrap_or_else(|| "daily".into());
+    let mut path = QuickCapture::target_path(root, &target, now);
+    // "inbox" is Inbox.md, as the app finds it.
+    if !root.join(&path).exists()
+        && let Some(found) = Vault::index(root, None).files.iter().find(|file| file.to_lowercase() == path.to_lowercase())
+    {
+        path = found.clone();
+    }
+    if path.split('/').any(|part| part.is_empty() || part == "." || part == "..") || path.starts_with('/') {
+        return Err(format!("{path} is not a note in the vault"));
+    }
+    let file = root.join(&path);
+    if !file.exists() {
+        let daily = target.trim().is_empty() || target.trim().eq_ignore_ascii_case("daily");
+        let title = Vault::title(&path);
+        let first = if daily { DailyNotes::read(root).first_text(root, &title, now) } else { String::new() };
+        if let Some(folder) = file.parent() {
+            fs::create_dir_all(folder).map_err(|e| format!("{path}: {e}"))?;
+        }
+        fs::write(&file, first).map_err(|e| format!("{path}: {e}"))?;
+    }
+    let heading = config.string("capture.heading").unwrap_or_default();
+    let heading = Some(heading.trim()).filter(|h| !h.is_empty());
+    VaultEdits::apply(&path, root, |text| Ok(QuickCapture::append(line, text, heading))).map_err(|e| e.to_string())?;
+    Ok(path)
 }
 
 fn repository(root: &std::path::Path) -> Result<Git, String> {
@@ -483,6 +598,41 @@ fn note_path(index: &VaultIndex, note: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Mac's `CaptureTests`, through the command line's capture.
+    #[test]
+    fn a_capture_goes_to_todays_note_made_from_its_template() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::create_dir_all(root.join("Templates")).unwrap();
+        fs::write(root.join(".obsidian/daily-notes.json"), r#"{"format":"YYYY-MM-DD","folder":"Journal","template":"Templates/Day"}"#).unwrap();
+        fs::write(root.join("Templates/Day.md"), "# {{title}}\n## Inbox\n\n## Log\n").unwrap();
+        fs::write(root.join("Inbox.md"), "# Inbox\n- [ ] Old\n").unwrap();
+        let today = Day::today().to_string();
+
+        let config = ConfigFile::new("[capture]\ntarget = \"daily\"\nheading = \"Inbox\"\n".to_string());
+        let path = capture(root, &config, "- [ ] Call Sara").unwrap();
+        assert_eq!(path, format!("Journal/{today}.md"));
+        assert_eq!(fs::read_to_string(root.join(&path)).unwrap(), format!("# {today}\n## Inbox\n- [ ] Call Sara\n\n## Log\n"));
+        // The file is read again: a change made on disk meanwhile stays.
+        fs::write(root.join(&path), "# Today\n## Inbox\n- [ ] Call Sara\n- [ ] Written elsewhere\n").unwrap();
+        let config = ConfigFile::new("[capture]\ntarget = \"daily\"\n".to_string());
+        capture(root, &config, "Idea").unwrap();
+        assert_eq!(fs::read_to_string(root.join(&path)).unwrap(), "# Today\n## Inbox\n- [ ] Call Sara\n- [ ] Written elsewhere\n\nIdea\n");
+
+        // A named note, found without case; one not there yet is made.
+        let config = ConfigFile::new("[capture]\ntarget = \"inbox\"\n".to_string());
+        assert_eq!(capture(root, &config, "- [ ] New").unwrap(), "Inbox.md");
+        assert_eq!(fs::read_to_string(root.join("Inbox.md")).unwrap(), "# Inbox\n- [ ] Old\n- [ ] New\n");
+        let config = ConfigFile::new("[capture]\ntarget = \"Notes/Later.md\"\nheading = \"Ideas\"\n".to_string());
+        assert_eq!(capture(root, &config, "x").unwrap(), "Notes/Later.md");
+        assert_eq!(fs::read_to_string(root.join("Notes/Later.md")).unwrap(), "## Ideas\nx\n");
+        // Never outside the vault.
+        let config = ConfigFile::new("[capture]\ntarget = \"../escaped\"\n".to_string());
+        assert!(capture(root, &config, "x").is_err());
+        assert!(!root.parent().unwrap().join("escaped.md").exists());
+    }
 
     #[test]
     fn a_notes_tasks_blocks_are_its_queries() {

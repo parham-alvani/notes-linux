@@ -216,6 +216,23 @@ font_size = 13
 # file. Empty is no picture. The rest of the page follows Obsidian's
 # Beautitab plugin settings in the vault.
 image = ""
+
+[capture]
+# Quick capture (`daftar --capture`, for a bind in the compositor): the
+# line goes into a note. "daily" is today's daily note, made from its
+# template when it is not there, or a note's path in the vault.
+target = "daily"
+# A heading to add the line under, at the end of its section, made at the
+# end of the note when it is missing; empty is the end of the note.
+heading = ""
+
+[wakatime]
+# Send the time spent in each note to WakaTime, with wakatime-cli and the
+# key in ~/.wakatime.cfg, as Obsidian's WakaTime plugin does. The note's
+# path and the vault's name leave this computer.
+enabled = false
+# Empty finds wakatime-cli in ~/.wakatime or on $PATH.
+cli = ""
 "#;
 }
 
