@@ -518,6 +518,24 @@ impl Window {
         }
     }
 
+    /// Under a note's title while it is read: its folder, and for a note of
+    /// 50 words or more its words and minutes to read at 220 a minute, as
+    /// the Mac's breadcrumb has them.
+    fn reading_subtitle(&self, path: &str) -> String {
+        let folder = folder_of(path);
+        let Some(store) = self.store.borrow().clone() else { return folder.to_string() };
+        let words = Vault::is_note(path)
+            .then(|| std::fs::read_to_string(store.root.join(path)).ok())
+            .flatten()
+            .map(|text| words_of(&text))
+            .unwrap_or(0);
+        if words < 50 {
+            return folder.to_string();
+        }
+        let length = format!("{} words · {} min", grouped(words), (words as f64 / 220.0).round().max(1.0) as usize);
+        if folder.is_empty() { length } else { format!("{folder} · {length}") }
+    }
+
     fn set_subtitle(&self, tab: &Tab, subtitle: &str) {
         let title = tab.title.borrow().0.clone();
         tab.title.borrow_mut().1 = subtitle.to_string();
@@ -714,7 +732,7 @@ impl Window {
         }
         // Back to the note's folder under its title, as reading shows it.
         if let Some(path) = path.or_else(|| tab.reader.shown().map(|shown| shown.path)) {
-            self.set_subtitle(tab, folder_of(&path));
+            self.set_subtitle(tab, &self.reading_subtitle(&path));
         }
         true
     }
@@ -857,7 +875,7 @@ impl Window {
             tab.back.borrow_mut().push(current);
             tab.forward.borrow_mut().clear();
         }
-        self.set_titles(tab, &Vault::title(path), folder_of(path));
+        self.set_titles(tab, &Vault::title(path), &self.reading_subtitle(path));
         tab.stack.set_visible_child_name("reader");
         self.split.set_show_content(true);
         // A note opens where it was being read, unless a link names a place in it.
@@ -1346,7 +1364,40 @@ fn apply_theme(theme: &str) {
     adw::StyleManager::default().set_color_scheme(scheme);
 }
 
+/// The words of a note's text, its properties left out.
+fn words_of(text: &str) -> usize {
+    let body = text.strip_prefix("---\n").and_then(|rest| rest.find("\n---").map(|end| &rest[end + 4..])).unwrap_or(text);
+    body.split_whitespace().filter(|word| word.chars().any(char::is_alphanumeric)).count()
+}
+
+/// 12345 as "12,345".
+fn grouped(number: usize) -> String {
+    let digits = number.to_string();
+    let mut out = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
 /// The folder of a vault path, as the subtitle shows it under a note's title.
 fn folder_of(path: &str) -> &str {
     path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn words_leave_the_properties_and_marks_out() {
+        assert_eq!(words_of("---\ntags: [a, b]\n---\n# Plan\n\nShip the plan - today."), 5);
+        assert_eq!(words_of("one two\nthree"), 3);
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(12345), "12,345");
+        assert_eq!(grouped(1234567), "1,234,567");
+    }
 }

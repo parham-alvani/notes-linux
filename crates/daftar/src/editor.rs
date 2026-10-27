@@ -307,9 +307,16 @@ impl Editor {
                     crate::wakatime::heartbeat(&self.settings.borrow().file, &store.root, &note.path, true);
                 }
             }
-            Saved::ChangedOnDisk => (self.conflict)(&format!("{} changed on disk, so your edit was not saved.", note.path)),
-            Saved::Failed(error) => (self.notice)(&format!("{} was not saved: {error}", note.path)),
-            Saved::Nothing => {}
+            Saved::ChangedOnDisk | Saved::Failed(_) | Saved::Nothing => {}
+        }
+        // The callbacks run with the note let go: one that reads the editor
+        // would find it borrowed.
+        let path = note.path.clone();
+        drop(open);
+        match &saved {
+            Saved::ChangedOnDisk => (self.conflict)(&format!("{path} changed on disk, so your edit was not saved.")),
+            Saved::Failed(error) => (self.notice)(&format!("{path} was not saved: {error}")),
+            _ => {}
         }
         saved
     }

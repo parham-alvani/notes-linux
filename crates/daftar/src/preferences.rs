@@ -32,7 +32,9 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     let write = {
         let (settings, hooks) = (settings.clone(), hooks.clone());
         move |key: &str, value: Value| {
-            if let Err(error) = settings.borrow_mut().set(key, value) {
+            // The borrow ends before the notice, which may read the settings.
+            let result = settings.borrow_mut().set(key, value);
+            if let Err(error) = result {
                 (hooks.notice)(&format!("The settings were not saved: {error}"));
             }
         }
