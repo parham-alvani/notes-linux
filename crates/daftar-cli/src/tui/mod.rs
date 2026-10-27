@@ -23,7 +23,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 
-use daftar_core::ConfigFile;
+use daftar_core::{ConfigFile, ExcludedFiles};
 
 pub use app::App;
 use app::Job;
@@ -31,12 +31,15 @@ pub use theme::Theme;
 use watch::Watch;
 
 /// Runs the TUI on [root] until `q`. The vault is read on a worker thread,
-/// and watched: a change on disk shows as it lands.
-pub fn run(root: PathBuf) -> Result<(), String> {
+/// and watched: a change on disk shows as it lands. The hidden files are
+/// listed too when [show_hidden], or when `files.show_hidden` says so.
+pub fn run(root: PathBuf, show_hidden: bool) -> Result<(), String> {
     let config = ConfigFile::new(std::fs::read_to_string(ConfigFile::default_path()).unwrap_or_default());
     let theme = Theme::named(config.string("appearance.theme").as_deref());
     let mut watch = Watch::new(&root);
     let mut app = App::loading(root, theme);
+    let show = show_hidden || config.bool("files.show_hidden").unwrap_or(false);
+    app.set_hidden(ExcludedFiles::hidden_names(&config), show);
     if let Err(error) = &watch {
         app.message = Some((format!("Changes on disk show after r: {error}"), true));
     }
@@ -361,12 +364,87 @@ mod tests {
         assert_eq!(picker.items.iter().filter_map(|i| i.path.as_deref()).collect::<Vec<_>>(), ["Home.md"]);
     }
 
+    /// The synthetic vault with files the lists leave out: one for an AI
+    /// agent, and a folder Obsidian's excluded files name.
+    fn vault_with_hidden() -> tempfile::TempDir {
+        let dir = vault();
+        let root = dir.path();
+        fs::write(root.join(".obsidian/app.json"), r#"{"userIgnoreFilters":["Archive/"]}"#).unwrap();
+        fs::write(root.join("CLAUDE.md"), "# Agent rules\n\n- [ ] Agent chore #agents\nThe kitchen rules. See [[Home]].\n").unwrap();
+        fs::create_dir_all(root.join("Archive")).unwrap();
+        fs::write(root.join("Archive/Old kitchen.md"), "# Old\n\n- [ ] Archived chore #archived\nkitchen\n").unwrap();
+        dir
+    }
+
+    fn listed(app: &App) -> Vec<String> {
+        let Some(Overlay::Picker(picker)) = &app.overlay else { panic!("no list") };
+        picker.items.iter().filter_map(|i| i.path.clone()).collect()
+    }
+
+    #[test]
+    fn hidden_files_are_left_out_until_dot() {
+        let dir = vault_with_hidden();
+        let mut app = app(&dir);
+        let names = |app: &App| app.tree.iter().map(|r| r.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&app), ["Projects", "Tasks", "Home"]);
+        // Not in the switcher, search, tasks, backlinks or tags.
+        press(&mut app, KeyCode::Char('p'));
+        assert!(listed(&app).iter().all(|p| p != "CLAUDE.md" && !p.starts_with("Archive/")), "{:?}", listed(&app));
+        typed(&mut app, "claude");
+        assert!(listed(&app).is_empty(), "{:?}", listed(&app));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "kitchen");
+        assert_eq!(listed(&app), ["Home.md"]);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('t'));
+        let shown = screen(&mut app);
+        assert!(!shown.contains("Agent chore") && !shown.contains("Archived chore"), "{shown}");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('#'));
+        let shown = screen(&mut app);
+        assert!(shown.contains("#home") && !shown.contains("#agents") && !shown.contains("#archived"), "{shown}");
+        press(&mut app, KeyCode::Esc);
+        app.open("Home.md", None, true);
+        press(&mut app, KeyCode::Char('b'));
+        assert!(!listed(&app).contains(&"CLAUDE.md".to_string()), "{:?}", listed(&app));
+        press(&mut app, KeyCode::Esc);
+        // A link to a hidden note still opens it, and it stays off the home page.
+        app.open("CLAUDE.md", None, true);
+        app.open("Home.md", None, true);
+        press(&mut app, KeyCode::Char('H'));
+        assert!(app.home.notes().iter().all(|p| p.as_str() != "CLAUDE.md"), "{:?}", app.home.notes());
+
+        // `.` shows them all, and again hides them.
+        press(&mut app, KeyCode::Char('.'));
+        assert!(app.show_hidden);
+        assert_eq!(names(&app), ["Archive", "Projects", "Tasks", "CLAUDE", "Home"]);
+        assert!(screen(&mut app).contains("Hidden files shown"));
+        press(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "kitchen");
+        let mut found = listed(&app);
+        found.sort();
+        assert_eq!(found, ["Archive/Old kitchen.md", "CLAUDE.md", "Home.md"]);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.home.notes().iter().any(|p| p.as_str() == "CLAUDE.md"), "{:?}", app.home.notes());
+        press(&mut app, KeyCode::Char('.'));
+        assert_eq!(names(&app), ["Projects", "Tasks", "Home"]);
+
+        // `files.hidden` names other files; `--hidden` starts with them shown.
+        app.set_hidden(vec!["Home.md".into()], false);
+        assert_eq!(names(&app), ["Projects", "Tasks", "CLAUDE"]);
+        app.set_hidden(vec![], true);
+        assert_eq!(names(&app).len(), 5);
+    }
+
     #[test]
     fn help_and_light_theme_draw() {
         let dir = vault();
         let mut app = App::new(dir.path().to_path_buf(), Theme::DAYLIGHT);
         press(&mut app, KeyCode::Char('?'));
-        assert!(screen(&mut app).contains("Keys"));
+        let shown = screen(&mut app);
+        assert!(shown.contains("Keys"), "{shown}");
+        assert!(shown.contains("show the hidden files"), "{shown}");
         press(&mut app, KeyCode::Char('x'));
         assert!(app.overlay.is_none());
         press(&mut app, KeyCode::Char('q'));

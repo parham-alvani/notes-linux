@@ -14,8 +14,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use daftar_core::{
-    Beautitab, Bookmarks, Candidate, Day, Git, GitStatus, NoteParser, QueryTask, QuickSwitcher, Quote, ReadingPlaces, SearchIndex,
-    SyncFailure, TagNode, TaskLine, TasksQuery, TreeNode, Vault, VaultEdits, VaultIndex, VaultTask, home, reading_places,
+    Beautitab, Bookmarks, Candidate, Day, ExcludedFiles, Git, GitStatus, NoteParser, QueryTask, QuickSwitcher, Quote, ReadingPlaces,
+    SearchIndex, SyncFailure, TagNode, TaskLine, TasksQuery, TreeNode, Vault, VaultEdits, VaultIndex, VaultTask, home, reading_places,
 };
 
 use super::markdown::{self, Block, Row};
@@ -160,6 +160,13 @@ pub struct App {
     pub git: Option<Git>,
     pub git_status: Option<GitStatus>,
     pub expanded: HashSet<String>,
+    /// What the lists leave out, as in the app: Obsidian's excluded files
+    /// and `files.hidden`, by these names; nothing while [show_hidden].
+    pub hidden: ExcludedFiles,
+    pub hidden_names: Vec<String>,
+    pub show_hidden: bool,
+    /// The tree without the hidden files, made again when the files change.
+    nodes: Vec<TreeNode>,
     pub tree: Vec<TreeRow>,
     pub tree_selected: usize,
     pub tree_scroll: usize,
@@ -205,6 +212,8 @@ impl App {
 
     fn with(root: PathBuf, theme: Theme, index: VaultIndex, search: SearchIndex) -> App {
         let git = Some(Git::new(&root)).filter(Git::is_repository);
+        let hidden_names: Vec<String> = daftar_core::HIDDEN_NAMES.map(String::from).to_vec();
+        let hidden = ExcludedFiles::load_with_names(&root, &hidden_names);
         let mut app = App {
             root,
             theme,
@@ -213,6 +222,10 @@ impl App {
             git,
             git_status: None,
             expanded: HashSet::new(),
+            hidden,
+            hidden_names,
+            show_hidden: false,
+            nodes: Vec::new(),
             tree: Vec::new(),
             tree_selected: 0,
             tree_scroll: 0,
@@ -232,9 +245,41 @@ impl App {
             areas: Areas::default(),
         };
         app.refresh_git();
+        app.refresh_nodes();
         app.rebuild_tree();
         app.refresh_home();
         app
+    }
+
+    /// The hidden files are the ones named [names] and Obsidian's excluded
+    /// files, and are listed anyway while [show]; the lists again.
+    pub fn set_hidden(&mut self, names: Vec<String>, show: bool) {
+        self.hidden = if show { ExcludedFiles::default() } else { ExcludedFiles::load_with_names(&self.root, &names) };
+        self.hidden_names = names;
+        self.show_hidden = show;
+        self.refresh_nodes();
+        self.rebuild_tree();
+        self.reread();
+    }
+
+    /// `.`: the hidden files shown, or hidden again, as Ctrl+Shift+. in the app.
+    pub fn toggle_hidden(&mut self) {
+        self.set_hidden(self.hidden_names.clone(), !self.show_hidden);
+        let what = if self.show_hidden { "Hidden files shown" } else { "Hidden files hidden" };
+        self.message = Some((what.into(), false));
+    }
+
+    /// Whether the lists leave [path] out. A link to it still opens it.
+    pub fn is_hidden(&self, path: &str) -> bool {
+        self.hidden.contains(path)
+    }
+
+    fn refresh_nodes(&mut self) {
+        self.nodes = if self.hidden.is_empty() {
+            self.index.tree().to_vec()
+        } else {
+            self.hidden.tree(&self.index.files, &self.index.empty_folders)
+        };
     }
 
     pub fn vault_name(&self) -> String {
@@ -250,7 +295,7 @@ impl App {
     pub fn rebuild_tree(&mut self) {
         let selected = self.tree.get(self.tree_selected).map(|row| row.path.clone());
         let mut rows = Vec::new();
-        flatten(self.index.tree(), 0, &self.expanded, &mut rows);
+        flatten(&self.nodes, 0, &self.expanded, &mut rows);
         self.tree = rows;
         self.tree_selected = selected.and_then(|path| self.tree.iter().position(|row| row.path == path)).unwrap_or(0);
     }
@@ -429,7 +474,7 @@ impl App {
             let read = fs::read_to_string(reading_places::state_file(&self.root, "places"))
                 .map(|data| ReadingPlaces::from_data(&data).recently_read(40))
                 .unwrap_or_default();
-            let recent = home::recent(&self.recent, &read, |p| files.contains(p), 8);
+            let recent = home::recent(&self.recent, &read, |p| files.contains(p) && !self.hidden.contains(p), 8);
             if !recent.is_empty() {
                 lists.push(("Recent", recent));
             }
@@ -560,6 +605,7 @@ impl App {
     pub fn changed(&mut self, paths: &[String]) {
         let changed: BTreeSet<String> = paths.iter().cloned().collect();
         self.index = Vault::update(&self.index, &changed, &self.root, Some(&self.search));
+        self.refresh_nodes();
         self.rebuild_tree();
         self.reread();
         self.refresh_git();
@@ -718,6 +764,7 @@ impl App {
         if loaded.message.is_some() {
             self.message = loaded.message;
         }
+        self.refresh_nodes();
         self.rebuild_tree();
         self.reread();
         self.refresh_git();
@@ -769,14 +816,15 @@ impl App {
             .index
             .files
             .iter()
+            .filter(|path| !self.is_hidden(path))
             .map(|path| {
                 let aliases = self.index.notes.get(path).map(|n| n.parsed.aliases.clone()).unwrap_or_default();
                 Candidate::new(path, &Vault::title(path), &aliases)
             })
             .collect();
         let found = if query.trim().is_empty() {
-            let mut paths = self.recent.clone();
-            paths.extend(self.index.notes.keys().filter(|p| !self.recent.contains(p)).take(LIMIT).cloned());
+            let mut paths: Vec<String> = self.recent.iter().filter(|p| !self.is_hidden(p)).cloned().collect();
+            paths.extend(self.index.notes.keys().filter(|p| !self.recent.contains(p) && !self.is_hidden(p)).take(LIMIT).cloned());
             paths.truncate(LIMIT);
             paths
         } else {
@@ -818,8 +866,10 @@ impl App {
         }
         let theme = self.theme;
         self.search
-            .search(query, 100)
+            .search(query, 200)
             .into_iter()
+            .filter(|hit| !self.is_hidden(&hit.path))
+            .take(100)
             .map(|hit| {
                 let mut spans = Vec::new();
                 for (n, piece) in hit.snippet.replace('\n', " ").split(['\u{1}', '\u{2}']).enumerate() {
@@ -840,7 +890,7 @@ impl App {
     /// none, every open task, the late ones first.
     pub fn open_tasks(&mut self) {
         let theme = self.theme;
-        let mut tasks = self.index.tasks();
+        let mut tasks = self.hidden.tasks(&self.index);
         tasks.sort_by(|a, b| (&a.path, a.task.line).cmp(&(&b.path, b.task.line)));
         let today = Day::today();
         let mut items = Vec::new();
@@ -910,7 +960,7 @@ impl App {
         };
         let theme = self.theme;
         let mut items: Vec<Item> = Vec::new();
-        for link in self.index.backlinks(&path) {
+        for link in self.index.backlinks(&path).iter().filter(|link| !self.hidden.contains(&link.source)) {
             let text = fs::read_to_string(self.root.join(&link.source)).unwrap_or_default();
             let line = text.split('\n').nth(link.line).unwrap_or("").trim().to_string();
             let (spans, _) = markdown::inline(&line, theme.muted(), &theme);
@@ -950,7 +1000,7 @@ impl App {
                 }
             }
         }
-        walk(self.index.tag_tree(), 0, &theme, &mut items);
+        walk(&self.hidden.tag_tree(&self.index), 0, &theme, &mut items);
         self.show_picker(PickerKind::Tags, "Tags", None, items);
     }
 
@@ -961,6 +1011,7 @@ impl App {
             .index
             .notes
             .values()
+            .filter(|n| !self.hidden.contains(&n.path))
             .filter(|n| n.parsed.tags.iter().any(|t| t.to_lowercase() == fold || t.to_lowercase().starts_with(&format!("{fold}/"))))
             .map(|n| &n.path)
             .collect();

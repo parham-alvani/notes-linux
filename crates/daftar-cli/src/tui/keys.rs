@@ -41,6 +41,7 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         KeyCode::Char('s') => app.start_sync(),
         KeyCode::Char('r') => app.reindex(),
         KeyCode::Char('H') => app.go_home(),
+        KeyCode::Char('.') => app.toggle_hidden(),
         KeyCode::Tab | KeyCode::BackTab => {
             let pane = app.note.is_some() || !app.home.notes().is_empty();
             app.focus = if app.focus == Focus::Sidebar && pane { Focus::Note } else { Focus::Sidebar };

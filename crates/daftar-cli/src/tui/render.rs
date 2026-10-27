@@ -418,7 +418,7 @@ fn draw_picker(frame: &mut Frame, theme: &Theme, picker: &mut Picker, area: Rect
     (rect, list, items)
 }
 
-pub const KEYS: [(&str, &str); 26] = [
+pub const KEYS: [(&str, &str); 27] = [
     ("Ctrl+P  p", "open a note by name"),
     ("/  Ctrl+F", "search the text of every note"),
     ("t", "tasks: the note's queries, else every open task"),
@@ -439,6 +439,7 @@ pub const KEYS: [(&str, &str); 26] = [
     ("e", "edit the note in $EDITOR"),
     ("s", "sync: commit, pull, push"),
     ("r", "read the vault again"),
+    (".", "show the hidden files, or hide them again"),
     ("?", "this help"),
     ("Esc", "close the list"),
     ("q  Ctrl+C", "quit"),

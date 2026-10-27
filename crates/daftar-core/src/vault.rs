@@ -572,6 +572,68 @@ impl ExcludedFiles {
             || (!self.names.is_empty() && self.names.contains(last_part(&folded)))
             || self.patterns.iter().any(|r| r.is_match(path))
     }
+
+    /// What the lists leave out in the vault at [root], as the settings file
+    /// says: Obsidian's filters and `files.hidden` (the files for AI agents
+    /// when it has no such key); nothing when `files.show_hidden` is on, or
+    /// when [show] asks for every file, as `--hidden` on the command line does.
+    pub fn from_config(root: &Path, config: &crate::config::ConfigFile, show: bool) -> ExcludedFiles {
+        if show || config.bool("files.show_hidden").unwrap_or(false) {
+            return ExcludedFiles::default();
+        }
+        ExcludedFiles::load_with_names(root, &Self::hidden_names(config))
+    }
+
+    /// `files.hidden` in [config], or [HIDDEN_NAMES] when it has no such key.
+    pub fn hidden_names(config: &crate::config::ConfigFile) -> Vec<String> {
+        config.strings("files.hidden").unwrap_or_else(|| HIDDEN_NAMES.map(String::from).to_vec())
+    }
+
+    /// The tasks of [index] in the notes that are not left out.
+    pub fn tasks(&self, index: &VaultIndex) -> Vec<VaultTask> {
+        index
+            .notes
+            .values()
+            .filter(|note| !self.contains(&note.path))
+            .flat_map(|note| note.parsed.tasks.iter().map(|task| VaultTask { path: note.path.clone(), task: task.clone() }))
+            .collect()
+    }
+
+    /// Notes per tag, counting only the notes that are not left out.
+    pub fn tags(&self, index: &VaultIndex) -> HashMap<String, usize> {
+        if self.is_empty() {
+            return index.tags().clone();
+        }
+        let mut tags: HashMap<String, usize> = HashMap::new();
+        for note in index.notes.values().filter(|note| !self.contains(&note.path)) {
+            for tag in &note.parsed.tags {
+                *tags.entry(tag.clone()).or_default() += 1;
+            }
+        }
+        tags
+    }
+
+    /// The tag pane's tree, from the notes that are not left out.
+    pub fn tag_tree(&self, index: &VaultIndex) -> Vec<TagNode> {
+        if self.is_empty() {
+            return index.tag_tree().to_vec();
+        }
+        TagNode::tree_of_notes(index.notes.values().filter(|note| !self.contains(&note.path)).map(|note| note.parsed.tags.as_slice()))
+    }
+}
+
+impl Vault {
+    /// Where a new picture goes: Obsidian's attachment folder for the vault,
+    /// `attachmentFolderPath` in `.obsidian/app.json`; the vault's root
+    /// without one, or with one beside the note (`./`), as the app pastes.
+    pub fn attachment_folder(root: &Path) -> String {
+        let Ok(text) = fs::read_to_string(root.join(".obsidian/app.json")) else { return String::new() };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return String::new() };
+        match json.get("attachmentFolderPath").and_then(|v| v.as_str()) {
+            Some(folder) if !folder.is_empty() && folder != "/" && !folder.starts_with("./") => folder.trim_matches('/').to_string(),
+            _ => String::new(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -777,6 +839,41 @@ mod tests {
         let a = &index.tag_tree()[0];
         assert!(a.tag == "a" && a.count == 3);
         assert_eq!(a.children.as_ref().unwrap().iter().map(|t| t.count).collect::<Vec<_>>(), [2, 1]);
+    }
+
+    #[test]
+    fn the_settings_file_says_what_is_hidden() {
+        let root = make_vault();
+        fs::write(root.path().join(".obsidian/app.json"), r#"{"userIgnoreFilters":["uploads/"],"attachmentFolderPath":"uploads/"}"#)
+            .unwrap();
+        let config = crate::ConfigFile::new("[files]\nhidden = [\"Plan.md\"]\n");
+        let hidden = ExcludedFiles::from_config(root.path(), &config, false);
+        assert!(hidden.contains("Projects/Alpha/Plan.md") && hidden.contains("uploads/logo.png"));
+        assert!(!hidden.contains("CLAUDE.md"));
+        // With no key, the files for AI agents.
+        assert!(ExcludedFiles::from_config(root.path(), &crate::ConfigFile::new(""), false).contains("Work/AGENTS.md"));
+        assert!(ExcludedFiles::from_config(root.path(), &config, true).is_empty());
+        let shown = crate::ConfigFile::new("[files]\nshow_hidden = true\n");
+        assert!(ExcludedFiles::from_config(root.path(), &shown, false).is_empty());
+        let index = Vault::index(root.path(), None);
+        assert!(hidden.tasks(&index).iter().all(|t| t.path != "Projects/Alpha/Plan.md"));
+        assert_eq!(Vault::attachment_folder(root.path()), "uploads");
+    }
+
+    #[test]
+    fn hidden_notes_tags_and_tasks_are_left_out() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("A.md"), "#shared #mine\n- [ ] One").unwrap();
+        fs::write(root.path().join("CLAUDE.md"), "#shared #agents\n- [ ] Two").unwrap();
+        let index = Vault::index(root.path(), None);
+        let hidden = ExcludedFiles::with_names::<&str, &str>(&[], &HIDDEN_NAMES);
+        let tags = hidden.tags(&index);
+        assert_eq!((tags.get("shared"), tags.get("agents")), (Some(&1), None));
+        let mut tree: Vec<String> = hidden.tag_tree(&index).into_iter().map(|t| t.tag).collect();
+        tree.sort();
+        assert_eq!(tree, ["mine", "shared"]);
+        assert_eq!(hidden.tasks(&index).len(), 1);
+        assert_eq!(ExcludedFiles::default().tasks(&index).len(), 2);
     }
 
     #[test]

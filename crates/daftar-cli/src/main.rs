@@ -23,8 +23,8 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use daftar_core::{
-    Candidate, Clock, ConfigFile, Day, Git, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions, SearchIndex, Side, SyncFailure,
-    TaskLine, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
+    Candidate, Clock, ConfigFile, Day, ExcludedFiles, Git, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions, SearchIndex, Side,
+    SyncFailure, TaskLine, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
 };
 
 #[derive(Parser)]
@@ -34,6 +34,10 @@ struct Cli {
     /// `vault` in ~/.config/daftar/config.toml.
     #[arg(long, global = true, env = "DAFTAR_VAULT")]
     vault: Option<PathBuf>,
+    /// Lists the hidden files too: Obsidian's excluded files and `files.hidden`
+    /// in the config file (the files for AI agents), as `files.show_hidden` does.
+    #[arg(long, global = true)]
+    hidden: bool,
     /// With none, the TUI on a terminal, else this help.
     #[command(subcommand)]
     command: Option<Command>,
@@ -212,24 +216,18 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<(), String> {
     let Some(command) = cli.command else {
         if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
-            return tui::run(vault(cli.vault)?);
+            return tui::run(vault(cli.vault)?, cli.hidden);
         }
         return Cli::command().print_help().map_err(|e| e.to_string());
     };
     let root = vault(cli.vault)?;
+    // What the lists leave out, as in the app: links to them still resolve.
+    let hidden = ExcludedFiles::from_config(&root, &config(), cli.hidden);
     match command {
-        Command::Tui => tui::run(root)?,
+        Command::Tui => tui::run(root, cli.hidden)?,
         Command::Find { query, limit } => {
             let index = Vault::index(&root, None);
-            let candidates: Vec<Candidate> = index
-                .files
-                .iter()
-                .map(|path| {
-                    let aliases = index.notes.get(path).map(|n| n.parsed.aliases.clone()).unwrap_or_default();
-                    Candidate::new(path, &Vault::title(path), &aliases)
-                })
-                .collect();
-            for path in QuickSwitcher::rank(&query.join(" "), &candidates, &[], limit) {
+            for path in find(&index, &hidden, &query.join(" "), limit) {
                 out!("{path}");
             }
         }
@@ -237,7 +235,9 @@ fn run(cli: Cli) -> Result<(), String> {
             let search = SearchIndex::new();
             Vault::index(&root, Some(&search));
             let terminal = std::io::stdout().is_terminal();
-            for hit in search.search(&query.join(" "), limit) {
+            // More asked for, so that [limit] are left once the hidden ones are out.
+            let hits = search.search(&query.join(" "), limit.saturating_add(100));
+            for hit in hits.into_iter().filter(|hit| !hidden.contains(&hit.path)).take(limit) {
                 out!("{}\t{}", hit.path, snippet(&hit.snippet, terminal));
             }
         }
@@ -248,8 +248,8 @@ fn run(cli: Cli) -> Result<(), String> {
                 Some("today") => Some(Day::today().to_string()),
                 Some(text) => Some(Day::parse(text).ok_or(format!("{text} is not a day (YYYY-MM-DD)"))?.to_string()),
             };
-            let mut tasks: Vec<_> = index
-                .tasks()
+            let mut tasks: Vec<_> = hidden
+                .tasks(&index)
                 .into_iter()
                 .filter(|t| all || !TaskLine::is_closed(t.task.status))
                 .filter(|t| path.as_deref().is_none_or(|p| t.path.starts_with(p)))
@@ -279,7 +279,7 @@ fn run(cli: Cli) -> Result<(), String> {
             } else {
                 vec![std::io::read_to_string(std::io::stdin()).map_err(|e| e.to_string())?]
             };
-            let mut tasks = index.tasks();
+            let mut tasks = hidden.tasks(&index);
             tasks.sort_by(|a, b| (&a.path, a.task.line).cmp(&(&b.path, b.task.line)));
             for source in sources {
                 let query = TasksQuery::parse(&source, file.as_deref());
@@ -319,14 +319,14 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Backlinks { note } => {
             let index = Vault::index(&root, None);
             let path = note_path(&index, &note)?;
-            for link in index.backlinks(&path) {
+            for link in index.backlinks(&path).iter().filter(|link| !hidden.contains(&link.source)) {
                 out!("{}:{}", link.source, link.line + 1);
             }
         }
         Command::Broken => {
             let index = Vault::index(&root, None);
             let mut broken = BTreeSet::new();
-            for note in index.notes.values() {
+            for note in index.notes.values().filter(|note| !hidden.contains(&note.path)) {
                 for link in &note.parsed.links {
                     if !link.target.is_empty() && !link.target.contains("://") && index.resolve(&link.target, &note.path).is_none() {
                         broken.insert((note.path.clone(), link.line + 1, link.target.clone()));
@@ -339,7 +339,8 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Command::Tags => {
             let index = Vault::index(&root, None);
-            let mut tags: Vec<_> = index.tags().iter().collect();
+            let counts = hidden.tags(&index);
+            let mut tags: Vec<_> = counts.iter().collect();
             tags.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
             for (tag, count) in tags {
                 out!("{count}\t#{tag}");
@@ -417,8 +418,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 text.join(" ")
             };
             let line = QuickCapture::line(&typed, task).ok_or("nothing to capture")?;
-            let config = ConfigFile::new(fs::read_to_string(ConfigFile::default_path()).unwrap_or_default());
-            let path = capture(&root, &config, &line)?;
+            let path = capture(&root, &config(), &line)?;
             out!("{path}\t{line}");
         }
         Command::Status => {
@@ -499,6 +499,25 @@ fn capture(root: &std::path::Path, config: &ConfigFile, line: &str) -> Result<St
     let target = config.string("capture.target").unwrap_or_else(|| "daily".into());
     let heading = config.string("capture.heading").unwrap_or_default();
     QuickCapture::capture(root, &target, &heading, line, Day::today(), Clock::now())
+}
+
+/// The files named like [query], as the quick switcher ranks them, without the hidden ones.
+fn find(index: &VaultIndex, hidden: &ExcludedFiles, query: &str, limit: usize) -> Vec<String> {
+    let candidates: Vec<Candidate> = index
+        .files
+        .iter()
+        .filter(|path| !hidden.contains(path))
+        .map(|path| {
+            let aliases = index.notes.get(path).map(|n| n.parsed.aliases.clone()).unwrap_or_default();
+            Candidate::new(path, &Vault::title(path), &aliases)
+        })
+        .collect();
+    QuickSwitcher::rank(query, &candidates, &[], limit)
+}
+
+/// The settings file, `~/.config/daftar/config.toml`; empty when there is none.
+fn config() -> ConfigFile {
+    ConfigFile::new(fs::read_to_string(ConfigFile::default_path()).unwrap_or_default())
 }
 
 fn repository(root: &std::path::Path) -> Result<Git, String> {
@@ -637,6 +656,22 @@ mod tests {
     fn a_snippet_is_bold_only_on_a_terminal() {
         assert_eq!(snippet("a \u{1}plan\u{2}\nnext", false), "a plan next");
         assert_eq!(snippet("a \u{1}plan\u{2}", true), "a \x1b[1mplan\x1b[0m");
+    }
+
+    #[test]
+    fn find_leaves_the_hidden_files_out_unless_asked() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".obsidian")).unwrap();
+        fs::create_dir_all(root.path().join("Work")).unwrap();
+        fs::write(root.path().join("Work/CLAUDE.md"), "rules").unwrap();
+        fs::write(root.path().join("Work/Claude notes.md"), "mine").unwrap();
+        let index = Vault::index(root.path(), None);
+        let hidden = ExcludedFiles::from_config(root.path(), &ConfigFile::new(""), false);
+        assert_eq!(find(&index, &hidden, "claude", 10), ["Work/Claude notes.md"]);
+        let all = ExcludedFiles::from_config(root.path(), &ConfigFile::new(""), true);
+        assert_eq!(find(&index, &all, "claude", 10).len(), 2);
+        // A hidden note still opens by its name.
+        assert_eq!(note_path(&index, "CLAUDE").unwrap(), "Work/CLAUDE.md");
     }
 
     #[test]
