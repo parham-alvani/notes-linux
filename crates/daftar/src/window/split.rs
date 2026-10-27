@@ -84,12 +84,20 @@ impl Window {
                 pane
             }
         };
-        // Half and half, as the Mac draws its panes.
+        // Half and half, as the Mac draws its panes. A split put back at
+        // launch has no width yet: halved at its first frame with one.
         let width = paned.width();
         if width > 0 {
             paned.set_position(width / 2);
         } else {
-            paned.set_position(600);
+            paned.add_tick_callback(|paned, _| {
+                let width = paned.width();
+                if width <= 0 {
+                    return glib::ControlFlow::Continue;
+                }
+                paned.set_position(width / 2);
+                glib::ControlFlow::Break
+            });
         }
         self.start_pane(&pane);
         self.mark_focus(tab);
