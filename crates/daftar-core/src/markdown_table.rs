@@ -173,11 +173,26 @@ impl MarkdownTable {
         TableTab { lines: table, row: r as usize, column: c as usize }
     }
 
-    /// A new row under [lines]' last, the table formatted, the cursor in its first cell.
+    /// A new row under [lines]' last, the table formatted, the cursor in its
+    /// first cell. Under a header with no delimiter row yet, the delimiter
+    /// row comes first, as Advanced Tables makes it.
     pub fn new_row(lines: &[String]) -> Vec<String> {
         let mut all = lines.to_vec();
-        all.push(Self::empty_row(Self::cells(&lines[0]).len()));
+        let columns = Self::cells(&lines[0]).len();
+        if lines.len() == 1 && !Self::is_delimiter(&lines[0]) {
+            all.push(format!("|{}", " --- |".repeat(columns.max(1))));
+        }
+        all.push(Self::empty_row(columns));
         Self::format(&all)
+    }
+
+    /// `| --- | :--: |`: the row under the header.
+    pub fn is_delimiter(line: &str) -> bool {
+        Self::is_row(line)
+            && Self::cells(line).iter().all(|cell| {
+                let cell = cell.trim();
+                cell.len() >= 3 && cell.trim_matches(':').chars().all(|c| c == '-') && !cell.trim_matches(':').is_empty()
+            })
     }
 
     fn empty_row(columns: usize) -> String {
@@ -211,6 +226,16 @@ fn is_nonspacing_mark(v: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn return_under_a_header_makes_the_delimiter_row() {
+        let lines = vec!["| a | b |".to_string()];
+        assert_eq!(MarkdownTable::new_row(&lines), ["| a   | b   |", "| --- | --- |", "|     |     |"]);
+        let table = vec!["| a | b |".to_string(), "| --- | --- |".to_string(), "| 1 | 2 |".to_string()];
+        assert_eq!(MarkdownTable::new_row(&table).len(), 4);
+        assert!(MarkdownTable::is_delimiter("| :--- | ---: |"));
+        assert!(!MarkdownTable::is_delimiter("| a | --- |"));
+    }
 
     fn lines(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()

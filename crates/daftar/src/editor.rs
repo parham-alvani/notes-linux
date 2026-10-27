@@ -729,15 +729,31 @@ impl Editor {
     }
 
     /// Return continues a list, and on an empty item ends it; at the end of
-    /// a table row it makes a new row.
+    /// a table row it makes a new row, and on an empty last row ends the table.
     fn on_return(&self) -> bool {
         let line = self.current_line();
         let cursor = self.selection();
-        if !cursor.is_empty() || cursor.start != line.end {
+        if !cursor.is_empty() {
             return false;
         }
         let text = self.slice(line.clone());
-        if let Some((range, lines, row)) = self.table_block()
+        // In a table row Return goes to a new row from any cell, as Tab
+        // leaves the cursor inside one; elsewhere only at the line's end.
+        let table = self.table_block();
+        if table.is_none() && cursor.start != line.end {
+            return false;
+        }
+        // Return on the table's empty last row ends the table: the row goes,
+        // and a blank line follows it, or the next line would be a row too.
+        if let Some((_, lines, row)) = &table
+            && MarkdownTable::cells(&text).iter().all(|cell| cell.trim().is_empty())
+            && *row + 1 == lines.len()
+            && *row > 0
+        {
+            self.replace(line.clone(), "\n", Some(line.start + 1..line.start + 1));
+            return true;
+        }
+        if let Some((range, lines, row)) = table
             && !MarkdownTable::cells(&text).iter().all(String::is_empty)
         {
             let formatted = MarkdownTable::new_row(&lines[..=row]);

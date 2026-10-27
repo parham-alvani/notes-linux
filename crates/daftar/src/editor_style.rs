@@ -386,13 +386,20 @@ impl Styler {
     }
 
     /// Each line on the side its text reads from, whatever its syntax starts
-    /// with (`- [x] سلام` is right to left), and Persian in its face.
+    /// with (`- [x] سلام` is right to left), Persian in its face, and a
+    /// table's rows in the code font.
     fn style_script(&self, chars: &[char], range: Range<usize>) {
         let iter = |offset: usize| self.buffer.iter_at_offset(offset as i32);
         let mut start = range.start;
         while start < range.end.min(chars.len()) {
             let end = chars[start..].iter().position(|&c| c == '\n').map_or(chars.len(), |n| start + n);
             let line: String = chars[start..end].iter().collect();
+            // A table's rows in the code font, so the columns its
+            // formatting lines up stand in line.
+            if daftar_core::MarkdownTable::is_row(&line) && line.trim_end().ends_with('|') {
+                let table = self.tag("table", || Look { mono: true, ..Look::default() });
+                self.buffer.apply_tag(&table, &iter(start), &iter(end));
+            }
             if direction::contains_rtl(&line) {
                 if direction::of_line(&line).is_some_and(|rtl| direction::first_strong(&line) != Some(rtl)) {
                     let flip = self.tag("flip", || Look { flip: true, ..Look::default() });

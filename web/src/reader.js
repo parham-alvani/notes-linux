@@ -397,7 +397,9 @@ function taskChips(item, today) {
       taskChip({ emoji, day, rule: repeat ? rule : undefined, priority, closed, today }),
     );
     const span = document.createElement("span");
-    span.innerHTML = html;
+    // Chips side by side keep their gap as a margin: a space between them
+    // would be struck through with a done task's text.
+    span.innerHTML = html.replace(/(<\/span>)\s+(?=<span class="query-date)/g, "$1");
     node.replaceWith(...span.childNodes);
   }
 }
@@ -694,7 +696,7 @@ function search(text) {
       }
     }
   }
-  CSS.highlights?.set("find", new Highlight(...finder.ranges));
+  mark("find", finder.ranges);
   if (finder.ranges.length > 0) {
     // The first match below the top of the window that can be seen.
     const first = finder.ranges.findIndex((range) => {
@@ -704,8 +706,29 @@ function search(text) {
     finder.at = (first >= 0 ? first : 0) - 1;
     step(1);
   } else {
-    CSS.highlights?.delete("find-current");
+    mark("find-current", []);
     showCount();
+  }
+}
+
+/**
+ * [ranges] as the highlight [name]. One Highlight is kept and changed in
+ * place, and the page drawn again: WebKitGTK leaves the old marks painted
+ * when a highlight is replaced by a new one.
+ */
+function mark(name, ranges) {
+  if (!globalThis.CSS?.highlights) return;
+  let highlight = CSS.highlights.get(name);
+  if (!highlight) {
+    highlight = new Highlight();
+    CSS.highlights.set(name, highlight);
+  }
+  highlight.clear();
+  for (const range of ranges) highlight.add(range);
+  const note = document.getElementById("note");
+  if (note) {
+    note.classList.toggle("repaint");
+    void note.offsetHeight;
   }
 }
 
@@ -721,7 +744,7 @@ function step(direction) {
   if (finder.ranges.length === 0) return;
   finder.at = (finder.at + direction + finder.ranges.length) % finder.ranges.length;
   const range = finder.ranges[finder.at];
-  CSS.highlights?.set("find-current", new Highlight(range));
+  mark("find-current", [range]);
   const box = range.getBoundingClientRect();
   if (box.top < 80 || box.bottom > window.innerHeight - 40) window.scrollBy({ top: box.top - window.innerHeight / 3, behavior: motion() });
   showCount();
@@ -745,16 +768,17 @@ function openFind() {
 
 function closeFind() {
   finder.bar?.classList.remove("is-open");
-  CSS.highlights?.delete("find");
-  CSS.highlights?.delete("find-current");
+  mark("find", []);
+  mark("find-current", []);
   finder.ranges = [];
 }
 
-function renderProperties(properties) {
+/** The front matter as a card; a value with `[[links]]` links, as in Obsidian. */
+function renderProperties(properties, note) {
   if (!properties || properties.length === 0) return "";
-  const rows = properties
-    .map(([key, value]) => `<tr><th>${escape(key)}</th><td dir="auto">${escape(value)}</td></tr>`)
-    .join("");
+  const cell = (value) =>
+    String(value).includes("[[") ? renderInline(String(value), { path: note.path, links: note.links }) : escape(value);
+  const rows = properties.map(([key, value]) => `<tr><th>${escape(key)}</th><td dir="auto">${cell(value)}</td></tr>`).join("");
   return `<table class="properties">${rows}</table>`;
 }
 
@@ -788,7 +812,7 @@ window.daftar = {
     board.el = null;
     main.innerHTML =
       `<h1 class="inline-title" dir="${RTL_FIRST.test(note.title) ? "rtl" : "auto"}">${escape(note.title)}</h1>` +
-      renderProperties(note.properties) +
+      renderProperties(note.properties, note) +
       render(note.text, { path: note.path, links: note.links });
     // A base is a wide table: it gets the whole window.
     main.classList.toggle("is-base", Boolean(note.base));
