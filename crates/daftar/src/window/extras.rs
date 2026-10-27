@@ -70,10 +70,6 @@ impl Window {
     /// file; what Neovide writes shows in the reader as it is saved.
     fn open_in_neovide(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
-        let Some(neovide) = neovide() else {
-            self.notice("Neovide is not installed: pacman -S neovide.");
-            return;
-        };
         let tab = self.tab();
         let Some(path) = tab.current().filter(|path| Vault::is_note(path)) else {
             self.notice("Open a note first.");
@@ -89,11 +85,22 @@ impl Window {
         } else {
             store.places.get(&path).unwrap_or(0)
         };
+        self.launch_neovide(&path, line);
+    }
+
+    /// Neovide on the note at [path], its cursor on [line] (from 0), in a
+    /// window of its own; the reader follows the file as Neovide writes it.
+    pub(super) fn launch_neovide(&self, path: &str, line: usize) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let Some(neovide) = neovide() else {
+            self.notice("Neovide is not installed: pacman -S neovide.");
+            return;
+        };
         let spawned = std::process::Command::new(neovide)
             .current_dir(&store.root)
             .arg("--")
             .arg(format!("+{}", line + 1))
-            .arg(store.root.join(&path))
+            .arg(store.root.join(path))
             .spawn();
         match spawned {
             // Neovide leaves its first process at once; it is waited for off the window.

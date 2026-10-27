@@ -210,6 +210,16 @@ fn editor_group(
         });
     }
     group.add(&live);
+    let neovide = adw::SwitchRow::builder()
+        .title("Edit in Neovide")
+        .subtitle("Ctrl+E opens the note in Neovide's own window; the page follows what it writes")
+        .active(file.bool("editor.neovide").unwrap_or(false))
+        .build();
+    {
+        let write = write.clone();
+        neovide.connect_active_notify(move |row| write("editor.neovide", Value::Bool(row.is_active())));
+    }
+    group.add(&neovide);
     let vim = adw::SwitchRow::builder().title("Edit with Neovim").active(file.bool("editor.vim_mode").unwrap_or(false)).build();
     let path = adw::EntryRow::builder().title("nvim (empty finds it on $PATH)").show_apply_button(true).build();
     path.set_text(&file.string("editor.nvim").unwrap_or_default());

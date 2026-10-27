@@ -861,6 +861,11 @@ impl Window {
             self.toasts.add_toast(adw::Toast::new("Only a note can be edited here."));
             return;
         }
+        // `editor.neovide`: Ctrl+E edits in Neovide's own window instead.
+        if self.settings.borrow().file.bool("editor.neovide").unwrap_or(false) {
+            self.launch_neovide(&shown.path, shown.line.unwrap_or(0));
+            return;
+        }
         if !self.one_editor(&tab) {
             return;
         }

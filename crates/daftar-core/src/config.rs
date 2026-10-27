@@ -201,6 +201,8 @@ persian_calendar = false
 # Away from the cursor's line, the marks (**, ==, [[ ]], #, a link's
 # address) hide, so the note reads as it will look.
 live_preview = true
+# Ctrl+E opens the note in Neovide's own window instead of the editor.
+neovide = false
 # Edit with your own Neovim: it owns the buffer and the file, and the
 # editor shows it. Needs `nvim` (pacman -S neovim).
 vim_mode = false
