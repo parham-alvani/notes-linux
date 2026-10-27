@@ -1523,21 +1523,14 @@ fn folder_of(path: &str) -> &str {
     path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("")
 }
 
-/// The Latin layout's key for a shortcut typed on another layout: Ctrl, Alt
-/// or Super with a key whose letter is not Latin, as the key in the same
-/// place types with no layout but the Latin one.
+/// The Latin layout's key for a shortcut typed on another layout: Ctrl,
+/// Alt or Super with a key whose letter is not Latin.
 fn latin_shortcut_key(key: gtk::gdk::Key, keycode: u32, state: gtk::gdk::ModifierType) -> Option<gtk::gdk::Key> {
     use gtk::gdk::ModifierType;
-    use gtk::gdk::prelude::DisplayExtManual;
-    if !state.intersects(ModifierType::CONTROL_MASK | ModifierType::ALT_MASK | ModifierType::SUPER_MASK)
-        || key.to_unicode().is_none_or(|c| c.is_ascii())
-    {
+    if !state.intersects(ModifierType::CONTROL_MASK | ModifierType::ALT_MASK | ModifierType::SUPER_MASK) {
         return None;
     }
-    let keys = gtk::gdk::Display::default()?.map_keycode(keycode)?;
-    keys.into_iter()
-        .find(|(place, value)| place.level() == 0 && value.to_unicode().is_some_and(|c| c.is_ascii_graphic()))
-        .map(|(_, value)| value)
+    crate::neovim_session::latin_key(key, keycode)
 }
 
 #[cfg(test)]

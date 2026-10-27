@@ -85,6 +85,8 @@ struct Vim {
     /// The top line the wheel left the page at, so Neovim's answer does not
     /// pull the page to it again.
     wheel_top: Option<usize>,
+    /// The command line holds a `:` command, not a search.
+    command: bool,
 }
 
 /// Hears Neovim's mode as the bar names it, or `None` without Neovim.
@@ -591,20 +593,20 @@ impl Editor {
         // Before the text view's own handling, so Return and Tab are ours.
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let this = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, state| match this.upgrade() {
-            Some(this) => this.key(key, state),
+        keys.connect_key_pressed(move |_, key, keycode, state| match this.upgrade() {
+            Some(this) => this.key(key, keycode, state),
             None => glib::Propagation::Proceed,
         });
         self.view.add_controller(keys);
     }
 
-    fn key(self: &Rc<Self>, key: gdk::Key, state: gdk::ModifierType) -> glib::Propagation {
+    fn key(self: &Rc<Self>, key: gdk::Key, keycode: u32, state: gdk::ModifierType) -> glib::Propagation {
         let control = state.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
         let alt = state.contains(gdk::ModifierType::ALT_MASK);
         let super_ = state.contains(gdk::ModifierType::SUPER_MASK);
         if self.vim.borrow().is_some() {
-            return self.vim_key(key, control, alt, super_, shift);
+            return self.vim_key(key, keycode, control, alt, super_, shift);
         }
         if !control && !alt && self.popup.key(key) {
             return glib::Propagation::Stop;
@@ -1232,8 +1234,9 @@ impl Editor {
             (self.notice)("Neovim was not found, so the note is edited without it. Set editor.nvim in the settings to its path.");
             return;
         };
-        session.set_langmap(&crate::neovim_session::keyboard_langmap());
-        *self.vim.borrow_mut() = Some(Vim { session, mirror: None, mode: "n".into(), start_line: line, save_soon: None, wheel_top: None });
+        session.set_persian(&crate::neovim_session::keyboard_langmap());
+        *self.vim.borrow_mut() =
+            Some(Vim { session, mirror: None, mode: "n".into(), start_line: line, save_soon: None, wheel_top: None, command: false });
         self.glide.set_on(true);
         self.glide.set_shape(Shape::Block);
         let generation = self.generation.get() + 1;
@@ -1328,7 +1331,12 @@ impl Editor {
                     self.glide.scroll_to_line(offset);
                 }
             }
-            Event::Status(text) => self.vim_status(&text),
+            Event::Status(text) => {
+                if let Some(vim) = self.vim.borrow_mut().as_mut() {
+                    vim.command = text.starts_with(':');
+                }
+                self.vim_status(&text);
+            }
             Event::Menu { items, selected, cmdline } => self.vim_menu(items, selected, cmdline),
             Event::MenuSelect(at) => self.popup.select(at),
             Event::MenuHide => self.popup.close(),
@@ -1501,13 +1509,13 @@ impl Editor {
         if !only_control || !neovims {
             return false;
         }
-        self.vim_key(key, true, false, false, false);
+        self.vim_key(key, 0, true, false, false, false);
         true
     }
 
     /// Keys in Neovim mode go to Neovim, but for the window's own Ctrl+E,
     /// Ctrl+S and Ctrl+V (a paste, which Neovim takes as `nvim_paste`).
-    fn vim_key(self: &Rc<Self>, key: gdk::Key, control: bool, alt: bool, super_: bool, shift: bool) -> glib::Propagation {
+    fn vim_key(self: &Rc<Self>, key: gdk::Key, keycode: u32, control: bool, alt: bool, super_: bool, shift: bool) -> glib::Propagation {
         let running = self.vim.borrow().as_ref().is_some_and(|v| v.mirror.is_some());
         if control && !alt && !shift && matches!(key.to_lower(), gdk::Key::e | gdk::Key::s) {
             return glib::Propagation::Proceed;
@@ -1530,6 +1538,7 @@ impl Editor {
         }
         // A message over the bar goes with the next key, as a hit-enter prompt does.
         self.long_message.popdown();
+        let key = self.vim_persian_key(key, keycode);
         let name = key.name().map(|n| n.to_string()).unwrap_or_default();
         if let Some(keys) = neovim_session::vim_key(&name, key.to_unicode(), control, alt, super_, shift)
             && let Some(vim) = self.vim.borrow().as_ref()
@@ -1537,6 +1546,31 @@ impl Editor {
             vim.session.input(&keys);
         }
         glib::Propagation::Stop
+    }
+
+    /// Persian writing in Neovim: a `:` command takes the Latin letters of
+    /// the keys typed on the Persian layout (a search, `/`, keeps Persian),
+    /// and on a right-to-left line the arrows move the way they point.
+    fn vim_persian_key(&self, key: gdk::Key, keycode: u32) -> gdk::Key {
+        let vim = self.vim.borrow();
+        let Some(vim) = vim.as_ref() else { return key };
+        if vim.mode.starts_with('c') && vim.command {
+            return neovim_session::latin_key(key, keycode).unwrap_or(key);
+        }
+        let swapped = match key {
+            gdk::Key::Left => gdk::Key::Right,
+            gdk::Key::Right => gdk::Key::Left,
+            gdk::Key::KP_Left => gdk::Key::KP_Right,
+            gdk::Key::KP_Right => gdk::Key::KP_Left,
+            _ => return key,
+        };
+        let at = self.buffer.iter_at_mark(&self.buffer.get_insert());
+        let mut end = at;
+        let mut start = self.buffer.iter_at_line(at.line()).unwrap_or(at);
+        start.set_line_offset(0);
+        end.forward_to_line_end();
+        let line = self.buffer.text(&start, &end, false);
+        if daftar_core::text::direction::first_strong(&line) == Some(true) { swapped } else { key }
     }
 
     /// A click moves Neovim's cursor where it landed.

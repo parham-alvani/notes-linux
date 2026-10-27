@@ -168,11 +168,10 @@ impl Glide {
         let buffer = self.view.buffer();
         let at = buffer.iter_at_mark(&buffer.get_insert());
         let place = self.view.iter_location(&at);
-        let (mut x, y, height) = (place.x() as f64, place.y() as f64, place.height().max(1) as f64);
-        // A right-to-left letter's box runs left from where it starts.
-        if place.width() < 0 {
-            x += place.width() as f64;
-        }
+        let (start, y, height) = (place.x() as f64, place.y() as f64, place.height().max(1) as f64);
+        // A right-to-left letter's box runs left from where it starts; a
+        // bar stands where the letter starts, on its right.
+        let x = if place.width() < 0 { start + place.width() as f64 } else { start };
         let wide = if place.width() != 0 && !at.ends_line() {
             place.width().abs() as f64
         } else {
@@ -181,7 +180,7 @@ impl Glide {
         };
         match self.shape.get() {
             Shape::Block => [x, y, wide, height],
-            Shape::Bar | Shape::Hidden => [x, y, 2.0, height],
+            Shape::Bar | Shape::Hidden => [if place.width() < 0 { start - 2.0 } else { x }, y, 2.0, height],
             Shape::Underline => [x, y + height - 3.0, wide, 3.0],
         }
     }

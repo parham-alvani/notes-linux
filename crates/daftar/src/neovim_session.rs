@@ -93,8 +93,14 @@ vim.o.autoread = true
 send()
 "#;
 
-/// The keyboard's `langmap`, unless the person's config has one.
-const LANGMAP: &str = "if vim.o.langmap == '' then vim.o.langmap = ... end";
+/// Persian in Neovim: the keyboard's `langmap`, unless the person's config
+/// has one, and the half space (ZWNJ) inside a word, so `w` and `ciw` take
+/// `می‌خواهم` whole.
+const PERSIAN: &str = r#"
+local map = ...
+if map ~= '' and vim.o.langmap == '' then vim.o.langmap = map end
+vim.opt_local.iskeyword:append('8204')
+"#;
 
 /// The keyboard's layouts beside the Latin one as Neovim's `langmap`
 /// (`VimKeys::langmap`): each key's letter on another layout paired with
@@ -113,6 +119,20 @@ pub fn keyboard_langmap() -> String {
         }
     }
     VimKeys::langmap(&pairs)
+}
+
+/// The Latin layout's key in the place of [key], typed on another layout
+/// (`ح` is `p`), at the same level, so Shift stays Shift. `None` for a key
+/// that is Latin already, or a layout with no Latin beside it.
+pub fn latin_key(key: gtk::gdk::Key, keycode: u32) -> Option<gtk::gdk::Key> {
+    if key.to_unicode().is_none_or(|c| c.is_ascii()) {
+        return None;
+    }
+    let keys = gtk::gdk::Display::default()?.map_keycode(keycode)?;
+    let level = keys.iter().find(|(_, value)| *value == key)?.0.level();
+    keys.into_iter()
+        .find(|(place, value)| place.level() == level && value.to_unicode().is_some_and(|c| c.is_ascii_graphic()))
+        .map(|(_, value)| value)
 }
 
 /// Scrolls the window to start at the line given.
@@ -213,11 +233,10 @@ impl NeovimSession {
         let _ = self.commands.send(Command::Notify(method.into(), params));
     }
 
-    /// Normal mode's keys on another keyboard layout: see [keyboard_langmap].
-    pub fn set_langmap(&self, map: &str) {
-        if !map.is_empty() {
-            self.notify("nvim_exec_lua", vec![LANGMAP.into(), MsgValue::Array(vec![map.into()])]);
-        }
+    /// Normal mode's keys on another keyboard layout ([keyboard_langmap]),
+    /// and Persian words whole: see [PERSIAN].
+    pub fn set_persian(&self, langmap: &str) {
+        self.notify("nvim_exec_lua", vec![PERSIAN.into(), MsgValue::Array(vec![langmap.into()])]);
     }
 
     /// Keys in Neovim's notation, as `nvim_input` takes them.
