@@ -7,10 +7,11 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 
 use daftar_core::{
-    BoardDrop, Bookmarks, CalendarDay, CalendarWeek, Day, Failure, Iconic, SearchIndex, TaskFields, Vault, VaultEdits, VaultIndex,
-    VaultTask,
+    BoardDrop, Bookmarks, CalendarDay, CalendarWeek, Clock, DailyNotes, Day, Failure, Iconic, PeriodicNotes, ReplaceMatch, ReplacePattern,
+    SearchIndex, TagRename, TaskFields, TaskSorter, Templates, Vault, VaultEdits, VaultIndex, VaultReplace, VaultTask,
 };
 
 use crate::places::PlaceBook;
@@ -25,13 +26,18 @@ pub struct VaultStore {
     pub bookmarks: RefCell<Bookmarks>,
     /// The Iconic plugin's icons and colors.
     pub iconic: RefCell<Iconic>,
-    /// Where each note was being read.
+    /// Where each note was being read, and when.
     pub places: Rc<PlaceBook>,
+    /// The Daily notes plugin's folder and format, as periods.
+    pub periodic: PeriodicNotes,
+    /// The Templates plugin's folder and formats.
+    pub templates: Templates,
 }
 
 impl VaultStore {
     pub fn new(root: PathBuf, index: VaultIndex, search: Arc<SearchIndex>) -> VaultStore {
         let (bookmarks, iconic, places) = (Bookmarks::load(&root), Iconic::load(&root), PlaceBook::load(&root));
+        let (periodic, templates) = (PeriodicNotes::new(DailyNotes::read(&root)), Templates::read(&root));
         VaultStore {
             root,
             index: RefCell::new(index),
@@ -40,7 +46,111 @@ impl VaultStore {
             bookmarks: RefCell::new(bookmarks),
             iconic: RefCell::new(iconic),
             places,
+            periodic,
+            templates,
         }
+    }
+
+    /// The periodic note of the period [day] falls in, made from the Daily
+    /// notes plugin's template when it is not there yet; its vault path.
+    pub fn periodic_note(&self, day: Day) -> Result<String, String> {
+        let path = self.periodic.path_for(day);
+        if self.index().files.contains(&path) {
+            return Ok(path);
+        }
+        let template = &self.periodic.config.template;
+        let source = match template.is_empty() {
+            true => String::new(),
+            false => self.text(&if Vault::is_note(template) { template.clone() } else { format!("{template}.md") }).unwrap_or_default(),
+        };
+        let name = Vault::title(&path);
+        let body = self.templates.fill(&source, &name, day, Clock::now());
+        let made = crate::files::create_note(&self.root, &self.index(), &name, crate::files::parent(&path), &body);
+        let made = made.map_err(|e| e.to_string())?;
+        self.refresh(std::slice::from_ref(&made));
+        self.wrote();
+        Ok(made)
+    }
+
+    /// The template notes of the vault, for New Note.
+    pub fn template_notes(&self) -> Vec<String> {
+        self.templates.templates(&self.index().files)
+    }
+
+    /// [template]'s text filled for a note named [name], made now.
+    pub fn filled(&self, template: &str, name: &str) -> String {
+        self.text(template).map(|text| self.templates.fill(&text, name, Day::today(), Clock::now())).unwrap_or_default()
+    }
+
+    /// The notes read before that changed on disk since, by a pull or
+    /// another app: the newest change first, with when, seconds since 1970.
+    pub fn updated_since_read(&self) -> Vec<(String, i64)> {
+        let index = self.index();
+        let mut updated: Vec<(i64, String)> = index
+            .notes
+            .values()
+            .filter_map(|note| {
+                let read = self.places.last_read(&note.path)?;
+                let modified = note.modified.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+                // Two seconds, as on the Mac: a save the app made a moment after a read is not news.
+                (modified - read > 2).then(|| (modified, note.path.clone()))
+            })
+            .collect();
+        updated.sort_by(|a, b| b.cmp(a));
+        updated.into_iter().map(|(modified, path)| (path, modified)).collect()
+    }
+
+    /// The tasks of [path] sorted as the vault's Task Sorter plugin does:
+    /// done and cancelled first in each section. False when none moved.
+    pub fn sort_tasks(&self, path: &str) -> Result<bool, Failure> {
+        let mut sorted = false;
+        self.write(path, |text| {
+            Ok(match TaskSorter::sort(text) {
+                Some(result) => {
+                    sorted = true;
+                    result
+                }
+                None => text.to_string(),
+            })
+        })?;
+        Ok(sorted)
+    }
+
+    /// The notes that have the tag [tag] or one under it.
+    pub fn notes_tagged(&self, tag: &str) -> Vec<String> {
+        let mut paths: Vec<String> =
+            self.index().notes.values().filter(|n| TagRename::has(&n.parsed.tags, tag)).map(|n| n.path.clone()).collect();
+        paths.sort();
+        paths
+    }
+
+    /// Renames the tag [old], and those under it, in every note that has it,
+    /// several notes at a time. The notes written, and those that failed.
+    pub fn rename_tag(&self, old: &str, new: &str) -> (Vec<String>, Vec<String>) {
+        if !TagRename::is_valid(old) || !TagRename::is_valid(new) {
+            return (vec![], vec![]);
+        }
+        let paths: Vec<String> = self.notes_tagged(old).into_iter().filter(|p| file_in(p, &self.root).is_some()).collect();
+        let (mut written, mut failed) = (Vec::new(), Vec::new());
+        for (path, outcome) in paths.iter().zip(VaultEdits::apply_all(&paths, &self.root, |text| TagRename::rename(text, old, new))) {
+            match outcome {
+                Ok(true) => written.push(path.clone()),
+                Ok(false) => {}
+                Err(_) => failed.push(path.clone()),
+            }
+            self.places.mark_read(path);
+        }
+        if !written.is_empty() {
+            self.refresh(&written);
+            self.wrote();
+        }
+        (written, failed)
+    }
+
+    /// Replaces the [chosen] matches of [note], read again and refused when
+    /// its matches are not the [shown] ones.
+    pub fn replace(&self, path: &str, pattern: &ReplacePattern, shown: &[ReplaceMatch], chosen: &BTreeSet<usize>) -> Result<(), Failure> {
+        self.write(path, |text| VaultReplace::replace(text, pattern, shown, chosen).map_err(|_| Failure::TextMoved))
     }
 
     pub fn connect_wrote(&self, wrote: impl Fn() + 'static) {
@@ -71,6 +181,9 @@ impl VaultStore {
         }
         VaultEdits::apply(path, &self.root, |text| VaultEdits::toggle_task(text, line, status, Day::today()))?;
         self.refresh(&[path.to_string()]);
+        if self.places.last_read(path).is_some() {
+            self.places.mark_read(path);
+        }
         self.wrote();
         Ok(())
     }
@@ -94,6 +207,10 @@ impl VaultStore {
         }
         let result = VaultEdits::apply(path, &self.root, edit);
         self.refresh(&[path.to_string()]);
+        // The app's own change does not make the note "updated since you read".
+        if result.is_ok() && self.places.last_read(path).is_some() {
+            self.places.mark_read(path);
+        }
         if result.is_ok()
             && let Some(wrote) = self.wrote.borrow().as_ref()
         {

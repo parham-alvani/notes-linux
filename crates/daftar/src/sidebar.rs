@@ -18,6 +18,10 @@ pub struct Sidebar {
     model: gtk::TreeListModel,
     marks: gtk::ListBox,
     marks_section: gtk::Box,
+    /// The notes changed on disk since they were read, as the Mac lists them.
+    updated: gtk::ListBox,
+    updated_title: gtk::Label,
+    updated_section: gtk::Box,
     shared: Rc<Shared>,
 }
 
@@ -178,6 +182,35 @@ impl Sidebar {
         let tree = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&list).build();
 
         // The bookmarks, as the Mac and Obsidian show them: above the tree.
+        // Above them, the notes a pull or another app changed since they were read.
+        let updated = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["navigation-sidebar"]).build();
+        {
+            let on_open = on_open.clone();
+            updated.connect_row_activated(move |_, row| on_open(row.widget_name().trim_start_matches("u:")));
+        }
+        let updated_title =
+            gtk::Label::builder().xalign(0.0).hexpand(true).margin_start(14).css_classes(["caption-heading", "dim-label"]).build();
+        let read_all = gtk::Button::builder()
+            .label("Mark All as Read")
+            .css_classes(["flat", "caption"])
+            .action_name("win.mark-read")
+            .action_target(&"".to_variant())
+            .build();
+        let updated_head = gtk::Box::builder().margin_top(6).margin_end(6).build();
+        updated_head.append(&updated_title);
+        updated_head.append(&read_all);
+        let updated_section = gtk::Box::builder().orientation(gtk::Orientation::Vertical).visible(false).build();
+        updated_section.append(&updated_head);
+        updated_section.append(
+            &gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .propagate_natural_height(true)
+                .max_content_height(180)
+                .child(&updated)
+                .build(),
+        );
+        updated_section.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
         let marks = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["navigation-sidebar"]).build();
         marks.connect_row_activated(move |_, row| on_open(row.widget_name().trim_start_matches("b:")));
         let marks_section = gtk::Box::builder().orientation(gtk::Orientation::Vertical).visible(false).build();
@@ -200,9 +233,45 @@ impl Sidebar {
         marks_section.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         let widget = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
+        widget.append(&updated_section);
         widget.append(&marks_section);
         widget.append(&tree);
-        Sidebar { widget, root, model, marks, marks_section, shared }
+        Sidebar { widget, root, model, marks, marks_section, updated, updated_title, updated_section, shared }
+    }
+
+    /// The notes changed on disk since they were read, newest change first,
+    /// with when they changed, seconds since 1970; at most 12 show.
+    pub fn set_updated(&self, notes: &[(String, i64)]) {
+        self.updated.remove_all();
+        let now = glib::DateTime::now_local().map(|d| d.to_unix()).unwrap_or(0);
+        for (path, modified) in notes.iter().take(12) {
+            let row = gtk::Box::builder().spacing(8).build();
+            row.append(&gtk::Image::builder().icon_name("starred-symbolic").css_classes(["accent"]).build());
+            row.append(
+                &gtk::Label::builder()
+                    .label(Vault::title(path))
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .build(),
+            );
+            row.append(&gtk::Label::builder().label(ago(now - modified)).css_classes(["caption", "dim-label"]).build());
+            let item = gtk::ListBoxRow::builder().child(&row).tooltip_text(format!("{path} changed since you last read it")).build();
+            item.set_widget_name(&format!("u:{path}"));
+            let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
+            let path = path.clone();
+            click.connect_pressed(move |gesture, _, x, y| {
+                let Some(widget) = gesture.widget() else { return };
+                let menu = gio::Menu::new();
+                menu.append_item(&item_for("Mark as Read", "win.mark-read", &path));
+                menu.append_item(&item_for("Open in New Tab", "win.open-tab", &path));
+                popup(&widget, &menu, x, y);
+            });
+            item.add_controller(click);
+            self.updated.append(&item);
+        }
+        self.updated_title.set_label(&format!("Updated since you read · {}", notes.len()));
+        self.updated_section.set_visible(!notes.is_empty());
     }
 
     /// Shows [tree], with the folders that were open still open.
@@ -273,6 +342,16 @@ impl Sidebar {
             self.marks.append(&item);
         }
         self.marks_section.set_visible(!shown.is_empty());
+    }
+}
+
+/// [seconds] ago, short: `now`, `5m`, `3h`, `2d`.
+fn ago(seconds: i64) -> String {
+    match seconds.max(0) {
+        s if s < 60 => "now".into(),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
     }
 }
 

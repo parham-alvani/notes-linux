@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use daftar_core::{Day, Recurrence, TaskFields, TaskLine, Vault};
+use daftar_core::{BoardDrop, Day, Postpone, Recurrence, TaskFields, TaskLine, Vault, VaultTask};
 
 use crate::store::VaultStore;
 
@@ -85,6 +85,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
         }
     };
     let fields = Rc::new(RefCell::new(before.clone()));
+    let postponable = !TaskLine::is_closed(before.status) && (before.due.is_some() || before.scheduled.is_some() || before.start.is_some());
     let save = gtk::Button::builder().label("Save").css_classes(["suggested-action", "pill"]).build();
     let refresh = {
         let (fields, before, save) = (fields.clone(), before.clone(), save.clone());
@@ -219,9 +220,10 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
             dialog.close();
         });
     }
+    let saved: Rc<dyn Fn()> = Rc::new(saved);
+    let (store_for_postpone, saved_for_postpone) = (store.clone(), saved.clone());
     {
-        let (dialog, path, error) = (dialog.clone(), path.to_string(), error.clone());
-        let saved = Rc::new(saved);
+        let (dialog, path, error, saved) = (dialog.clone(), path.to_string(), error.clone(), saved.clone());
         save.connect_clicked(move |_| {
             let now = fields.borrow().clone();
             match store.edit_task(&path, line, &before, &now) {
@@ -237,13 +239,47 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
         });
     }
     refresh();
+    // "Postpone", the Tasks plugin's menu, for an open task with a date.
+    let postpone = postponable.then(|| postpone_button(&dialog, &store_for_postpone, path, line, saved_for_postpone.clone()));
+    let bar = gtk::Box::builder().spacing(8).build();
+    if let Some(postpone) = &postpone {
+        bar.append(postpone);
+    }
+    buttons.set_hexpand(true);
     buttons.append(&cancel);
     buttons.append(&save);
-    content.append(&buttons);
+    bar.append(&buttons);
+    content.append(&bar);
     dialog.set_default_widget(Some(&save));
     text.set_activates_default(true);
     dialog.present(Some(parent));
     text.grab_focus();
+}
+
+/// "Postpone": by a day to a month, as the Tasks plugin's menu moves the
+/// task's due date, else its scheduled, else its start date. The line is
+/// read again and the move refused when it changed.
+fn postpone_button(dialog: &adw::Dialog, store: &Rc<VaultStore>, path: &str, line: usize, saved: Rc<dyn Fn()>) -> gtk::MenuButton {
+    let choices = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
+    let popover = gtk::Popover::builder().child(&choices).build();
+    for amount in Postpone::ALL {
+        let button = gtk::Button::builder().label(format!("By {}", amount.title())).css_classes(["flat"]).build();
+        let (dialog, store, path, saved, popover) = (dialog.clone(), store.clone(), path.to_string(), saved.clone(), popover.clone());
+        button.connect_clicked(move |_| {
+            popover.popdown();
+            let task = store
+                .text(&path)
+                .and_then(|text| text.split('\n').nth(line).and_then(|raw| TaskLine::parse(raw.trim_end_matches('\r'), line, "")));
+            let moved =
+                task.is_some_and(|task| store.move_task(&VaultTask { path: path.clone(), task }, &BoardDrop::Postpone(amount)).is_ok());
+            dialog.close();
+            if moved {
+                saved();
+            }
+        });
+        choices.append(&button);
+    }
+    gtk::MenuButton::builder().label("Postpone").popover(&popover).css_classes(["pill"]).build()
 }
 
 /// A title on the left, the controls on the right.

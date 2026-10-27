@@ -31,6 +31,7 @@ use crate::watcher::FileWatcher;
 
 mod file_actions;
 mod tab;
+mod vault_tools;
 
 pub(crate) use tab::Tab;
 
@@ -515,6 +516,7 @@ impl Window {
             this.terminal.set_folder(folder.clone());
             *this.store.borrow_mut() = Some(store.clone());
             this.after_load(&store);
+            this.refresh_updated();
             this.plan_notifications();
             let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if let Some(page) = this.split.sidebar() {
@@ -747,6 +749,13 @@ impl Window {
             recent.insert(0, path.to_string());
             recent.truncate(RECENT);
         }
+        // The note left and the note shown are both read as they are now.
+        if let Some(current) = tab.current() {
+            store.places.mark_read(&current);
+        }
+        if Vault::is_note(path) {
+            store.places.mark_read(path);
+        }
         if record && let Some(current) = tab.current().filter(|current| current != path) {
             tab.back.borrow_mut().push(current);
             tab.forward.borrow_mut().clear();
@@ -761,6 +770,7 @@ impl Window {
             self.update_history();
             self.refresh_inspector();
         }
+        self.refresh_updated();
     }
 
     /// Back when [backward], else Forward: the notes that are gone are skipped.
@@ -830,6 +840,7 @@ impl Window {
             (index.files.clone(), index.empty_folders.clone())
         };
         store.refresh(&changed.iter().cloned().collect::<Vec<_>>());
+        self.refresh_updated();
         self.git.refresh();
         self.plan_notifications();
         self.refresh_inspector();
@@ -910,6 +921,7 @@ impl Window {
             command("Actual Size", "View", "win.actual-size", "Ctrl+0"),
             command("Open Vault…", "File", "win.open-vault", "Ctrl+Shift+O"),
         ];
+        commands.extend(self.vault_tool_commands());
         if self.git.button.is_visible() {
             commands.push(command("Sync Now", "Git", "win.sync", "Ctrl+Shift+S"));
             commands.push(command("Pull", "Git", "win.pull", ""));
@@ -1015,6 +1027,7 @@ impl Window {
 
     fn add_actions(&self) {
         self.add_file_actions();
+        self.add_vault_tools();
         let quick_open = gio::SimpleAction::new("quick-open", None);
         let this = self.clone();
         quick_open.connect_activate(move |_, _| this.palette(Mode::Files, ""));

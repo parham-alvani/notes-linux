@@ -36,6 +36,21 @@ impl PlaceBook {
         self.places.borrow().recently_read(limit)
     }
 
+    /// When the note at [path] was last on screen, in seconds since 1970.
+    pub fn last_read(&self, path: &str) -> Option<i64> {
+        self.places.borrow().last_read(path)
+    }
+
+    /// The note at [path] read now: a change on disk before this is not news.
+    pub fn mark_read(self: &std::rc::Rc<Self>, path: &str) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        if self.last_read(path) == Some(now) {
+            return;
+        }
+        self.places.borrow_mut().mark_read(path, now);
+        self.later();
+    }
+
     pub fn set(self: &std::rc::Rc<Self>, path: &str, line: usize) {
         if self.get(path) == Some(line) {
             return;

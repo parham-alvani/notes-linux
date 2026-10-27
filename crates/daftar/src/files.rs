@@ -283,11 +283,24 @@ pub fn present(
     // The name, for everything but a move and the Trash.
     let entry = gtk::Entry::builder().activates_default(true).build();
     let chosen: Rc<std::cell::RefCell<Option<String>>> = Rc::new(std::cell::RefCell::new(None));
+    // A new note can start from one of the Templates plugin's notes.
+    let templates = if matches!(action, Action::NewNote { .. }) { store.template_notes() } else { vec![] };
+    let template = gtk::DropDown::from_strings(
+        &std::iter::once("No template".to_string())
+            .chain(templates.iter().map(|t| short_name(t)))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
     match &action {
         Action::NewNote { folder } => {
             let free = VaultMoves::free_name("Untitled", "md", folder, &store.index().files);
             entry.set_text(&short_name(&free));
             extra.append(&entry);
+            if !templates.is_empty() {
+                extra.append(&template);
+            }
         }
         Action::Extract { folder, text } => {
             let name = EditorCommands::extract_name(text);
@@ -338,9 +351,15 @@ pub fn present(
         }
         let name = entry.text().to_string();
         let result: Result<Done, String> = match &action {
-            Action::NewNote { folder } => create_note(&store.root, &store.index(), &name, folder, "")
-                .map(|path| Done { changed: BTreeSet::from([path.clone()]), open: Some(path), ..Done::default() })
-                .map_err(|e| e.to_string()),
+            Action::NewNote { folder } => {
+                let body = match (template.selected() as usize).checked_sub(1).and_then(|at| templates.get(at)) {
+                    Some(path) => store.filled(path, name.trim()),
+                    None => String::new(),
+                };
+                create_note(&store.root, &store.index(), &name, folder, &body)
+                    .map(|path| Done { changed: BTreeSet::from([path.clone()]), open: Some(path), ..Done::default() })
+                    .map_err(|e| e.to_string())
+            }
             Action::Extract { folder, text } => {
                 let created = create_note(&store.root, &store.index(), &name, folder, &EditorCommands::extract_body(text));
                 created

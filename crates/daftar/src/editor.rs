@@ -28,7 +28,10 @@ use adw::prelude::*;
 use gtk::{gdk, glib};
 use sourceview5::prelude::*;
 
-use daftar_core::{BufferMirror, Candidate, Day, EditorCommands, Fuzzy, MarkdownTable, QuickSwitcher, Return, Snippet, Vault, VaultMoves};
+use daftar_core::{
+    BufferMirror, Candidate, Day, EditorCommands, Fuzzy, HtmlMarkdown, MarkdownTable, QuickSwitcher, Return, Snippet, TaskSorter, Vault,
+    VaultMoves,
+};
 
 #[path = "editor_media.rs"]
 mod media;
@@ -564,13 +567,36 @@ impl Editor {
             gdk::Key::Return | gdk::Key::KP_Enter if plain && !shift => stop(self.on_return()),
             gdk::Key::Tab if plain && !shift => stop(self.on_tab(false)),
             gdk::Key::ISO_Left_Tab | gdk::Key::Tab if plain && shift => stop(self.on_tab(true)),
+            gdk::Key::Up | gdk::Key::Down if alt && !control && shift => {
+                let edit = EditorCommands::duplicate_lines(&self.text(), self.selection(), key == gdk::Key::Up);
+                self.replace(edit.range, &edit.text, Some(edit.selection));
+                glib::Propagation::Stop
+            }
             gdk::Key::Up | gdk::Key::Down if alt && !control => {
                 self.move_lines(key == gdk::Key::Up);
                 glib::Propagation::Stop
             }
             gdk::Key::BackSpace if plain => stop(self.on_backspace()),
             gdk::Key::v | gdk::Key::V if control && !alt && !shift => stop(self.paste()),
+            // The clipboard's plain text, never converted.
+            gdk::Key::v | gdk::Key::V if control && !alt && shift => {
+                self.paste_plain();
+                glib::Propagation::Stop
+            }
+            // Ctrl+Alt+1 to Ctrl+Alt+6 make the line a heading, Ctrl+Alt+0 plain text.
+            _ if control && alt && !shift && heading_level(key).is_some() => {
+                let line = self.current_line();
+                let headed = EditorCommands::heading(&self.slice(line.clone()), heading_level(key).unwrap_or(0));
+                let end = line.start + headed.chars().count();
+                self.replace(line, &headed, Some(end..end));
+                glib::Propagation::Stop
+            }
             _ if control && !alt => match key.to_lower() {
+                gdk::Key::k if shift => {
+                    let edit = EditorCommands::delete_lines(&self.text(), self.selection());
+                    self.replace(edit.range, &edit.text, Some(edit.selection));
+                    glib::Propagation::Stop
+                }
                 gdk::Key::b if !shift => {
                     self.wrap("**");
                     glib::Propagation::Stop
@@ -1021,24 +1047,58 @@ impl Editor {
             return true;
         }
         let selection = self.selection();
-        if text && !selection.is_empty() && !self.slice(selection.clone()).contains('\n') {
+        let on_words = !selection.is_empty() && !self.slice(selection.clone()).contains('\n');
+        let html = formats.contain_mime_type("text/html");
+        if text && (on_words || html) {
             let this = Rc::downgrade(self);
             glib::spawn_future_local(async move {
                 let Ok(Some(pasted)) = clipboard.read_text_future().await else { return };
-                let Some(this) = this.upgrade() else { return };
-                let pasted = pasted.trim().to_string();
-                if EditorCommands::is_web_address(&pasted) {
+                // A web address pasted on selected words makes them a link to it.
+                let address = pasted.trim().to_string();
+                if on_words && EditorCommands::is_web_address(&address) {
+                    let Some(this) = this.upgrade() else { return };
                     let label = this.slice(selection.clone());
-                    let end = selection.start + label.chars().count() + pasted.chars().count() + 4;
-                    this.replace(selection, &format!("[{label}]({pasted})"), Some(end..end));
-                } else {
-                    let at = selection.start + pasted.chars().count();
-                    this.replace(selection, &pasted, Some(at..at));
+                    let end = selection.start + label.chars().count() + address.chars().count() + 4;
+                    this.replace(selection, &format!("[{label}]({address})"), Some(end..end));
+                    return;
                 }
+                // A web page or a document pasted as rich text keeps its
+                // headings, links and lists as Markdown. Ctrl+Shift+V pastes
+                // the plain text.
+                let markdown = match html {
+                    true => read_html(&clipboard).await.and_then(|html| HtmlMarkdown::convert(&html)),
+                    false => None,
+                };
+                let Some(this) = this.upgrade() else { return };
+                let text = markdown.unwrap_or_else(|| pasted.to_string());
+                let at = selection.start + text.chars().count();
+                this.replace(selection, &text, Some(at..at));
             });
             return true;
         }
         false
+    }
+
+    /// Ctrl+Shift+V: the clipboard's text as it is.
+    fn paste_plain(self: &Rc<Self>) {
+        let clipboard = self.view.clipboard();
+        let this = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let Ok(Some(pasted)) = clipboard.read_text_future().await else { return };
+            let Some(this) = this.upgrade() else { return };
+            let selection = this.selection();
+            let at = selection.start + pasted.chars().count();
+            this.replace(selection, &pasted, Some(at..at));
+        });
+    }
+
+    /// The note's tasks sorted as the vault's Task Sorter plugin does, as
+    /// one step to undo; false when they are in order already.
+    pub fn sort_tasks(&self) -> bool {
+        let Some(sorted) = TaskSorter::sort(&self.text()) else { return false };
+        let cursor = self.cursor().min(sorted.chars().count());
+        self.replace(0..self.buffer.char_count().max(0) as usize, &sorted, Some(cursor..cursor));
+        true
     }
 
     fn paste_picture(&self, texture: &gdk::Texture) {
@@ -1382,6 +1442,31 @@ impl Editor {
 }
 
 /// The snippets of the slash menu, with today's date and this minute in them.
+/// The heading level a digit key with Ctrl+Alt asks for: 0 for plain text.
+fn heading_level(key: gdk::Key) -> Option<usize> {
+    key.to_unicode().and_then(|c| c.to_digit(10)).filter(|d| *d <= 6).map(|d| d as usize)
+}
+
+/// The clipboard's `text/html`, as a browser or an office app puts it there:
+/// UTF-8, or UTF-16 with its byte order mark.
+async fn read_html(clipboard: &gdk::Clipboard) -> Option<String> {
+    let (stream, _) = clipboard.read_future(&["text/html"], glib::Priority::DEFAULT).await.ok()?;
+    let mut bytes = Vec::new();
+    loop {
+        let chunk = stream.read_bytes_future(64 * 1024, glib::Priority::DEFAULT).await.ok()?;
+        if chunk.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Some(match bytes.as_slice() {
+        [0xFF, 0xFE, rest @ ..] => {
+            String::from_utf16_lossy(&rest.as_chunks::<2>().0.iter().map(|p| u16::from_le_bytes(*p)).collect::<Vec<_>>())
+        }
+        _ => String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
 fn slash_snippets() -> Vec<Snippet> {
     EditorCommands::slash_commands(Day::today(), &chrono::Local::now().format("%H:%M").to_string())
 }
