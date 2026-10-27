@@ -212,6 +212,15 @@ impl Window {
             periodic_nav: periodic_nav.clone(),
         };
         *opener.borrow_mut() = Some(this.clone());
+        {
+            let opener = opener.clone();
+            this.sidebar.connect_tag(move |tag| {
+                let window = opener.borrow().clone();
+                if let Some(window) = window {
+                    window.palette(Mode::Text, &format!("#{tag}"));
+                }
+            });
+        }
 
         // The sidebar.
         let side_header = adw::HeaderBar::new();
@@ -455,6 +464,7 @@ impl Window {
                 match store.create_note_for_link(target, from) {
                     Ok(path) => {
                         this.sidebar.set_tree(&store.tree());
+                        this.sidebar.set_tags(&store.tag_tree());
                         this.go_in(&tab, &path, None, None, true);
                         if this.is_chosen(&tab) {
                             this.toggle_edit();
@@ -681,6 +691,7 @@ impl Window {
             }
             this.recent.borrow_mut().clear();
             this.sidebar.set_tree(&store.tree());
+            this.sidebar.set_tags(&store.tag_tree());
             {
                 let git = this.git.clone();
                 store.connect_wrote(move || git.edited());
@@ -1084,6 +1095,7 @@ impl Window {
             action.set_state(&show.to_variant());
         }
         self.sidebar.set_tree(&store.tree());
+        self.sidebar.set_tags(&store.tag_tree());
         self.refresh_updated();
         self.refresh_homes();
         self.refresh_inspector();
@@ -1147,6 +1159,8 @@ impl Window {
         if moved {
             self.sidebar.set_tree(&store.tree());
         }
+        // An edit can add or drop a tag in a note that stays.
+        self.sidebar.set_tags(&store.tag_tree());
         if moved {
             self.refresh_marks();
         }

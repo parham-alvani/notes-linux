@@ -18,6 +18,7 @@ impl Window {
         self.sidebar.set_root(store.root.clone());
         self.sidebar.set_iconic(store.iconic.borrow().clone());
         self.sidebar.set_tree(&store.tree());
+        self.sidebar.set_tags(&store.tag_tree());
         self.refresh_marks();
     }
 

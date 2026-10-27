@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use daftar_core::{BookmarkEntry, Canvas, Icon, Iconic, TreeNode, Vault};
+use daftar_core::{BookmarkEntry, Canvas, Icon, Iconic, TagNode, TreeNode, Vault};
 
 pub struct Sidebar {
     pub widget: gtk::Box,
@@ -25,6 +25,10 @@ pub struct Sidebar {
     updated_title: gtk::Label,
     read_all: gtk::Button,
     updated_section: gtk::Box,
+    /// The vault's tags as a tree, under the files, as on the Mac.
+    tags: gio::ListStore,
+    tags_title: gtk::Label,
+    tags_section: gtk::Box,
     shared: Rc<Shared>,
 }
 
@@ -35,6 +39,8 @@ struct Shared {
     bookmarked: RefCell<HashSet<String>>,
     /// The vault's folder, for the file a dragged row carries.
     root: RefCell<Option<std::path::PathBuf>>,
+    /// What a click on a tag does: the window lists its notes.
+    on_tag: RefCell<Option<Rc<dyn Fn(&str)>>>,
 }
 
 fn node_of(item: &glib::Object) -> Option<TreeNode> {
@@ -284,11 +290,43 @@ impl Sidebar {
         marks_section.append(&marks_scroll);
         marks_section.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
+        let (tags, tags_title, tags_section) = tag_section(&shared);
         let widget = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
         widget.append(&updated_section);
         widget.append(&marks_section);
         widget.append(&tree);
-        Sidebar { widget, root, model, marks, marks_section, updated, updated_title, read_all, updated_section, shared }
+        widget.append(&tags_section);
+        Sidebar {
+            widget,
+            root,
+            model,
+            marks,
+            marks_section,
+            updated,
+            updated_title,
+            read_all,
+            updated_section,
+            tags,
+            tags_title,
+            tags_section,
+            shared,
+        }
+    }
+
+    /// [handler] gets the tag (`a/b`, without `#`) a click on a tag row picks.
+    pub fn connect_tag(&self, handler: impl Fn(&str) + 'static) {
+        *self.shared.on_tag.borrow_mut() = Some(Rc::new(handler));
+    }
+
+    /// The tags, as `TagNode::tree` makes them; the section hides with none.
+    pub fn set_tags(&self, tags: &[TagNode]) {
+        self.tags.remove_all();
+        for node in tags {
+            self.tags.append(&glib::BoxedAnyObject::new(node.clone()));
+        }
+        let all: usize = count_tags(tags);
+        self.tags_title.set_label(&format!("Tags · {all}"));
+        self.tags_section.set_visible(!tags.is_empty());
     }
 
     /// The notes changed on disk since they were read, newest change first,
@@ -414,6 +452,130 @@ fn ago(seconds: i64) -> String {
         s if s < 3600 => format!("{}m", s / 60),
         s if s < 86_400 => format!("{}h", s / 3600),
         s => format!("{}d", s / 86_400),
+    }
+}
+
+/// Every tag in [nodes] and under them.
+fn count_tags(nodes: &[TagNode]) -> usize {
+    nodes.iter().map(|node| 1 + node.children.as_deref().map_or(0, count_tags)).sum()
+}
+
+fn tag_of(item: &glib::Object) -> Option<TagNode> {
+    item.downcast_ref::<glib::BoxedAnyObject>().map(|boxed| boxed.borrow::<TagNode>().clone())
+}
+
+/// The tag tree under the files: a heading that folds it, and a row per tag
+/// in the tag's own color, with the notes it has; a click lists the notes, a
+/// right click renames or copies the tag. The tint of a tag is the reader's.
+fn tag_section(shared: &Rc<Shared>) -> (gio::ListStore, gtk::Label, gtk::Box) {
+    let tags = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let model = gtk::TreeListModel::new(tags.clone(), false, false, |item| {
+        let children = tag_of(item)?.children?;
+        let store = gio::ListStore::new::<glib::BoxedAnyObject>();
+        for node in &children {
+            store.append(&glib::BoxedAnyObject::new(node.clone()));
+        }
+        Some(store.upcast())
+    });
+    let selection = gtk::NoSelection::new(Some(model));
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row.append(&gtk::Label::builder().label("#").css_classes(["tint", "heading"]).build());
+        row.append(
+            &gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["tint"]).build(),
+        );
+        row.append(&gtk::Label::builder().valign(gtk::Align::Center).css_classes(["daftar-count"]).build());
+        let expander = gtk::TreeExpander::new();
+        expander.set_child(Some(&row));
+        item.set_child(Some(&expander));
+        let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
+        let weak = item.downgrade();
+        click.connect_pressed(move |gesture, _, x, y| {
+            let Some(item) = weak.upgrade() else { return };
+            let Some(node) = item.item().and_downcast::<gtk::TreeListRow>().and_then(|row| row.item()).as_ref().and_then(tag_of) else {
+                return;
+            };
+            let Some(widget) = gesture.widget() else { return };
+            let menu = gio::Menu::new();
+            menu.append_item(&item_for("Rename Tag…", "win.rename-tag", &node.tag));
+            menu.append_item(&item_for("Copy Tag", "win.copy-text", &format!("#{}", node.tag)));
+            popup(&widget, &menu, x, y);
+        });
+        expander.add_controller(click);
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let Some(expander) = item.child().and_downcast::<gtk::TreeExpander>() else { return };
+        let Some(row) = item.item().and_downcast::<gtk::TreeListRow>() else { return };
+        expander.set_list_row(Some(&row));
+        let Some(node) = row.item().as_ref().and_then(tag_of) else { return };
+        let Some(content) = expander.child().and_downcast::<gtk::Box>() else { return };
+        let tint = format!("t-{}", tag_tint(&node.tag));
+        let (Some(mark), Some(name), Some(count)) = (
+            content.first_child().and_downcast::<gtk::Label>(),
+            content.first_child().and_then(|w| w.next_sibling()).and_downcast::<gtk::Label>(),
+            content.last_child().and_downcast::<gtk::Label>(),
+        ) else {
+            return;
+        };
+        mark.set_css_classes(&["tint", "heading", tint.as_str()]);
+        name.set_css_classes(&["tint", tint.as_str()]);
+        name.set_text(&node.name);
+        count.set_text(&node.count.to_string());
+        count.set_css_classes(&["daftar-count", tint.as_str()]);
+        content.update_property(&[gtk::accessible::Property::Label(&format!("#{}, {} notes", node.tag, node.count))]);
+    });
+    let list = gtk::ListView::new(Some(selection), Some(factory));
+    list.set_single_click_activate(true);
+    list.add_css_class("navigation-sidebar");
+    {
+        let shared = shared.clone();
+        list.connect_activate(move |list, position| {
+            let Some(row) = list.model().and_then(|m| m.item(position)).and_downcast::<gtk::TreeListRow>() else { return };
+            let Some(node) = row.item().as_ref().and_then(tag_of) else { return };
+            let handler = shared.on_tag.borrow().clone();
+            if let Some(handler) = handler {
+                handler(&node.tag);
+            }
+        });
+    }
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .max_content_height(260)
+        .child(&list)
+        .build();
+    let title = gtk::Label::builder().xalign(0.0).hexpand(true).css_classes(["caption-heading", "dim-label"]).build();
+    let arrow = gtk::Image::from_icon_name("pan-down-symbolic");
+    let head_box = gtk::Box::builder().spacing(4).margin_start(8).build();
+    head_box.append(&title);
+    head_box.append(&arrow);
+    let head = gtk::Button::builder().child(&head_box).css_classes(["flat"]).tooltip_text("Show or hide the tags").build();
+    {
+        let (scroll, arrow) = (scroll.clone(), arrow.clone());
+        head.connect_clicked(move |_| {
+            let open = !scroll.is_visible();
+            scroll.set_visible(open);
+            arrow.set_icon_name(Some(if open { "pan-down-symbolic" } else { "pan-end-symbolic" }));
+        });
+    }
+    let section = gtk::Box::builder().orientation(gtk::Orientation::Vertical).visible(false).build();
+    section.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    section.append(&head);
+    section.append(&scroll);
+    (tags, title, section)
+}
+
+/// The tint a tag's color is, from the reader's colors by tag
+/// (`editor_style::tag_color`), as the sidebar's palette names them.
+fn tag_tint(tag: &str) -> &'static str {
+    match crate::editor_style::tag_color(tag) {
+        "orange" => "accent",
+        "chartreuse" | "green" => "green",
+        "vividYellow" => "yellow",
+        other => ["aqua", "pink", "purple", "blue", "red"].into_iter().find(|t| *t == other).unwrap_or("accent"),
     }
 }
 

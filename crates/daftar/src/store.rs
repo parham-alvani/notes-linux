@@ -80,6 +80,11 @@ impl VaultStore {
         excluded.tree(&index.files, &index.empty_folders)
     }
 
+    /// The tags as the sidebar shows them, without the hidden notes'.
+    pub fn tag_tree(&self) -> Vec<daftar_core::TagNode> {
+        self.excluded.borrow().tag_tree(&self.index())
+    }
+
     /// The open tasks' notes' tasks, without the hidden notes', for Today and the board.
     pub fn listed_tasks(&self) -> Vec<VaultTask> {
         let excluded = self.excluded.borrow();

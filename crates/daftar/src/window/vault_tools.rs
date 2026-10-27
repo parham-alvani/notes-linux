@@ -38,6 +38,14 @@ impl Window {
             this.rename_tag(&tag);
         });
         self.window.add_action(&rename_tag);
+        let copy = gio::SimpleAction::new("copy-text", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        copy.connect_activate(move |_, target| {
+            let text = target.and_then(|t| t.get::<String>()).unwrap_or_default();
+            this.window.clipboard().set_text(&text);
+            this.toasts.add_toast(adw::Toast::new(&format!("Copied {text}")));
+        });
+        self.window.add_action(&copy);
         let replace = gio::SimpleAction::new("replace-in-vault", None);
         let this = self.clone();
         replace.connect_activate(move |_, _| this.replace_in_vault());
