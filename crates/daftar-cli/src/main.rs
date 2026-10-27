@@ -397,7 +397,13 @@ fn run(cli: Cli) -> Result<(), String> {
                 None => {
                     for revision in history {
                         let moved = if revision.path == path { String::new() } else { format!("\t{}", revision.path) };
-                        out!("{}\t{}\t{}\t{}{moved}", &revision.hash[..12.min(revision.hash.len())], revision.date.format("%Y-%m-%d %H:%M"), revision.author, revision.subject);
+                        out!(
+                            "{}\t{}\t{}\t{}{moved}",
+                            &revision.hash[..12.min(revision.hash.len())],
+                            revision.date.format("%Y-%m-%d %H:%M"),
+                            revision.author,
+                            revision.subject
+                        );
                     }
                 }
             }
@@ -492,7 +498,7 @@ fn side(side: Side) -> &'static str {
 fn capture(root: &std::path::Path, config: &ConfigFile, line: &str) -> Result<String, String> {
     let target = config.string("capture.target").unwrap_or_else(|| "daily".into());
     let heading = config.string("capture.heading").unwrap_or_default();
-    QuickCapture::capture(root, &target, &heading, line, chrono::Local::now())
+    QuickCapture::capture(root, &target, &heading, line, Day::today(), Clock::now())
 }
 
 fn repository(root: &std::path::Path) -> Result<Git, String> {
@@ -581,7 +587,8 @@ mod tests {
         let root = root.path();
         fs::create_dir_all(root.join(".obsidian")).unwrap();
         fs::create_dir_all(root.join("Templates")).unwrap();
-        fs::write(root.join(".obsidian/daily-notes.json"), r#"{"format":"YYYY-MM-DD","folder":"Journal","template":"Templates/Day"}"#).unwrap();
+        fs::write(root.join(".obsidian/daily-notes.json"), r#"{"format":"YYYY-MM-DD","folder":"Journal","template":"Templates/Day"}"#)
+            .unwrap();
         fs::write(root.join("Templates/Day.md"), "# {{title}}\n## Inbox\n\n## Log\n").unwrap();
         fs::write(root.join("Inbox.md"), "# Inbox\n- [ ] Old\n").unwrap();
         let today = Day::today().to_string();

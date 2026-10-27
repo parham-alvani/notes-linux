@@ -304,6 +304,7 @@ impl Editor {
                 let store = self.store.borrow().clone();
                 if let Some(store) = store {
                     store.places.mark_read(&note.path);
+                    crate::wakatime::heartbeat(&self.settings.borrow().file, &store.root, &note.path, true);
                 }
             }
             Saved::ChangedOnDisk => (self.conflict)(&format!("{} changed on disk, so your edit was not saved.", note.path)),

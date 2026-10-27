@@ -7,16 +7,16 @@
 use std::path::Path;
 use std::sync::LazyLock;
 
-use chrono::{DateTime, Local};
 use regex::Regex;
 
-use crate::bases::format_date;
+use crate::day::Day;
 use crate::note_parser::NoteParser;
+use crate::periodic_notes::{Clock, DailyNotes, PeriodicNotes};
+use crate::templates::Templates;
 use crate::vault::Vault;
 use crate::vault_edits::VaultEdits;
 
 static LIST_ITEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]").unwrap());
-static VARIABLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{\s*(title|date|time)\s*(?::([^}]*))?\}\}").unwrap());
 
 pub struct QuickCapture;
 
@@ -74,8 +74,8 @@ impl QuickCapture {
     /// daily note from its template, a named note empty. The file is read
     /// again at the write, so a change made meanwhile stays; never a file
     /// outside the vault. The note's vault path.
-    pub fn capture(root: &Path, target: &str, heading: &str, line: &str, now: DateTime<Local>) -> Result<String, String> {
-        let mut path = Self::target_path(root, target, now);
+    pub fn capture(root: &Path, target: &str, heading: &str, line: &str, day: Day, clock: Clock) -> Result<String, String> {
+        let mut path = Self::target_path(root, target, day);
         if path.starts_with('/') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
             return Err(format!("{path} is not a note in the vault."));
         }
@@ -87,12 +87,17 @@ impl QuickCapture {
         }
         let file = root.join(&path);
         if !file.exists() {
-            let daily = target.trim().is_empty() || target.trim().eq_ignore_ascii_case("daily");
-            let first = if daily { DailyNotes::read(root).first_text(root, &Vault::title(&path), now) } else { String::new() };
+            let first = if is_daily(target) { first_text(root, &Vault::title(&path), day, clock) } else { String::new() };
             if let Some(folder) = file.parent() {
                 std::fs::create_dir_all(folder).map_err(|e| format!("{path}: {e}"))?;
             }
-            std::fs::write(&file, first).map_err(|e| format!("{path}: {e}"))?;
+            // Never over a note that came meanwhile.
+            let made = std::fs::OpenOptions::new().write(true).create_new(true).open(&file);
+            match made {
+                Ok(mut made) => std::io::Write::write_all(&mut made, first.as_bytes()).map_err(|e| format!("{path}: {e}"))?,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(format!("{path}: {error}")),
+            }
         }
         let heading = Some(heading.trim()).filter(|h| !h.is_empty());
         VaultEdits::apply(&path, root, |text| Ok(Self::append(line, text, heading))).map_err(|e| format!("{path}: {e}"))?;
@@ -102,13 +107,31 @@ impl QuickCapture {
     /// The note a capture goes to: [target] as the settings write it,
     /// "daily" (or nothing) for today's daily note, else a note's path, with
     /// `.md` added when it has none.
-    pub fn target_path(root: &Path, target: &str, now: DateTime<Local>) -> String {
-        let target = target.trim();
-        if target.is_empty() || target.eq_ignore_ascii_case("daily") {
-            return DailyNotes::read(root).path(now);
+    pub fn target_path(root: &Path, target: &str, day: Day) -> String {
+        if is_daily(target) {
+            return PeriodicNotes::new(DailyNotes::read(root)).path_for(day);
         }
+        let target = target.trim();
         if target.to_lowercase().ends_with(".md") { target.to_string() } else { format!("{target}.md") }
     }
+}
+
+/// "daily", or nothing: the periodic note of today, as Ctrl+3 opens it.
+fn is_daily(target: &str) -> bool {
+    let target = target.trim();
+    target.is_empty() || target.eq_ignore_ascii_case("daily")
+}
+
+/// The text a new periodic note starts with: the Daily notes plugin's
+/// template, filled as the Templates plugin fills it, or nothing.
+fn first_text(root: &Path, title: &str, day: Day, clock: Clock) -> String {
+    let template = DailyNotes::read(root).template;
+    if template.is_empty() {
+        return String::new();
+    }
+    let file = if Vault::is_note(&template) { template } else { format!("{template}.md") };
+    let source = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+    Templates::read(root).fill(&source, title, day, clock)
 }
 
 /// "## Inbox" is Inbox at level 2; a bare name is level 2 too.
@@ -147,75 +170,9 @@ fn insert(new: &[String], at: usize, lines: &mut Vec<String>, eol: &str) {
     lines.splice(at..at, block.into_iter().map(|l| l + eol));
 }
 
-/// Where Obsidian's Daily notes plugin keeps a day's note: the settings of
-/// `.obsidian/daily-notes.json`. Blank or missing means the default. The
-/// part of `DailyNotes` (`PeriodicNotes.swift`) a capture needs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DailyNotes {
-    /// Vault-relative, empty for the root.
-    pub folder: String,
-    /// A moment format, which may itself hold `/` and so subfolders.
-    pub format: String,
-    /// The template's path without `.md`, empty for none.
-    pub template: String,
-}
-
-impl DailyNotes {
-    pub fn new(folder: &str, format: &str, template: &str) -> DailyNotes {
-        let format = format.trim();
-        DailyNotes {
-            folder: folder.trim().trim_matches('/').to_string(),
-            format: if format.is_empty() { "YYYY-MM-DD".into() } else { format.into() },
-            template: template.trim().to_string(),
-        }
-    }
-
-    pub fn read(root: &Path) -> DailyNotes {
-        let json: serde_json::Value = std::fs::read_to_string(root.join(".obsidian/daily-notes.json"))
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        let field = |key: &str| json.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        DailyNotes::new(&field("folder"), &field("format"), &field("template"))
-    }
-
-    /// The note of the day [now] falls on.
-    pub fn path(&self, now: DateTime<Local>) -> String {
-        let name = format!("{}.md", format_date(now, &self.format));
-        if self.folder.is_empty() { name } else { format!("{}/{name}", self.folder) }
-    }
-
-    /// The text a new daily note starts with: its template filled in, as
-    /// Obsidian's Templates plugin fills it, or nothing.
-    pub fn first_text(&self, root: &Path, title: &str, now: DateTime<Local>) -> String {
-        if self.template.is_empty() {
-            return String::new();
-        }
-        let file = if self.template.to_lowercase().ends_with(".md") { self.template.clone() } else { format!("{}.md", self.template) };
-        let Ok(template) = std::fs::read_to_string(root.join(file)) else { return String::new() };
-        fill(&template, title, now)
-    }
-}
-
-/// [template] with `{{title}}`, `{{date}}`, `{{time}}` and their `:FORMAT`
-/// forms filled in; a variable it does not know stays as it is.
-pub fn fill(template: &str, title: &str, now: DateTime<Local>) -> String {
-    VARIABLE
-        .replace_all(template, |caps: &regex::Captures| {
-            let format = caps.get(2).map(|m| m.as_str().trim().to_string());
-            match &caps[1] {
-                "title" => title.to_string(),
-                "date" => format_date(now, format.as_deref().unwrap_or("YYYY-MM-DD")),
-                _ => format_date(now, format.as_deref().unwrap_or("HH:mm")),
-            }
-        })
-        .into_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     fn append(line: &str, text: &str, heading: Option<&str>) -> String {
         QuickCapture::append(line, text, heading)
@@ -286,11 +243,11 @@ mod tests {
     #[test]
     fn the_target_is_todays_note_or_a_named_one() {
         let root = tempfile::tempdir().unwrap();
-        let now = Local.with_ymd_and_hms(2026, 10, 26, 9, 5, 0).unwrap();
-        assert_eq!(QuickCapture::target_path(root.path(), "daily", now), "2026-10-26.md");
-        assert_eq!(QuickCapture::target_path(root.path(), " ", now), "2026-10-26.md");
-        assert_eq!(QuickCapture::target_path(root.path(), "Inbox", now), "Inbox.md");
-        assert_eq!(QuickCapture::target_path(root.path(), "Notes/Later.md", now), "Notes/Later.md");
+        let day = Day::new(2026, 10, 26).unwrap();
+        assert_eq!(QuickCapture::target_path(root.path(), "daily", day), "2026-10-26.md");
+        assert_eq!(QuickCapture::target_path(root.path(), " ", day), "2026-10-26.md");
+        assert_eq!(QuickCapture::target_path(root.path(), "Inbox", day), "Inbox.md");
+        assert_eq!(QuickCapture::target_path(root.path(), "Notes/Later.md", day), "Notes/Later.md");
         std::fs::create_dir_all(root.path().join(".obsidian")).unwrap();
         std::fs::create_dir_all(root.path().join("Templates")).unwrap();
         std::fs::write(
@@ -299,9 +256,8 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.path().join("Templates/Day.md"), "# {{title}}\n{{date:dddd}} {{time}} {{other}}\n## Inbox\n").unwrap();
-        assert_eq!(QuickCapture::target_path(root.path(), "DAILY", now), "Journal/2026/10/2026-10-26.md");
-        let daily = DailyNotes::read(root.path());
-        assert_eq!(daily.first_text(root.path(), "2026-10-26", now), "# 2026-10-26\nMonday 09:05 {{other}}\n## Inbox\n");
+        assert_eq!(QuickCapture::target_path(root.path(), "DAILY", day), "Journal/2026/10/2026-10-26.md");
+        assert_eq!(first_text(root.path(), "2026-10-26", day, Clock::new(9, 5, 0)), "# 2026-10-26\nMonday 09:05 {{other}}\n## Inbox\n");
     }
 
     /// The robustness line: every line the note had stays, in order, and the

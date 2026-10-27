@@ -4,6 +4,11 @@
 //! the app writes a note. The Mac's `VaultStore` keeps the same rules.
 //!
 //! Git runs on a worker thread; the window only hears how it went.
+//!
+//! A pull that stops on a conflict keeps its rebase open (`Stopped`): from
+//! then no sync runs, the button shows the conflicts, and the window opens
+//! them (`conflicts.rs`) until the person finishes or aborts the sync. A
+//! rebase left open, by Daftar or in a terminal, is found at launch.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -13,10 +18,13 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use daftar_core::{Git, GitFailure, GitStatus, Synced};
+use daftar_core::{Conflicted, Git, GitFailure, GitStatus, Resolution, SyncFailure, Synced};
 
 /// After an edit, how long to wait for more before syncing them together.
 const AFTER_EDIT: Duration = Duration::from_secs(20);
+
+/// Shows the conflicts; true when the person ran the sync that stopped.
+type Shown = Rc<dyn Fn(bool)>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Run {
@@ -36,6 +44,13 @@ pub struct GitSync {
     every: RefCell<Option<glib::SourceId>>,
     soon: RefCell<Option<glib::SourceId>>,
     notice: Box<dyn Fn(&str)>,
+    /// A pull's rebase stopped on a conflict and is still open. No sync runs
+    /// until the person resolves it or aborts it.
+    rebasing: Cell<bool>,
+    /// The files the open rebase stopped on.
+    conflicts: RefCell<Vec<Conflicted>>,
+    /// Shows the conflicts: the window's dialog.
+    on_stopped: RefCell<Option<Shown>>,
 }
 
 impl GitSync {
@@ -51,6 +66,7 @@ impl GitSync {
         let menu = gio::Menu::new();
         menu.append(Some("Sync Now"), Some("win.sync"));
         menu.append(Some("Pull"), Some("win.pull"));
+        menu.append(Some("Resolve Sync Conflicts…"), Some("win.conflicts"));
         let button = gtk::MenuButton::builder().child(&content).menu_model(&menu).css_classes(["flat"]).visible(false).build();
         Rc::new(GitSync {
             button,
@@ -63,7 +79,143 @@ impl GitSync {
             every: RefCell::new(None),
             soon: RefCell::new(None),
             notice: Box::new(notice),
+            rebasing: Cell::new(false),
+            conflicts: RefCell::new(Vec::new()),
+            on_stopped: RefCell::new(None),
         })
+    }
+
+    /// What shows the conflicts when a sync stops on them, or finds them open.
+    pub fn connect_stopped(&self, shown: impl Fn(bool) + 'static) {
+        *self.on_stopped.borrow_mut() = Some(Rc::new(shown));
+    }
+
+    pub fn root(&self) -> Option<PathBuf> {
+        self.root.borrow().clone()
+    }
+
+    pub fn is_rebasing(&self) -> bool {
+        self.rebasing.get()
+    }
+
+    pub fn is_syncing(&self) -> bool {
+        self.syncing.get()
+    }
+
+    pub fn conflicts(&self) -> Vec<Conflicted> {
+        self.conflicts.borrow().clone()
+    }
+
+    /// The conflicts on screen; [asked] when the person ran the sync. Out of
+    /// every borrow first: the dialog reads them.
+    fn stopped(&self, asked: bool) {
+        let shown = self.on_stopped.borrow().clone();
+        if let Some(shown) = shown {
+            shown(asked);
+        }
+    }
+
+    /// Reads again whether a rebase is open and the files it stopped on, then
+    /// [after] with whether one is. With [show], the conflicts open.
+    pub fn refresh_conflicts(self: &Rc<Self>, show: bool, after: impl FnOnce(bool) + 'static) {
+        let Some(root) = self.root() else { return };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let folder = root.clone();
+            let found = gio::spawn_blocking(move || {
+                let git = Git::new(folder);
+                let open = git.rebase_in_progress().unwrap_or(false);
+                (open, if open { git.conflicts().unwrap_or_default() } else { Vec::new() }, git.status().ok())
+            })
+            .await;
+            let Ok((open, conflicts, status)) = found else { return };
+            if this.root().as_ref() != Some(&root) {
+                return;
+            }
+            this.set_conflicts(open, conflicts);
+            if let Some(status) = status {
+                this.show(&status);
+            }
+            if open && show {
+                this.stopped(false);
+            }
+            after(open);
+        });
+    }
+
+    /// Resolves every file as chosen, goes on with the rebase and pushes.
+    /// [done] hears whether the sync is over: not when the next replayed
+    /// commit stopped on a conflict too, whose files are then the conflicts,
+    /// or when something failed, which it says.
+    pub fn finish(self: &Rc<Self>, resolutions: Vec<(Conflicted, Resolution)>, done: impl FnOnce(Result<bool, String>) + 'static) {
+        let Some(root) = self.root() else { return };
+        if !self.rebasing.get() || self.syncing.replace(true) {
+            return;
+        }
+        self.working(true);
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let folder = root.clone();
+            let outcome = gio::spawn_blocking(move || {
+                let git = Git::new(folder);
+                let result = git.finish_rebase(&resolutions);
+                let open = git.rebase_in_progress().unwrap_or(false);
+                (result, open, if open { git.conflicts().unwrap_or_default() } else { Vec::new() }, git.status().ok())
+            })
+            .await;
+            this.syncing.set(false);
+            this.working(false);
+            let Ok((result, open, conflicts, status)) = outcome else { return };
+            this.set_conflicts(open, conflicts);
+            if let Some(status) = status {
+                this.show(&status);
+            }
+            done(match result {
+                Ok(_) => Ok(!open),
+                Err(failure) => Err(describe(&failure)),
+            });
+        });
+    }
+
+    /// Ends the open rebase: the branch is as it was before the pull, and the
+    /// next sync pulls again.
+    pub fn abort(self: &Rc<Self>, done: impl FnOnce(Result<(), String>) + 'static) {
+        let Some(root) = self.root() else { return };
+        if !self.rebasing.get() || self.syncing.replace(true) {
+            return;
+        }
+        self.working(true);
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let folder = root.clone();
+            let outcome = gio::spawn_blocking(move || {
+                let git = Git::new(folder);
+                let result = git.abort_rebase();
+                let open = git.rebase_in_progress().unwrap_or(false);
+                (result, open, if open { git.conflicts().unwrap_or_default() } else { Vec::new() }, git.status().ok())
+            })
+            .await;
+            this.syncing.set(false);
+            this.working(false);
+            let Ok((result, open, conflicts, status)) = outcome else { return };
+            this.set_conflicts(open, conflicts);
+            if let Some(status) = status {
+                this.show(&status);
+            }
+            done(result.map_err(|failure| describe(&failure)));
+        });
+    }
+
+    fn set_conflicts(&self, open: bool, conflicts: Vec<Conflicted>) {
+        self.rebasing.set(open);
+        *self.conflicts.borrow_mut() = conflicts;
+        self.icon.set_icon_name(Some(if open { "dialog-warning-symbolic" } else { "emblem-synchronizing-symbolic" }));
+        if open {
+            self.button.add_css_class("warning");
+            self.label.set_label(&format!("⚠{}", self.conflicts.borrow().len()));
+        } else {
+            self.button.remove_css_class("warning");
+        }
     }
 
     /// Follows the vault at [root]: hidden when it is not a repository;
@@ -81,12 +233,17 @@ impl GitSync {
                 return;
             }
             this.button.set_visible(true);
-            if pull {
-                this.run(Run::Pull, false);
-            } else {
-                this.refresh();
-            }
-            this.schedule();
+            // A rebase left open is shown, not pulled over.
+            let again = this.clone();
+            this.refresh_conflicts(true, move |open| {
+                match (open, pull) {
+                    (false, true) => again.run(Run::Pull, false),
+                    (false, false) => again.refresh(),
+                    // The automatic syncs wait while a conflict is open.
+                    (true, _) => {}
+                }
+                again.schedule();
+            });
         });
     }
 
@@ -94,7 +251,17 @@ impl GitSync {
     /// even when nothing went wrong, for a run the person asked for.
     pub fn run(self: &Rc<Self>, kind: Run, loud: bool) {
         let Some(root) = self.root.borrow().clone() else { return };
-        if !self.button.is_visible() || self.syncing.replace(true) {
+        if !self.button.is_visible() {
+            return;
+        }
+        // With a conflict open, the conflicts show instead; nothing is committed.
+        if self.rebasing.get() {
+            if loud {
+                self.stopped(true);
+            }
+            return;
+        }
+        if self.syncing.replace(true) {
             return;
         }
         self.working(true);
@@ -120,7 +287,12 @@ impl GitSync {
                 this.show(&status);
             }
             match done {
-                Err(failure) => (this.notice)(&describe(&failure)),
+                Err(SyncFailure::Stopped(stopped)) => {
+                    (this.notice)(&stopped.to_string());
+                    this.set_conflicts(true, stopped.conflicts);
+                    this.stopped(loud);
+                }
+                Err(SyncFailure::Git(failure)) => (this.notice)(&describe(&failure)),
                 Ok(done) if loud => (this.notice)(&summary(kind, done)),
                 Ok(_) => {}
             }
@@ -147,7 +319,7 @@ impl GitSync {
     /// After the app wrote a note: a sync a little later, when automatic sync
     /// is on, so several ticks in a row make one commit.
     pub fn edited(self: &Rc<Self>) {
-        if self.interval.get() == 0 {
+        if self.interval.get() == 0 || self.rebasing.get() {
             return;
         }
         if let Some(id) = self.soon.take() {
@@ -203,6 +375,12 @@ impl GitSync {
     }
 
     fn show(&self, status: &GitStatus) {
+        if self.rebasing.get() {
+            let count = self.conflicts.borrow().len();
+            self.label.set_label(&format!("⚠{count}"));
+            self.button.set_tooltip_text(Some("The pull stopped on a conflict. Choose what to keep; sync waits until then."));
+            return;
+        }
         self.label.set_label(&badge(status));
         self.button.set_tooltip_text(Some(&tooltip(status)));
     }

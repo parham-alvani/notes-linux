@@ -29,6 +29,7 @@ use crate::terminal::TerminalPane;
 use crate::today::Today;
 use crate::watcher::FileWatcher;
 
+mod extras;
 mod file_actions;
 mod tab;
 mod vault_tools;
@@ -316,12 +317,12 @@ impl Window {
             tab.reader.connect_edit_task(move |path, line| this.edit_task(path, line));
         }
         {
-            // The reading cursor is kept as the note's place.
-            let store = self.store.clone();
+            // The reading cursor is kept as the note's place, and is reading time for WakaTime.
+            let (store, settings) = (self.store.clone(), self.settings.clone());
             tab.reader.connect_cursor(move |path, line| {
-                if let Some(store) = store.borrow().as_ref() {
-                    store.places.set(path, line);
-                }
+                let Some(store) = store.borrow().clone() else { return };
+                store.places.set(path, line);
+                crate::wakatime::heartbeat(&settings.borrow().file, &store.root, path, false);
             });
         }
         {
@@ -766,6 +767,9 @@ impl Window {
         // A note opens where it was being read, unless a link names a place in it.
         let line = line.or_else(|| anchor.is_none().then(|| self.place(path)).flatten());
         tab.reader.show(Request { path: path.to_string(), heading: anchor.map(String::from), line }, false);
+        // The voice reads the note it started on, and stops when its tab leaves it.
+        crate::read_aloud::left(&tab.reader.view, Some(path));
+        crate::wakatime::heartbeat(&self.settings.borrow().file, &store.root, path, false);
         if self.is_chosen(tab) {
             self.update_history();
             self.refresh_inspector();
@@ -926,6 +930,7 @@ impl Window {
             commands.push(command("Sync Now", "Git", "win.sync", "Ctrl+Shift+S"));
             commands.push(command("Pull", "Git", "win.pull", ""));
         }
+        commands.extend(self.extra_commands());
         commands.push(command("New Window", "App", "app.new-window", "Ctrl+Alt+N"));
         commands.push(command("Settings", "App", "win.preferences", "Ctrl+,"));
         commands.push(command("Quit", "App", "app.quit", "Ctrl+Q"));
@@ -1028,6 +1033,7 @@ impl Window {
     fn add_actions(&self) {
         self.add_file_actions();
         self.add_vault_tools();
+        self.add_extra_actions();
         let quick_open = gio::SimpleAction::new("quick-open", None);
         let this = self.clone();
         quick_open.connect_activate(move |_, _| this.palette(Mode::Files, ""));

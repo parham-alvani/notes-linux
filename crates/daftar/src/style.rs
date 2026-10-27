@@ -112,6 +112,31 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-home .home-folder, .daftar-home .home-keys { color: alpha(@daftar_muted, 0.8); }\n\
          .daftar-home .home-quote { font-size: 14pt; font-style: italic; }\n",
     );
+    // Sync Conflicts, History and Quick Capture.
+    out.push_str(
+        ".daftar-sheet-icon { border-radius: 11px; color: white; min-width: 42px; min-height: 42px; }\n\
+         .daftar-sheet-icon.conflicts { background-image: linear-gradient(135deg, @daftar_accent, @daftar_red); }\n\
+         .daftar-sheet-icon.history { background-image: linear-gradient(135deg, @daftar_aqua, @daftar_blue); }\n\
+         .daftar-hunk { border-radius: 10px; padding: 12px; background-color: alpha(@daftar_text, 0.05); }\n\
+         .daftar-side { border-radius: 8px; padding: 8px; border: 1px solid transparent; }\n\
+         .daftar-side.t-blue { background-color: alpha(@daftar_blue, 0.06); }\n\
+         .daftar-side.t-blue.kept { background-color: alpha(@daftar_blue, 0.16); border-color: alpha(@daftar_blue, 0.6); }\n\
+         .daftar-side.t-accent { background-color: alpha(@daftar_accent, 0.06); }\n\
+         .daftar-side.t-accent.kept { background-color: alpha(@daftar_accent, 0.16); border-color: alpha(@daftar_accent, 0.6); }\n\
+         .daftar-side-title.t-blue { color: @daftar_blue; font-weight: bold; }\n\
+         .daftar-side-title.t-accent { color: @daftar_accent; font-weight: bold; }\n\
+         .daftar-diff { border-radius: 10px; background-color: alpha(@daftar_text, 0.05); padding: 6px 0; }\n\
+         .daftar-diff .diff-line { padding: 0 8px; }\n\
+         .daftar-diff .diff-added { background-color: alpha(@daftar_green, 0.12); color: @daftar_green; }\n\
+         .daftar-diff .diff-removed { background-color: alpha(@daftar_red, 0.12); color: @daftar_red; }\n\
+         .daftar-diff .diff-number { color: alpha(@daftar_muted, 0.7); }\n\
+         .daftar-added-count { color: @daftar_green; font-weight: bold; }\n\
+         .daftar-removed-count { color: @daftar_red; font-weight: bold; }\n\
+         .daftar-capture { padding: 16px; }\n\
+         .daftar-capture .capture-icon { color: @daftar_accent; }\n\
+         .daftar-capture .capture-field { font-size: 16pt; }\n\
+         .daftar-capture .capture-error { color: @daftar_red; }\n",
+    );
     out
 }
 

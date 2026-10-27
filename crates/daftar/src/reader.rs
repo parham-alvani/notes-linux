@@ -399,6 +399,8 @@ impl Reader {
                 }
             }
             "copy" => self.view.clipboard().set_text(&text("text")),
+            // Escape on the page while the voice reads.
+            "stopSpeaking" => crate::read_aloud::stop(),
             "external" => {
                 // Web, mail and the phone only: a note's `file:` or `smb:`
                 // link would start an app or a script.

@@ -2,11 +2,15 @@
 //! repository. The sister of Daftar for macOS and Daftar for Android.
 
 mod board;
+mod capture;
+mod conflicts;
 mod editor;
 mod editor_popup;
 mod editor_style;
+mod export;
 mod files;
 mod graph;
+mod history;
 mod home;
 mod inspector;
 mod neovim_session;
@@ -14,6 +18,7 @@ mod notifier;
 mod palette;
 mod places;
 mod preferences;
+mod read_aloud;
 mod reader;
 mod settings;
 mod sidebar;
@@ -24,6 +29,7 @@ mod task_edit;
 mod terminal;
 mod today;
 mod vault_dialogs;
+mod wakatime;
 mod watcher;
 mod window;
 
@@ -36,11 +42,37 @@ const APP_ID: &str = "me.parham1995.notes";
 fn main() -> glib::ExitCode {
     // `daftar Notes/Inbox.md` opens that note, as `daftar://open?path=` does
     // on the Mac: for a keybinding in the compositor or a script.
+    // `daftar --capture` opens Quick Capture from any app: in the running
+    // Daftar, or on its own with no window of notes.
     let mut args = std::env::args();
     let program = args.next().unwrap_or_default();
     let open = args.next();
+    let capture = open.as_deref() == Some("--capture");
+    let open = open.filter(|_| !capture);
     let app = adw::Application::builder().application_id(APP_ID).build();
-    app.connect_activate(move |app| window::Window::present(app, open.clone()));
+    let capture_first = std::cell::Cell::new(capture);
+    app.connect_activate(move |app| {
+        if capture_first.replace(false) {
+            style::install();
+            capture::toggle(app);
+            return;
+        }
+        window::Window::present(app, open.clone())
+    });
+    let capture_action = gtk::gio::SimpleAction::new("capture", None);
+    let handle = app.clone();
+    capture_action.connect_activate(move |_, _| capture::toggle(&handle));
+    app.add_action(&capture_action);
+    if capture && app.register(gtk::gio::Cancellable::NONE).is_ok() && app.is_remote() {
+        app.activate_action("capture", None);
+        if let Some(connection) = app.dbus_connection() {
+            let _ = connection.flush_sync(gtk::gio::Cancellable::NONE);
+        }
+        return glib::ExitCode::SUCCESS;
+    }
+    app.set_accels_for_action("win.history", &["<Ctrl><Alt>y"]);
+    app.set_accels_for_action("win.read-aloud", &["<Ctrl><Alt>r"]);
+    app.set_accels_for_action("win.export-pdf", &["<Ctrl><Shift>e"]);
     // A tab closes, and the last one closes the window. Ctrl+Tab, Ctrl+Page
     // Up and Down and Alt+1 to 9 are the tab view's own.
     app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);

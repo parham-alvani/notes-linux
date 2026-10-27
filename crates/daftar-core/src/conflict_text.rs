@@ -166,7 +166,8 @@ fn conflict(lines: &[&str], start: usize) -> Option<(Conflict, usize)> {
                 remote.push_str(line);
             }
         } else if is_mark(line, '>') {
-            let found = Conflict { remote, mine, base, open: lines[start].to_string(), base_mark, separator: separator?, close: line.to_string() };
+            let found =
+                Conflict { remote, mine, base, open: lines[start].to_string(), base_mark, separator: separator?, close: line.to_string() };
             return Some((found, index + 1));
         } else if is_mark(line, '<') || is_mark(line, '=') {
             return None;

@@ -105,6 +105,8 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     git.add(&pull);
     git.add(&interval);
     page.add(&git);
+    page.add(&capture_group(&settings, write.clone()));
+    page.add(&wakatime_group(&settings, write.clone()));
 
     let file = adw::PreferencesGroup::builder()
         .title("The settings file")
@@ -121,6 +123,44 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     page.add(&file);
 
     dialog.present(Some(parent));
+}
+
+/// Settings › Quick Capture: the note a capture goes to, and the heading.
+fn capture_group(settings: &Rc<RefCell<AppSettings>>, write: impl Fn(&str, Value) + Clone + 'static) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Quick Capture")
+        .description(format!(
+            "daftar --capture opens it from any app: bind it in the compositor, and float the window titled “{}”. “daily” is today's daily note; a path such as Inbox.md names one note. Return adds the line, Ctrl+Return adds it as a task.",
+            crate::capture::TITLE
+        ))
+        .build();
+    for (key, title, default) in [("capture.target", "Note", "daily"), ("capture.heading", "Under the heading (empty is the end)", "")] {
+        let row = adw::EntryRow::builder().title(title).show_apply_button(true).build();
+        row.set_text(&settings.borrow().file.string(key).unwrap_or_else(|| default.into()));
+        let write = write.clone();
+        row.connect_apply(move |row| write(key, Value::String(row.text().trim().to_string())));
+        group.add(&row);
+    }
+    group
+}
+
+/// Settings › WakaTime: off at first, as on the Mac.
+fn wakatime_group(settings: &Rc<RefCell<AppSettings>>, write: impl Fn(&str, Value) + Clone + 'static) -> adw::PreferencesGroup {
+    let configured = settings.borrow().file.string("wakatime.cli").unwrap_or_default();
+    let description = match crate::wakatime::cli(&configured) {
+        Some(_) => "Uses wakatime-cli and the key in ~/.wakatime.cfg. The note's path and the vault's name leave this computer.",
+        None => {
+            "wakatime-cli is not installed: yay -S wakatime, or install a WakaTime editor plugin. The key is read from ~/.wakatime.cfg."
+        }
+    };
+    let group = adw::PreferencesGroup::builder().title("WakaTime").description(description).build();
+    let send = adw::SwitchRow::builder()
+        .title("Send reading and writing time to WakaTime")
+        .active(settings.borrow().file.bool("wakatime.enabled").unwrap_or(false))
+        .build();
+    send.connect_active_notify(move |row| write("wakatime.enabled", Value::Bool(row.is_active())));
+    group.add(&send);
+    group
 }
 
 /// Settings › Home: the picture behind the home page, chosen or cleared.

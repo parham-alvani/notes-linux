@@ -398,7 +398,7 @@ impl Git {
                     return None;
                 }
                 let date = DateTime::parse_from_rfc3339(fields[1]).ok()?;
-                let path = lines.last().unwrap_or("").to_string();
+                let path = lines.next_back().unwrap_or("").to_string();
                 Some(Revision { hash: fields[0].into(), date, author: fields[2].into(), subject: fields[3].into(), path })
             })
             .collect()
@@ -600,7 +600,8 @@ mod tests {
 
     #[test]
     fn other_files_keep_one_side_and_a_deletion_is_a_side() {
-        let (_base, mac, _phone) = diverge(&[("data.json", "{}\n", "{\"a\":1}\n", "{\"b\":2}\n"), ("Gone.md", "old\n", "phone\n", "old\n")]);
+        let (_base, mac, _phone) =
+            diverge(&[("data.json", "{}\n", "{\"a\":1}\n", "{\"b\":2}\n"), ("Gone.md", "old\n", "phone\n", "old\n")]);
         // The mac deletes a note the phone changed.
         fs::remove_file(mac.root.join("Gone.md")).unwrap();
         let mut conflicts = stopped(mac.sync("mac")).conflicts;

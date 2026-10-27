@@ -45,6 +45,12 @@ This is the first part of the port. It has:
 - **Command palette:** Ctrl+Shift+P, every command by name, matched as the switcher matches.
 - **Graph:** Ctrl+Alt+G, the notes a few links from the open one, or the whole vault, each top folder in its color as on the Mac; drag to move, scroll to zoom, click a note to open it.
 - **Terminal:** Ctrl+\`, your login shell under the note, started in the vault's folder, in Daftar's colors (`terminal.shell`, `terminal.font_size`).
+- **Sync conflicts:** when a pull stops on a conflict, Daftar keeps the rebase open, stops every sync and shows the conflicted files, with a ⚠ badge on the git button. For a note, each conflict shows the lines on the remote beside your change; Keep Remote, Keep Mine or Keep Both (yours after the remote's) for each conflict or for the whole note, or Edit opens the note with the conflict marks. Other files keep one side whole, and a deletion is a side. Finish Sync commits the result, goes on with the rebase and pushes; Abort Sync puts your commits back as they were before the pull. A rebase left open is shown when the app starts. `daftar-cli sync` lists the files and refuses too, and `daftar-cli sync --abort` aborts.
+- **History:** Ctrl+Alt+Y lists the commits that changed the note, across renames, with the lines each one added and removed or the whole text then, and restores an older text; the restore is an ordinary edit, so the next sync commits it and nothing in the history is lost. `daftar-cli history` lists them too.
+- **Quick capture:** `daftar --capture` opens a small window from any app, in the running Daftar or on its own: Return adds the line to today's daily note (made from the Daily notes plugin's template when it is not there), Ctrl+Return adds it as a task. The note and a heading to add it under are `[capture]` settings. Bind it in the compositor and float the window, in Hyprland `bind = CTRL ALT, N, exec, daftar --capture` and `windowrule = float, title:^(Quick Capture)$`. `daftar-cli capture` adds a line from a shell.
+- **Read aloud:** Ctrl+Alt+R reads the note from the reading cursor on, a paragraph at a time, with speech-dispatcher (`spd-say`) or `espeak-ng`, and a Persian voice for a Persian paragraph. Escape on the page or Ctrl+Alt+R again stops.
+- **Export as PDF:** Ctrl+Shift+E prints the note on screen to an A4 PDF where you choose.
+- **WakaTime:** a setting (off at first) sends the time spent reading and writing each note to WakaTime with `wakatime-cli` and the key in `~/.wakatime.cfg`, as Obsidian's WakaTime plugin does.
 - **Notifications:** a meeting alert a few minutes before each meeting in the week note, with Join, and a morning digest of the tasks due (`[notifications]`). Unlike on the Mac, they ring while Daftar runs.
 - **Settings:** Ctrl+, for the theme, the text size, the fonts, the home picture and git, written back to `config.toml` line by line. Ctrl+Alt+N opens another window.
 - **Command line:** `daftar-cli`, below.
@@ -77,7 +83,10 @@ daftar-cli backlinks Kubernetes   # the notes that link to it
 daftar-cli broken                 # links that go nowhere
 daftar-cli tags                   # every tag, with its count
 daftar-cli sync                   # commit, pull with a rebase, push: obsidian-git's workflow
+daftar-cli sync --abort           # end a sync stopped on a conflict, as before the pull
 daftar-cli status                 # the branch, ahead and behind, and the files changed
+daftar-cli history Plan.md        # the commits that changed a note; --show <hash> prints its text then
+daftar-cli capture -t Call Sara   # a task in today's daily note, as quick capture adds it
 daftar-cli tui                    # the vault in the terminal; `daftar-cli` alone does the same
 daftar-cli images --dry-run       # the picture cleanup of notes-cli
 ```

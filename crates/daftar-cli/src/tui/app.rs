@@ -14,8 +14,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use daftar_core::{
-    Candidate, Day, Git, GitStatus, NoteParser, QueryTask, QuickSwitcher, SearchIndex, SyncFailure, TagNode, TaskLine, TasksQuery, TreeNode,
-    Vault, VaultEdits, VaultIndex, VaultTask,
+    Candidate, Day, Git, GitStatus, NoteParser, QueryTask, QuickSwitcher, SearchIndex, SyncFailure, TagNode, TaskLine, TasksQuery,
+    TreeNode, Vault, VaultEdits, VaultIndex, VaultTask,
 };
 
 use super::markdown::{self, Block, Row};
