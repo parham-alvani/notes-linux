@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use gtk::gdk::prelude::DisplayExtManual;
+
 use daftar_core::{MsgValue, NeovimClient, NeovimFailure, NeovimNotification, VimKeys, VimModifiers};
 
 /// What Neovim said, for the main loop.
@@ -90,6 +92,28 @@ end })
 vim.o.autoread = true
 send()
 "#;
+
+/// The keyboard's `langmap`, unless the person's config has one.
+const LANGMAP: &str = "if vim.o.langmap == '' then vim.o.langmap = ... end";
+
+/// The keyboard's layouts beside the Latin one as Neovim's `langmap`
+/// (`VimKeys::langmap`): each key's letter on another layout paired with
+/// its letter on the Latin one, Shift and all.
+pub fn keyboard_langmap() -> String {
+    let Some(display) = gtk::gdk::Display::default() else { return String::new() };
+    let mut pairs = Vec::new();
+    for keycode in 8..256 {
+        let Some(keys) = display.map_keycode(keycode) else { continue };
+        for level in 0..2 {
+            let at_level = || {
+                keys.iter().filter(move |(key, _)| key.level() == level).filter_map(|(key, value)| Some((key.group(), value.to_unicode()?)))
+            };
+            let Some((group, latin)) = at_level().find(|(_, c)| c.is_ascii_graphic()) else { continue };
+            pairs.extend(at_level().filter(|(other, c)| *other != group && !c.is_ascii()).map(|(_, c)| (c, latin)));
+        }
+    }
+    VimKeys::langmap(&pairs)
+}
 
 /// Scrolls the window to start at the line given.
 const SCROLL_TO: &str = r#"
@@ -187,6 +211,13 @@ impl NeovimSession {
 
     fn notify(&self, method: &str, params: Vec<MsgValue>) {
         let _ = self.commands.send(Command::Notify(method.into(), params));
+    }
+
+    /// Normal mode's keys on another keyboard layout: see [keyboard_langmap].
+    pub fn set_langmap(&self, map: &str) {
+        if !map.is_empty() {
+            self.notify("nvim_exec_lua", vec![LANGMAP.into(), MsgValue::Array(vec![map.into()])]);
+        }
     }
 
     /// Keys in Neovim's notation, as `nvim_input` takes them.

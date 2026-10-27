@@ -1232,6 +1232,7 @@ impl Editor {
             (self.notice)("Neovim was not found, so the note is edited without it. Set editor.nvim in the settings to its path.");
             return;
         };
+        session.set_langmap(&crate::neovim_session::keyboard_langmap());
         *self.vim.borrow_mut() = Some(Vim { session, mirror: None, mode: "n".into(), start_line: line, save_soon: None, wheel_top: None });
         self.glide.set_on(true);
         self.glide.set_shape(Shape::Block);

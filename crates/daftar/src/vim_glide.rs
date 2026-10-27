@@ -168,9 +168,13 @@ impl Glide {
         let buffer = self.view.buffer();
         let at = buffer.iter_at_mark(&buffer.get_insert());
         let place = self.view.iter_location(&at);
-        let (x, y, height) = (place.x() as f64, place.y() as f64, place.height().max(1) as f64);
-        let wide = if place.width() > 0 && !at.ends_line() {
-            place.width() as f64
+        let (mut x, y, height) = (place.x() as f64, place.y() as f64, place.height().max(1) as f64);
+        // A right-to-left letter's box runs left from where it starts.
+        if place.width() < 0 {
+            x += place.width() as f64;
+        }
+        let wide = if place.width() != 0 && !at.ends_line() {
+            place.width().abs() as f64
         } else {
             let metrics = self.view.pango_context().metrics(None, None);
             (metrics.approximate_char_width() as f64 / gtk::pango::SCALE as f64).max(4.0)

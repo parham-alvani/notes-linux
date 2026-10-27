@@ -374,6 +374,9 @@ function announce(text) {
   setTimeout(() => (region.textContent = text), 50);
 }
 
+/** Text whose first letter is right to left, as a Persian note's title. */
+const RTL_FIRST = /^[^\p{L}]*[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/u;
+
 /** "smooth", or "auto" with Reduce Motion. */
 const motion = () => (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth");
 
@@ -784,7 +787,7 @@ window.daftar = {
     }
     board.el = null;
     main.innerHTML =
-      `<h1 class="inline-title" dir="auto">${escape(note.title)}</h1>` +
+      `<h1 class="inline-title" dir="${RTL_FIRST.test(note.title) ? "rtl" : "auto"}">${escape(note.title)}</h1>` +
       renderProperties(note.properties) +
       render(note.text, { path: note.path, links: note.links });
     // A base is a wide table: it gets the whole window.

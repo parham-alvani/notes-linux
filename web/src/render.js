@@ -456,15 +456,83 @@ function blockIds(md) {
 }
 
 /**
- * `dir="auto"` on every block, so each paragraph takes the direction of its
- * first strong letter: a Persian paragraph reads right to left beside an
- * English one, with no plugin and no front matter.
+ * A direction on every block, from the first letter it shows: a Persian
+ * paragraph reads right to left beside an English one, with no plugin and no
+ * front matter. Found from the text as it reads, not as it is written, so
+ * `- [x] سلام` and `[[Note|سلام]]` are right to left; and a list, a quote or
+ * a table takes its first item's, so its marks stand on the same side. A
+ * block with no letter is `auto`.
  */
 function direction(md) {
-  const blocks = new Set(["paragraph_open", "heading_open", "bullet_list_open", "ordered_list_open", "list_item_open", "blockquote_open", "th_open", "td_open"]);
+  const blocks = new Set(["paragraph_open", "heading_open", "bullet_list_open", "ordered_list_open", "list_item_open", "blockquote_open", "table_open", "th_open", "td_open"]);
   md.core.ruler.push("direction", (state) => {
-    for (const token of state.tokens) if (blocks.has(token.type)) token.attrSet("dir", "auto");
+    const tokens = state.tokens;
+    for (let i = 0; i < tokens.length; i++) {
+      if (!blocks.has(tokens[i].type)) continue;
+      let found = null;
+      for (let j = i + 1, depth = 0; j < tokens.length && depth >= 0 && !found; j++) {
+        depth += tokens[j].nesting;
+        if (tokens[j].type === "inline") found = shownDirection(tokens[j].children ?? []);
+      }
+      tokens[i].attrSet("dir", found ?? "auto");
+    }
   });
+}
+
+/**
+ * A date written with hyphens, in a right-to-left block, kept in its own
+ * order: after a Persian word its numbers would otherwise read backwards
+ * (`2026-10-30` as `30-10-2026`). A task's dates are left for the page,
+ * which draws them as chips that keep their order themselves.
+ */
+const HYPHEN_DATE = /(?<![📅⏳🛫✅❌➕]\uFE0F?\s*)[\d۰-۹]{4}-[\d۰-۹]{1,2}-[\d۰-۹]{1,2}/gu;
+
+function isolateDates(md) {
+  md.core.ruler.push("isolate_dates", (state) => {
+    const tokens = state.tokens;
+    for (let i = 1; i < tokens.length; i++) {
+      if (tokens[i].type !== "inline" || tokens[i - 1].attrGet("dir") !== "rtl") continue;
+      const children = [];
+      for (const child of tokens[i].children ?? []) {
+        if (child.type !== "text" || !HYPHEN_DATE.test(child.content)) {
+          children.push(child);
+          continue;
+        }
+        HYPHEN_DATE.lastIndex = 0;
+        let at = 0;
+        for (const match of child.content.matchAll(HYPHEN_DATE)) {
+          const before = new state.Token("text", "", 0);
+          before.content = child.content.slice(at, match.index);
+          const date = new state.Token("html_inline", "", 0);
+          date.content = `<bdi dir="ltr">${escapeHtml(match[0])}</bdi>`;
+          children.push(before, date);
+          at = match.index + match[0].length;
+        }
+        const after = new state.Token("text", "", 0);
+        after.content = child.content.slice(at);
+        children.push(after);
+      }
+      tokens[i].children = children;
+    }
+  });
+}
+
+const RTL_LETTER = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+const LETTER = /\p{L}/u;
+
+/** `rtl` or `ltr` from the first letter of an inline's text as shown, or null. */
+export function shownDirection(children) {
+  for (const child of children) {
+    let text = "";
+    if (child.type === "text" || child.type === "tag") text = child.content;
+    else if (child.type === "wikilink") text = child.meta.alias ?? child.meta.target ?? "";
+    else continue;
+    for (const c of text) {
+      if (RTL_LETTER.test(c)) return "rtl";
+      if (LETTER.test(c)) return "ltr";
+    }
+  }
+  return null;
 }
 
 /**
@@ -531,7 +599,7 @@ function fences(md) {
 
 export function createRenderer() {
   const md = new MarkdownIt({ html: true, linkify: true, breaks: false, typographer: false });
-  md.use(footnote).use(wikilinks).use(highlights).use(tags).use(math).use(callouts).use(tasks).use(blockIds).use(direction).use(headings).use(sourceLines).use(fences);
+  md.use(footnote).use(wikilinks).use(highlights).use(tags).use(math).use(callouts).use(tasks).use(blockIds).use(direction).use(isolateDates).use(headings).use(sourceLines).use(fences);
   return md;
 }
 

@@ -15,11 +15,11 @@ pub struct Fuzzy;
 
 impl Fuzzy {
     pub fn matches(query: &str, text: &str) -> Option<Match> {
-        let needle: Vec<char> = slugs::fold(query).chars().filter(|c| !c.is_whitespace()).collect();
+        let needle: Vec<char> = slugs::search(query).chars().filter(|c| !c.is_whitespace()).collect();
         if needle.is_empty() {
             return Some(Match { score: 0, positions: vec![] });
         }
-        let haystack: Vec<char> = slugs::fold(text).chars().collect();
+        let haystack: Vec<char> = slugs::search(text).chars().collect();
         let original: Vec<char> = slugs::normalize(text).chars().collect();
         if haystack.len() != original.len() {
             return None;

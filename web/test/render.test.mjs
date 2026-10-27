@@ -38,7 +38,7 @@ test("a callout has a title and a body, and a fold marker makes it a details", (
   const html = render("> [!warning]- Careful now\n> The body.\n");
   assert.match(html, /<details class="callout" data-callout="warning" dir="auto">/);
   assert.match(html, /<summary class="callout-title">.*Careful now/);
-  assert.match(html, /<div class="callout-content">\n<p dir="auto"[^>]*>The body.<\/p>/);
+  assert.match(html, /<div class="callout-content">\n<p dir="ltr"[^>]*>The body.<\/p>/);
 });
 
 test("a callout with no title is named after its type", () => {
@@ -46,7 +46,7 @@ test("a callout with no title is named after its type", () => {
 });
 
 test("a plain quote stays a quote", () => {
-  assert.match(render("> just a quote\n"), /<blockquote dir="auto"/);
+  assert.match(render("> just a quote\n"), /<blockquote dir="ltr"/);
 });
 
 test("comments are hidden and the lines after them do not move", () => {
@@ -70,7 +70,10 @@ test("a price is not math", () => {
 });
 
 test("every block takes its own direction", () => {
-  assert.match(render("سلام دنیا"), /<p dir="auto"/);
+  assert.match(render("سلام دنیا"), /<p dir="rtl"/);
+  assert.match(render("Hello سلام"), /<p dir="ltr"/);
+  assert.match(render("- [x] سلام\n- [[Start|خانه]]\n"), /<ul dir="rtl"[^>]*>\n<li class="task-list-item is-checked" data-task="x" dir="rtl"[^]*<li dir="rtl"/);
+  assert.match(render("12:30"), /<p dir="auto"/);
 });
 
 test("a block id is hidden and names its paragraph", () => {
@@ -116,9 +119,9 @@ test("a note named as an object's own property is a link like any other", () => 
 
 test("every list item has its source line, for the reading cursor", () => {
   const html = render("Intro\n\n- one\n- two\n    - nested\n");
-  assert.match(html, /<li dir="auto" data-line="2">one<\/li>/);
-  assert.match(html, /<li dir="auto" data-line="3">two/);
-  assert.match(html, /<li dir="auto" data-line="4">nested<\/li>/);
+  assert.match(html, /<li dir="ltr" data-line="2">one<\/li>/);
+  assert.match(html, /<li dir="ltr" data-line="3">two/);
+  assert.match(html, /<li dir="ltr" data-line="4">nested<\/li>/);
 });
 
 import { renderView } from "../src/bases.js";
@@ -158,4 +161,11 @@ test("a list view draws a line per note, its properties inline or indented", () 
   assert.match(html, /<ol class="base-list"><li dir="auto"><a class="internal-link" href="#" data-path="Shops\/Bakery.md">Bakery<\/a><span class="base-list-values"> <span class="base-list-value" title="stage">open<\/span>/);
   assert.match(renderView(baseView("list", { markers: "none" })), /<ul class="base-list is-plain">/);
   assert.match(renderView(baseView("list", { indentProperties: true })), /<ul><li dir="auto"><span class="base-list-label">stage<\/span> open<\/li><\/ul>/);
+});
+
+test("a date keeps its order in a right-to-left line", () => {
+  assert.match(render("جلسه 2026-10-30 ساعت 10:30"), /جلسه <bdi dir="ltr">2026-10-30<\/bdi> ساعت 10:30/);
+  // A task's dates are the page's chips.
+  assert.doesNotMatch(render("- [ ] کار 📅 2026-10-30"), /<bdi/);
+  assert.doesNotMatch(render("On 2026-10-30"), /<bdi/);
 });

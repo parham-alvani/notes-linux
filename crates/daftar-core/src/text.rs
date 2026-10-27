@@ -17,6 +17,30 @@ pub mod slugs {
         normalize(text).to_lowercase()
     }
 
+    /// [fold], and Persian as people type it on different keyboards made
+    /// one: Arabic Yeh and Kaf as the Persian letters, the hamza forms of
+    /// Alef, Waw and Yeh as the letters under them, Persian and Arabic
+    /// digits as ASCII ones, and the half space (ZWNJ) as a space. Each
+    /// character stays one, so offsets into the folded text are offsets
+    /// into the text. For matching only: a link still resolves by [fold].
+    pub fn search(text: &str) -> String {
+        fold(text).chars().map(|c| if c == '\u{200c}' { ' ' } else { persian_letter(c) }).collect()
+    }
+
+    /// The letter a Persian search finds [c] as: see [search].
+    pub fn persian_letter(c: char) -> char {
+        match c {
+            'ي' | 'ى' | 'ئ' => 'ی',
+            'ك' => 'ک',
+            'ة' => 'ه',
+            'أ' | 'إ' | 'آ' | 'ٱ' => 'ا',
+            'ؤ' => 'و',
+            '۰'..='۹' => char::from(b'0' + (c as u32 - '۰' as u32) as u8),
+            '٠'..='٩' => char::from(b'0' + (c as u32 - '٠' as u32) as u8),
+            _ => c,
+        }
+    }
+
     /// A heading as `[[Note#Heading]]` names it: Obsidian matches the text,
     /// so this only folds case and collapses white space.
     pub fn heading(text: &str) -> String {
@@ -57,6 +81,69 @@ pub mod direction {
     }
 
     /// From the first strong letter, as `dir="auto"` decides it.
+    /// The direction of a markdown line as it reads, from its first strong
+    /// letter after the syntax a reader does not show: the list mark, the
+    /// task box, the heading and quote marks, a callout's type and a
+    /// wikilink's target before its alias. `- [x] سلام` is right to left,
+    /// though `x` is a Latin letter. `None` when it has no letter at all.
+    pub fn of_line(line: &str) -> Option<bool> {
+        let mut rest = line.trim_start();
+        loop {
+            let before = rest;
+            rest = rest.trim_start_matches(['>', '#', ' ', '\t']);
+            for mark in ["- ", "* ", "+ "] {
+                rest = rest.strip_prefix(mark).unwrap_or(rest);
+            }
+            let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
+            if digits > 0 && rest[digits..].starts_with(['.', ')']) {
+                rest = &rest[digits + 1..];
+            }
+            if let Some(after) = rest.strip_prefix('[') {
+                let mut chars = after.chars();
+                if let (Some(_), Some(']')) = (chars.next(), chars.next()) {
+                    rest = chars.as_str();
+                } else if let Some(kind) = after.strip_prefix('!') {
+                    rest = kind.find(']').map_or(rest, |end| &kind[end + 1..]);
+                }
+            }
+            if rest == before {
+                break;
+            }
+        }
+        let mut chars = rest.char_indices().peekable();
+        while let Some((at, c)) = chars.next() {
+            // `[[target|alias]]` reads as its alias.
+            if rest[at..].starts_with("[[") {
+                let inner = &rest[at + 2..];
+                let close = inner.find("]]").unwrap_or(inner.len());
+                if let Some(bar) = inner[..close].find('|') {
+                    let shown = &inner[bar + 1..close];
+                    if let Some(found) = first_strong(shown) {
+                        return Some(found);
+                    }
+                    let skip = at + 2 + close;
+                    while chars.peek().is_some_and(|(next, _)| *next < skip) {
+                        chars.next();
+                    }
+                    continue;
+                }
+            }
+            if is_rtl(c) {
+                return Some(true);
+            }
+            if c.is_alphabetic() {
+                return Some(false);
+            }
+        }
+        None
+    }
+
+    /// Whether the first letter of [text] is right to left, as a text
+    /// layout finds a paragraph's direction; `None` with no letter.
+    pub fn first_strong(text: &str) -> Option<bool> {
+        text.chars().find(|&c| is_rtl(c) || c.is_alphabetic()).map(is_rtl)
+    }
+
     pub fn starts_rtl(text: &str) -> bool {
         for c in text.chars() {
             if is_rtl(c) {
@@ -125,5 +212,28 @@ mod tests {
         assert!(direction::contains_rtl("سلام"));
         assert!(direction::starts_rtl("۱۲ سلام"));
         assert!(!direction::starts_rtl("Hello سلام"));
+    }
+
+    #[test]
+    fn persian_is_searched_as_it_is_meant() {
+        assert_eq!(slugs::search("علي كتاب ۱۲"), "علی کتاب 12");
+        assert_eq!(slugs::search("می\u{200c}خواهم"), "می خواهم");
+        assert_eq!(slugs::search("پائیز آب").chars().count(), "پائیز آب".chars().count());
+        assert_eq!(slugs::search("پائیز آب"), "پاییز اب");
+        assert_eq!(slugs::search("Hello"), "hello");
+    }
+
+    #[test]
+    fn a_line_reads_in_the_direction_of_its_text_not_its_syntax() {
+        assert_eq!(direction::of_line("- [x] تماس با علی"), Some(true));
+        assert_eq!(direction::of_line("  * [ ] buy milk"), Some(false));
+        assert_eq!(direction::of_line("12. مورد"), Some(true));
+        assert_eq!(direction::of_line("## کارها"), Some(true));
+        assert_eq!(direction::of_line("> [!note] یادداشت"), Some(true));
+        assert_eq!(direction::of_line("- [[Start|پیوند]] و"), Some(true));
+        assert_eq!(direction::of_line("[[Start]] سلام"), Some(false));
+        assert_eq!(direction::of_line("Mixed فارسی"), Some(false));
+        assert_eq!(direction::of_line("- [ ] 12:30"), None);
+        assert_eq!(direction::of_line(""), None);
     }
 }

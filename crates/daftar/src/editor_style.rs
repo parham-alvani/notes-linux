@@ -15,6 +15,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{glib, pango};
 
+use daftar_core::text::direction;
 use daftar_core::{HighlightKind, HighlightSpan, MarkdownHighlighter};
 
 /// A color of the palette by name: (dark, light), as `NSPalette.pairs`.
@@ -68,6 +69,12 @@ struct Look {
     underline: bool,
     scale: Option<f64>,
     mono: bool,
+    /// A line aligned to the other side: its first letter is the syntax's
+    /// (`- [x] سلام`), not its text's, and the view takes its direction
+    /// from the first letter.
+    flip: bool,
+    /// Persian letters, in Vazirmatn as on the phone and the Mac.
+    persian: bool,
 }
 
 fn fg(name: &'static str) -> Look {
@@ -277,6 +284,40 @@ impl Styler {
                 self.buffer.apply_tag(&tag, &iter(span.range.start), &iter(span.range.end));
             }
         }
+        self.style_script(&chars, range);
+    }
+
+    /// Each line on the side its text reads from, whatever its syntax starts
+    /// with (`- [x] سلام` is right to left), and Persian in its face.
+    fn style_script(&self, chars: &[char], range: Range<usize>) {
+        let iter = |offset: usize| self.buffer.iter_at_offset(offset as i32);
+        let mut start = range.start;
+        while start < range.end.min(chars.len()) {
+            let end = chars[start..].iter().position(|&c| c == '\n').map_or(chars.len(), |n| start + n);
+            let line: String = chars[start..end].iter().collect();
+            if direction::contains_rtl(&line) {
+                if direction::of_line(&line).is_some_and(|rtl| direction::first_strong(&line) != Some(rtl)) {
+                    let flip = self.tag("flip", || Look { flip: true, ..Look::default() });
+                    self.buffer.apply_tag(&flip, &iter(start), &iter(end));
+                }
+                let persian = self.tag("persian", || Look { persian: true, ..Look::default() });
+                let mut at = start;
+                while at < end {
+                    if !direction::is_rtl(chars[at]) {
+                        at += 1;
+                        continue;
+                    }
+                    // A run goes on over the spaces and marks between words.
+                    let mut to = at + 1;
+                    while to < end && (direction::is_rtl(chars[to]) || chars[to] == ' ' || chars[to] == '\u{200c}') {
+                        to += 1;
+                    }
+                    self.buffer.apply_tag(&persian, &iter(at), &iter(to));
+                    at = to;
+                }
+            }
+            start = end + 1;
+        }
     }
 
     fn tags_for(&self, span: &HighlightSpan, chars: &[char], highlights: &[Range<usize>]) -> Vec<gtk::TextTag> {
@@ -378,7 +419,17 @@ fn apply_look(tag: &gtk::TextTag, look: &Look, dark: bool, code_font: &str) {
     if look.mono {
         tag.set_family(Some(code_font));
     }
+    if look.flip {
+        tag.set_justification(gtk::Justification::Right);
+    }
+    if look.persian {
+        tag.set_family(Some(PERSIAN_FONT));
+    }
 }
+
+/// The face Persian is drawn in wherever it appears; the reader's
+/// `Persian Fallback` is the same.
+pub const PERSIAN_FONT: &str = "Vazirmatn";
 
 /// The lines that open or close a block, as written, in order: where they
 /// are does not count, so a new line above a fence keeps the structure.

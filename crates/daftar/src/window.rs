@@ -75,6 +75,19 @@ struct PeriodicNav {
 }
 
 impl Window {
+    /// Runs what the application's shortcut for [key] with [state] runs.
+    fn activate_shortcut(&self, key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> bool {
+        let Some(app) = self.window.application() else { return false };
+        let name = gtk::accelerator_name(key.to_lower(), state & gtk::accelerator_get_default_mod_mask());
+        let mut ran = false;
+        for detailed in app.actions_for_accel(&name) {
+            if let Ok((action, target)) = gio::Action::parse_detailed_name(&detailed) {
+                ran |= WidgetExt::activate_action(&self.window, &action, target.as_ref()).is_ok();
+            }
+        }
+        ran
+    }
+
     /// A new window on the configured vault, with the note at [open] when given.
     pub fn present(app: &adw::Application, open: Option<String>) {
         let settings = Rc::new(RefCell::new(AppSettings::load()));
@@ -95,9 +108,18 @@ impl Window {
             let keys = gtk::EventControllerKey::new();
             keys.set_propagation_phase(gtk::PropagationPhase::Capture);
             let opener = opener.clone();
-            keys.connect_key_pressed(move |_, key, _, state| {
+            keys.connect_key_pressed(move |_, key, keycode, state| {
                 let Some(this) = opener.borrow().clone() else { return glib::Propagation::Proceed };
-                if this.tab().editor.takes_from_window(key, state) { glib::Propagation::Stop } else { glib::Propagation::Proceed }
+                // With the Persian layout on, Ctrl+ح is Ctrl+P: the key in
+                // the same place on the Latin layout.
+                let latin = latin_shortcut_key(key, keycode, state);
+                if this.tab().editor.takes_from_window(latin.unwrap_or(key), state) {
+                    return glib::Propagation::Stop;
+                }
+                match latin {
+                    Some(latin) if this.activate_shortcut(latin, state) => glib::Propagation::Stop,
+                    _ => glib::Propagation::Proceed,
+                }
             });
             window.add_controller(keys);
         }
@@ -1499,6 +1521,23 @@ fn grouped(number: usize) -> String {
 /// The folder of a vault path, as the subtitle shows it under a note's title.
 fn folder_of(path: &str) -> &str {
     path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("")
+}
+
+/// The Latin layout's key for a shortcut typed on another layout: Ctrl, Alt
+/// or Super with a key whose letter is not Latin, as the key in the same
+/// place types with no layout but the Latin one.
+fn latin_shortcut_key(key: gtk::gdk::Key, keycode: u32, state: gtk::gdk::ModifierType) -> Option<gtk::gdk::Key> {
+    use gtk::gdk::ModifierType;
+    use gtk::gdk::prelude::DisplayExtManual;
+    if !state.intersects(ModifierType::CONTROL_MASK | ModifierType::ALT_MASK | ModifierType::SUPER_MASK)
+        || key.to_unicode().is_none_or(|c| c.is_ascii())
+    {
+        return None;
+    }
+    let keys = gtk::gdk::Display::default()?.map_keycode(keycode)?;
+    keys.into_iter()
+        .find(|(place, value)| place.level() == 0 && value.to_unicode().is_some_and(|c| c.is_ascii_graphic()))
+        .map(|(_, value)| value)
 }
 
 #[cfg(test)]

@@ -11,6 +11,8 @@ use std::sync::{LazyLock, Mutex};
 use regex::Regex;
 use rusqlite::{Connection, params};
 
+use crate::text::slugs;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Hit {
     pub path: String,
@@ -38,7 +40,7 @@ impl SearchIndex {
         let db = Connection::open_in_memory().expect("an in-memory database");
         db.execute_batch(
             "CREATE VIRTUAL TABLE note_fts USING fts5(
-                path UNINDEXED, title, body,
+                path UNINDEXED, title, body, folded,
                 tokenize = 'unicode61 remove_diacritics 2'
             )",
         )
@@ -52,7 +54,14 @@ impl SearchIndex {
         if let Some(row) = rows.remove(path) {
             let _ = db.execute("DELETE FROM note_fts WHERE rowid = ?1", params![row]);
         }
-        if db.execute("INSERT INTO note_fts (path, title, body) VALUES (?1, ?2, ?3)", params![path, title, body]).is_ok() {
+        // Persian as a search finds it, when that is not the text itself:
+        // matched, never shown, so a snippet keeps the note's own letters.
+        let (title_folded, body_folded) = (persian(title), persian(body));
+        let folded = if title_folded == title && body_folded == body { String::new() } else { format!("{title_folded}\n{body_folded}") };
+        if db
+            .execute("INSERT INTO note_fts (path, title, body, folded) VALUES (?1, ?2, ?3, ?4)", params![path, title, body, folded])
+            .is_ok()
+        {
             rows.insert(path.to_string(), db.last_insert_rowid());
         }
     }
@@ -77,6 +86,7 @@ impl SearchIndex {
     /// side, as typed, come first; then the words near each other; then the
     /// notes that hold them anywhere. Within each, the title counts most.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Hit> {
+        let query = &persian(query);
         let db = self.db.lock().unwrap();
         let mut hits: Vec<Hit> = Vec::new();
         let mut seen = HashSet::new();
@@ -117,7 +127,7 @@ impl SearchIndex {
         let Ok(mut statement) = db.prepare_cached(
             "SELECT path, snippet(note_fts, 2, char(1), char(2), '…', 16)
              FROM note_fts WHERE note_fts MATCH ?1
-             ORDER BY bm25(note_fts, 0, 8, 1) LIMIT ?2",
+             ORDER BY bm25(note_fts, 0, 8, 1, 1) LIMIT ?2",
         ) else {
             return vec![];
         };
@@ -172,6 +182,13 @@ impl SearchIndex {
     }
 }
 
+/// Persian letters as `slugs::persian_letter` makes them one, with the half
+/// space (ZWNJ) taken out: `می‌خواهم` is found as `میخواهم` too, while the
+/// tokenizer, which splits at a ZWNJ, finds `می خواهم` in the text.
+fn persian(text: &str) -> String {
+    text.chars().filter(|&c| c != '\u{200c}').map(slugs::persian_letter).collect()
+}
+
 /// The lines of [snippet] with a match, as they read: no heading marks,
 /// list marks, boxes, quote marks, emphasis or task emoji, and a link as its
 /// text. Lines are joined by ` … `; the match marks are kept.
@@ -211,6 +228,18 @@ mod tests {
         assert_eq!(readable(raw), "\u{1}Paint\u{2} the hall with the team");
         assert_eq!(readable("> [!todo] Now\n> see [[Kite]] and [the site](https://x.y)"), "Now … see Kite and the site");
         assert_eq!(readable("1. ✅ done ==\u{1}fast\u{2}=="), "done \u{1}fast\u{2}");
+    }
+
+    #[test]
+    fn persian_is_found_however_it_was_typed() {
+        let index = SearchIndex::new();
+        index.put("a.md", "سفر", "می\u{200c}خواهم كتاب علي را ۱۲ بار بخوانم");
+        index.put("b.md", "Other", "nothing here");
+        for query in ["میخواهم", "می‌خواهم", "می خواهم", "کتاب", "علی", "12", "۱۲"] {
+            assert_eq!(paths(index.search(query, 10)), ["a.md"], "{query}");
+        }
+        // The snippet is the note's own text.
+        assert!(index.search("خواهم", 10)[0].snippet.contains('\u{200c}'));
     }
 
     fn paths(hits: Vec<Hit>) -> Vec<String> {

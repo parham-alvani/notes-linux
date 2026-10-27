@@ -404,12 +404,38 @@ impl VimKeys {
     pub fn escape(text: &str) -> String {
         text.replace('<', "<LT>")
     }
+
+    /// Neovim's `langmap` for a second keyboard layout: each of its letters
+    /// as the key in the same place on the Latin layout, so `j` and `dd`
+    /// work in Normal mode with the Persian layout on, while Insert mode
+    /// still types Persian. [pairs] is (the layout's letter, the Latin one),
+    /// from the keyboard; a pair of two Latin letters (Dvorak beside QWERTY)
+    /// is left out, as is a letter that comes twice.
+    pub fn langmap(pairs: &[(char, char)]) -> String {
+        let mut seen = std::collections::HashSet::new();
+        let mut items = Vec::new();
+        for &(from, to) in pairs {
+            if from.is_ascii() || !to.is_ascii_graphic() || !seen.insert(from) {
+                continue;
+            }
+            let escape = |c: char| if matches!(c, ',' | ';' | '\\') { format!("\\{c}") } else { c.to_string() };
+            items.push(format!("{}{}", escape(from), escape(to)));
+        }
+        items.join(",")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_second_layout_maps_to_the_latin_keys() {
+        let pairs = [('ض', 'q'), ('ت', 'j'), ('ئ', 'm'), ('و', ','), ('ج', '['), ('ت', 'x'), ('\'', 'q'), ('ق', ' ')];
+        assert_eq!(VimKeys::langmap(&pairs), "ضq,تj,ئm,و\\,,ج[");
+        assert_eq!(VimKeys::langmap(&[]), "");
+    }
 
     fn strings(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
