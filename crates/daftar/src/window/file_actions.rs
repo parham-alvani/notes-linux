@@ -180,6 +180,20 @@ impl Window {
         let this = self.clone();
         extract.connect_activate(move |_, _| this.extract());
         self.window.add_action(&extract);
+        // The file in the file manager, chosen in its folder.
+        let reveal = gio::SimpleAction::new("reveal", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        reveal.connect_activate(move |_, target| {
+            let path = target.and_then(|t| t.get::<String>()).unwrap_or_default();
+            let Some(store) = this.store.borrow().clone() else { return };
+            let Some(file) = crate::store::file_in(&path, &store.root) else { return };
+            gtk::FileLauncher::new(Some(&gio::File::for_path(file))).open_containing_folder(
+                Some(&this.window),
+                gio::Cancellable::NONE,
+                |_| {},
+            );
+        });
+        self.window.add_action(&reveal);
         let bookmark = gio::SimpleAction::new("bookmark", Some(glib::VariantTy::STRING));
         let this = self.clone();
         bookmark.connect_activate(move |_, target| this.bookmark(target.and_then(|t| t.get::<String>()).unwrap_or_default()));

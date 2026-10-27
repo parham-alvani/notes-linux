@@ -29,6 +29,7 @@ use crate::terminal::TerminalPane;
 use crate::today::Today;
 use crate::watcher::FileWatcher;
 
+mod crumbs;
 mod extras;
 mod file_actions;
 mod split;
@@ -44,7 +45,7 @@ const RECENT: usize = 20;
 pub struct Window {
     window: adw::ApplicationWindow,
     settings: Rc<RefCell<AppSettings>>,
-    title: adw::WindowTitle,
+    title: Rc<crumbs::TitleBar>,
     toasts: adw::ToastOverlay,
     split: adw::NavigationSplitView,
     tab_view: adw::TabView,
@@ -95,7 +96,9 @@ impl Window {
         crate::style::install();
 
         let window = adw::ApplicationWindow::builder().title("Daftar").default_width(1200).default_height(800).build();
-        let title = adw::WindowTitle::new("Daftar", "");
+        let store: Rc<RefCell<Option<Rc<VaultStore>>>> = Rc::new(RefCell::new(None));
+        let title = crumbs::TitleBar::new(store.clone());
+        title.set("Daftar", None);
         let toasts = adw::ToastOverlay::new();
         let split = adw::NavigationSplitView::new();
 
@@ -206,7 +209,7 @@ impl Window {
             notifier: Notifier::new(),
             inspector,
             inspector_split: inspector_split.clone(),
-            store: Rc::new(RefCell::new(None)),
+            store: store.clone(),
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
             periodic_nav: periodic_nav.clone(),
@@ -241,7 +244,7 @@ impl Window {
 
         // The notes, in tabs.
         let header = adw::HeaderBar::new();
-        header.set_title_widget(Some(&title));
+        header.set_title_widget(Some(&title.widget));
         let history = gtk::Box::builder().css_classes(["linked"]).build();
         history.append(&go_back);
         history.append(&go_forward);
@@ -410,6 +413,7 @@ impl Window {
                 back: RefCell::new(Vec::new()),
                 forward: RefCell::new(Vec::new()),
                 title: RefCell::new(("Home".into(), String::new())),
+                crumb: RefCell::new(None),
                 group: group.clone(),
             }
         });
@@ -547,7 +551,7 @@ impl Window {
         }
         let tab = self.tab();
         let (title, subtitle) = tab.title.borrow().clone();
-        self.title.set_title(&title);
+        self.title.set(&title, crumb_path(&tab).as_deref());
         self.title.set_subtitle(&subtitle);
         if let Some(action) = self.window.lookup_action("edit").and_downcast::<gio::SimpleAction>() {
             action.set_state(&tab.editing().to_variant());
@@ -592,16 +596,17 @@ impl Window {
             page.set_tooltip(&glib::markup_escape_text(if subtitle.is_empty() { title } else { subtitle }));
         }
         if self.is_chosen(tab) {
-            self.title.set_title(title);
+            self.title.set(title, crumb_path(tab).as_deref());
             self.title.set_subtitle(subtitle);
         }
     }
 
-    /// Under a note's title while it is read: its folder, and for a note of
-    /// 50 words or more its words and minutes to read at 220 a minute, as
+    /// Under a note's breadcrumb while it is read: for a note of 50 words
+    /// or more, its words and minutes to read at 220 a minute, as
     /// the Mac's breadcrumb has them.
     fn reading_subtitle(&self, path: &str) -> String {
-        let folder = folder_of(path);
+        // The folder is in the breadcrumb above.
+        let folder = "";
         let Some(store) = self.store.borrow().clone() else { return folder.to_string() };
         let words = Vault::is_note(path)
             .then(|| std::fs::read_to_string(store.root.join(path)).ok())
@@ -619,7 +624,7 @@ impl Window {
         let title = tab.title.borrow().0.clone();
         tab.title.borrow_mut().1 = subtitle.to_string();
         if self.is_chosen(tab) {
-            self.title.set_title(&title);
+            self.title.set(&title, crumb_path(&tab).as_deref());
             self.title.set_subtitle(subtitle);
         }
     }
@@ -741,6 +746,7 @@ impl Window {
         let image = self.settings.borrow().file.string("home.image").unwrap_or_default();
         tab.home.refresh(&store, &image, &self.recent.borrow());
         tab.stack.set_visible_child_name("empty");
+        *tab.crumb.borrow_mut() = None;
         self.set_titles(tab, "Home", "");
         if self.is_chosen(tab) {
             self.update_history();
@@ -870,6 +876,7 @@ impl Window {
         }
         let tab = self.tab();
         tab.today.show(&store);
+        *tab.crumb.borrow_mut() = None;
         self.set_titles(&tab, "Today", "");
         tab.stack.set_visible_child_name("today");
         self.split.set_show_content(true);
@@ -883,6 +890,7 @@ impl Window {
         }
         let tab = self.tab();
         tab.board.show(store);
+        *tab.crumb.borrow_mut() = None;
         self.set_titles(&tab, "Board", "");
         tab.stack.set_visible_child_name("board");
         self.split.set_show_content(true);
@@ -959,6 +967,7 @@ impl Window {
             tab.back.borrow_mut().push(current);
             tab.forward.borrow_mut().clear();
         }
+        *tab.crumb.borrow_mut() = Some(path.to_string());
         self.set_titles(tab, &Vault::title(path), &self.reading_subtitle(path));
         tab.stack.set_visible_child_name("reader");
         self.split.set_show_content(true);
@@ -1533,8 +1542,9 @@ fn grouped(number: usize) -> String {
 }
 
 /// The folder of a vault path, as the subtitle shows it under a note's title.
-fn folder_of(path: &str) -> &str {
-    path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("")
+/// The note the breadcrumb is the path of.
+fn crumb_path(tab: &Tab) -> Option<String> {
+    tab.crumb.borrow().clone()
 }
 
 /// The Latin layout's key for a shortcut typed on another layout: Ctrl,

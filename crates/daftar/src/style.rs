@@ -148,7 +148,9 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-capture { padding: 16px; }\n\
          .daftar-capture .capture-icon { color: @daftar_accent; }\n\
          .daftar-capture .capture-field { font-size: 16pt; }\n\
-         .daftar-capture .capture-error { color: @daftar_red; }\n",
+         .daftar-capture .capture-error { color: @daftar_red; }\n\
+         .daftar-crumbs .daftar-crumb { padding: 0 5px; min-height: 22px; }\n\
+         .daftar-crumbs .daftar-crumb-note { color: @daftar_accent; }\n",
     );
     out
 }

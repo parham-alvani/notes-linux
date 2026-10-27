@@ -63,6 +63,9 @@ pub(crate) struct Tab {
     pub forward: RefCell<Vec<String>>,
     /// The title and the subtitle the header shows while the pane has the focus.
     pub title: RefCell<(String, String)>,
+    /// The note the title's breadcrumb is the path of; none on home, Today
+    /// and the board.
+    pub crumb: RefCell<Option<String>>,
     /// The tab the pane is in.
     pub group: Rc<Group>,
 }
