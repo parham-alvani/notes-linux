@@ -40,8 +40,9 @@ use gtk::glib;
 const APP_ID: &str = "me.parham1995.notes";
 
 fn main() -> glib::ExitCode {
-    // `daftar Notes/Inbox.md` opens that note, as `daftar://open?path=` does
-    // on the Mac: for a keybinding in the compositor or a script.
+    // `daftar Notes/Inbox.md`, or `daftar Inbox`, opens that note, as
+    // `daftar://open?path=` does on the Mac: for a keybinding in the
+    // compositor or a script.
     // `daftar --capture` opens Quick Capture from any app: in the running
     // Daftar, or on its own with no window of notes.
     let mut args = std::env::args();

@@ -570,7 +570,12 @@ impl Window {
                 tab.forward.borrow_mut().clear();
                 this.show_home(&tab);
             }
-            match open.filter(|p| store.index().files.contains(p)) {
+            // A path in the vault, or a name as a link names it: `Inbox`.
+            let open = open.and_then(|p| {
+                let index = store.index();
+                if index.files.contains(&p) { Some(p) } else { index.resolve(&p, "") }
+            });
+            match open {
                 Some(path) => this.open(&path, None),
                 // The tabs the last window had, when this is the only one.
                 None if this.window.application().is_some_and(|app| app.windows().len() == 1) => this.restore_tabs(&store),
