@@ -47,11 +47,21 @@ pub(super) struct Pictures {
     place_soon: Cell<bool>,
 }
 
-/// The lines of [text] that embed a picture, with the targets as written.
-pub fn picture_lines(text: &str) -> BTreeMap<usize, Vec<String>> {
-    let mut lines: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+pub use daftar_core::embed_size::Hint;
+
+/// The lines of [text] that embed a picture, with the targets as written
+/// and the size each asks for.
+pub fn picture_lines(text: &str) -> BTreeMap<usize, Vec<(String, Hint)>> {
+    let mut lines: BTreeMap<usize, Vec<(String, Hint)>> = BTreeMap::new();
+    let all: Vec<&str> = text.lines().collect();
+    let mut hints: HashMap<usize, Vec<(String, Hint)>> = HashMap::new();
     for link in NoteParser::parse(text).links.into_iter().filter(|l| l.embed && is_picture(&l.target)) {
-        lines.entry(link.line).or_default().push(link.target);
+        // The size is in the line's text: the parser keeps the target only.
+        let written = hints
+            .entry(link.line)
+            .or_insert_with(|| all.get(link.line).map(|line| daftar_core::embed_size::embeds(line)).unwrap_or_default());
+        let hint = written.iter().position(|(target, _)| *target == link.target).and_then(|at| written.remove(at).1);
+        lines.entry(link.line).or_default().push((link.target, hint));
     }
     lines
 }
@@ -69,6 +79,19 @@ pub fn fit(width: i32, height: i32, room: i32) -> (i32, i32) {
     }
     let scale = (room.max(1) as f64 / width as f64).min(TALLEST as f64 / height as f64).min(1.0);
     (((width as f64 * scale).round() as i32).max(1), ((height as f64 * scale).round() as i32).max(1))
+}
+
+/// The size a picture is drawn at with the size its embed asks for: the
+/// width written, the height written or kept in proportion, both made
+/// smaller together when the room is narrower. No hint is [fit].
+pub fn fit_hinted(width: i32, height: i32, room: i32, hint: Hint) -> (i32, i32) {
+    let Some((wanted, tall)) = hint.filter(|(w, _)| *w > 0) else { return fit(width, height, room) };
+    if width <= 0 || height <= 0 {
+        return (0, 0);
+    }
+    let tall = tall.filter(|h| *h > 0).unwrap_or_else(|| (wanted as f64 * height as f64 / width as f64).round() as i32);
+    let scale = (room.max(1) as f64 / wanted as f64).min(1.0);
+    (((wanted as f64 * scale).round() as i32).max(1), ((tall as f64 * scale).round() as i32).max(1))
 }
 
 /// The vault path of [file] when it is in the vault at [root].
@@ -276,11 +299,11 @@ impl Editor {
         for (line, targets) in picture_lines(&self.text()) {
             let files: Vec<(PathBuf, i32, i32)> = targets
                 .iter()
-                .filter_map(|target| index.resolve(target, &source))
-                .filter_map(|path| file_in(&path, &store.root))
-                .filter_map(|file| {
+                .filter_map(|(target, hint)| Some((index.resolve(target, &source)?, *hint)))
+                .filter_map(|(path, hint)| Some((file_in(&path, &store.root)?, hint)))
+                .filter_map(|(file, hint)| {
                     let texture = self.texture(&file)?;
-                    let (width, height) = fit(texture.width(), texture.height(), room);
+                    let (width, height) = fit_hinted(texture.width(), texture.height(), room, hint);
                     (width > 0).then_some((file, width, height))
                 })
                 .collect();
@@ -339,8 +362,27 @@ mod tests {
         let text = "# Trip\n![[beach.png]] and ![[map.JPG|300]]\n![[Notes/Plan]]\n```\n![[code.png]]\n```\n![sky](uploads/sky%20blue.webp)\n![[doc.pdf]]";
         let lines = picture_lines(text);
         assert_eq!(lines.keys().copied().collect::<Vec<_>>(), [1, 6]);
-        assert_eq!(lines[&1], ["beach.png", "map.JPG"]);
-        assert_eq!(lines[&6], ["uploads/sky blue.webp"]);
+        assert_eq!(lines[&1], [("beach.png".to_string(), None), ("map.JPG".to_string(), Some((300, None)))]);
+        assert_eq!(lines[&6], [("uploads/sky blue.webp".to_string(), None)]);
+        let sized = picture_lines("![[a.png|120x80]] ![[b.png|a beach]] ![Sky|250](sky.png) ![[a.png]]");
+        assert_eq!(
+            sized[&0],
+            [
+                ("a.png".to_string(), Some((120, Some(80)))),
+                ("b.png".to_string(), None),
+                ("a.png".to_string(), None),
+                ("sky.png".to_string(), Some((250, None))),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_size_hint_sets_the_width_and_the_room_still_limits_it() {
+        assert_eq!(fit_hinted(1000, 500, 600, Some((300, None))), (300, 150));
+        assert_eq!(fit_hinted(100, 50, 600, Some((300, None))), (300, 150));
+        assert_eq!(fit_hinted(1000, 500, 600, Some((120, Some(80)))), (120, 80));
+        assert_eq!(fit_hinted(1000, 500, 400, Some((800, Some(200)))), (400, 100));
+        assert_eq!(fit_hinted(1000, 500, 600, None), fit(1000, 500, 600));
     }
 
     #[test]

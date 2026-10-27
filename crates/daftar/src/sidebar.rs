@@ -21,6 +21,7 @@ pub struct Sidebar {
     /// The notes changed on disk since they were read, as the Mac lists them.
     updated: gtk::ListBox,
     updated_title: gtk::Label,
+    read_all: gtk::Button,
     updated_section: gtk::Box,
     shared: Rc<Shared>,
 }
@@ -195,15 +196,18 @@ impl Sidebar {
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .css_classes(["caption-heading", "dim-label"])
             .build();
+        // Under the list, as on the Mac, and only for more than one note: in
+        // the heading it cut the heading short.
         let read_all = gtk::Button::builder()
             .label("Mark All as Read")
+            .halign(gtk::Align::End)
+            .margin_end(6)
             .css_classes(["flat", "caption"])
             .action_name("win.mark-read")
             .action_target(&"".to_variant())
             .build();
-        let updated_head = gtk::Box::builder().margin_top(6).margin_end(6).build();
+        let updated_head = gtk::Box::builder().margin_top(10).margin_bottom(2).margin_end(6).build();
         updated_head.append(&updated_title);
-        updated_head.append(&read_all);
         let updated_section = gtk::Box::builder().orientation(gtk::Orientation::Vertical).visible(false).build();
         updated_section.append(&updated_head);
         updated_section.append(
@@ -214,6 +218,7 @@ impl Sidebar {
                 .child(&updated)
                 .build(),
         );
+        updated_section.append(&read_all);
         updated_section.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         let marks = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["navigation-sidebar"]).build();
@@ -241,7 +246,7 @@ impl Sidebar {
         widget.append(&updated_section);
         widget.append(&marks_section);
         widget.append(&tree);
-        Sidebar { widget, root, model, marks, marks_section, updated, updated_title, updated_section, shared }
+        Sidebar { widget, root, model, marks, marks_section, updated, updated_title, read_all, updated_section, shared }
     }
 
     /// The notes changed on disk since they were read, newest change first,
@@ -277,6 +282,7 @@ impl Sidebar {
             self.updated.append(&item);
         }
         self.updated_title.set_label(&format!("Updated since you read · {}", notes.len()));
+        self.read_all.set_visible(notes.len() > 1);
         self.updated_section.set_visible(!notes.is_empty());
     }
 

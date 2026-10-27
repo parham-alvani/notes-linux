@@ -16,6 +16,7 @@ pub mod conflict_text;
 pub mod day;
 pub mod detected;
 pub mod editor_commands;
+pub mod embed_size;
 pub mod fuzzy;
 pub mod git;
 pub mod home;
