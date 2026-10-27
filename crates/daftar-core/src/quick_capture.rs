@@ -12,6 +12,8 @@ use regex::Regex;
 
 use crate::bases::format_date;
 use crate::note_parser::NoteParser;
+use crate::vault::Vault;
+use crate::vault_edits::VaultEdits;
 
 static LIST_ITEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]").unwrap());
 static VARIABLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{\s*(title|date|time)\s*(?::([^}]*))?\}\}").unwrap());
@@ -65,6 +67,36 @@ impl QuickCapture {
             }
         }
         lines.join("\n")
+    }
+
+    /// Adds [line] to the note [target] names (`capture.target`), under
+    /// [heading] (`capture.heading`), made first when it is not there: the
+    /// daily note from its template, a named note empty. The file is read
+    /// again at the write, so a change made meanwhile stays; never a file
+    /// outside the vault. The note's vault path.
+    pub fn capture(root: &Path, target: &str, heading: &str, line: &str, now: DateTime<Local>) -> Result<String, String> {
+        let mut path = Self::target_path(root, target, now);
+        if path.starts_with('/') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+            return Err(format!("{path} is not a note in the vault."));
+        }
+        // "inbox" is Inbox.md, as the quick switcher finds it.
+        if !root.join(&path).exists()
+            && let Some(found) = Vault::index(root, None).files.iter().find(|file| file.to_lowercase() == path.to_lowercase())
+        {
+            path = found.clone();
+        }
+        let file = root.join(&path);
+        if !file.exists() {
+            let daily = target.trim().is_empty() || target.trim().eq_ignore_ascii_case("daily");
+            let first = if daily { DailyNotes::read(root).first_text(root, &Vault::title(&path), now) } else { String::new() };
+            if let Some(folder) = file.parent() {
+                std::fs::create_dir_all(folder).map_err(|e| format!("{path}: {e}"))?;
+            }
+            std::fs::write(&file, first).map_err(|e| format!("{path}: {e}"))?;
+        }
+        let heading = Some(heading.trim()).filter(|h| !h.is_empty());
+        VaultEdits::apply(&path, root, |text| Ok(Self::append(line, text, heading))).map_err(|e| format!("{path}: {e}"))?;
+        Ok(path)
     }
 
     /// The note a capture goes to: [target] as the settings write it,

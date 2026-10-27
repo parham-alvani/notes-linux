@@ -23,8 +23,8 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use daftar_core::{
-    Candidate, Clock, ConfigFile, DailyNotes, Day, Git, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions, SearchIndex, Side,
-    SyncFailure, TaskLine, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
+    Candidate, Clock, ConfigFile, Day, Git, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions, SearchIndex, Side, SyncFailure,
+    TaskLine, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
 };
 
 #[derive(Parser)]
@@ -488,36 +488,11 @@ fn side(side: Side) -> &'static str {
     }
 }
 
-/// Adds [line] to the capture note of [config], made first when it is not
-/// there: the daily note from its template, a named note empty. Never
-/// outside the vault. The note's vault path.
+/// Adds [line] to the capture note of [config], as the app's quick capture does.
 fn capture(root: &std::path::Path, config: &ConfigFile, line: &str) -> Result<String, String> {
-    let now = chrono::Local::now();
     let target = config.string("capture.target").unwrap_or_else(|| "daily".into());
-    let mut path = QuickCapture::target_path(root, &target, now);
-    // "inbox" is Inbox.md, as the app finds it.
-    if !root.join(&path).exists()
-        && let Some(found) = Vault::index(root, None).files.iter().find(|file| file.to_lowercase() == path.to_lowercase())
-    {
-        path = found.clone();
-    }
-    if path.split('/').any(|part| part.is_empty() || part == "." || part == "..") || path.starts_with('/') {
-        return Err(format!("{path} is not a note in the vault"));
-    }
-    let file = root.join(&path);
-    if !file.exists() {
-        let daily = target.trim().is_empty() || target.trim().eq_ignore_ascii_case("daily");
-        let title = Vault::title(&path);
-        let first = if daily { DailyNotes::read(root).first_text(root, &title, now) } else { String::new() };
-        if let Some(folder) = file.parent() {
-            fs::create_dir_all(folder).map_err(|e| format!("{path}: {e}"))?;
-        }
-        fs::write(&file, first).map_err(|e| format!("{path}: {e}"))?;
-    }
     let heading = config.string("capture.heading").unwrap_or_default();
-    let heading = Some(heading.trim()).filter(|h| !h.is_empty());
-    VaultEdits::apply(&path, root, |text| Ok(QuickCapture::append(line, text, heading))).map_err(|e| e.to_string())?;
-    Ok(path)
+    QuickCapture::capture(root, &target, &heading, line, chrono::Local::now())
 }
 
 fn repository(root: &std::path::Path) -> Result<Git, String> {
