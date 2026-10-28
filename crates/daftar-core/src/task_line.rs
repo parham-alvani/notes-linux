@@ -7,7 +7,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::day::Day;
-use crate::text::{trim, trim_end};
+use crate::task_status::{TaskStatuses, TaskType};
+use crate::text::{is_blank, trim, trim_end};
 
 /// A task as the index keeps it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -27,6 +28,8 @@ pub struct ParsedTask {
     pub cancelled: Option<String>,
     pub recurring: Option<String>,
     pub priority: Option<String>,
+    /// Why it is cancelled, or waiting: its `[reason:: …]` field.
+    pub reason: Option<String>,
     /// Indented under another item.
     pub nested: bool,
 }
@@ -163,9 +166,10 @@ const MOVED: [&str; 3] = ["📅", "⏳", "🛫"];
 pub struct TaskLine;
 
 impl TaskLine {
-    /// Done or cancelled. In progress and any custom status are still open.
+    /// Done or cancelled, as the vault's Tasks plugin settings type the
+    /// status. In progress and a status the settings do not know are open.
     pub fn is_closed(status: char) -> bool {
-        matches!(status, 'x' | 'X' | '-')
+        TaskStatuses::current().kind(status).is_closed()
     }
 
     pub fn is_task(raw: &str) -> bool {
@@ -180,6 +184,7 @@ impl TaskLine {
         let status = caps[2].chars().next()?;
         let body = if caps[3].contains('^') { BLOCK_ID.replace(&caps[3], "") } else { Cow::Borrowed(&caps[3]) };
         let (text, meta) = TaskMetadata::split(&body);
+        let (text, reason) = TaskReason::take(&text);
         let date = |emoji: &str| meta.iter().find(|m| m.emoji == emoji).map(|m| m.value.clone()).filter(|v| !v.is_empty());
         let prefix = &caps[1];
         let indent: String = prefix.chars().take_while(|c| matches!(c, ' ' | '\t' | '>')).collect();
@@ -196,6 +201,7 @@ impl TaskLine {
             cancelled: date(CANCELLED),
             recurring: date(RECUR),
             priority: meta.iter().find(|m| TaskMetadata::kind(&m.emoji) == Some("priority")).map(|m| m.emoji.clone()),
+            reason,
             nested: indent.contains([' ', '\t']),
         })
     }
@@ -215,6 +221,8 @@ impl TaskLine {
             let start = found.get(0).unwrap().start();
             body.truncate(start);
         }
+        // The reason was the old status's: it goes with it.
+        let body = TaskReason::remove(&body);
         if Self::is_closed(status) {
             let text = CLOSED_DATE.replace_all(&body, "");
             return Some(vec![format!("{prefix}[ ] {text}{id}")]);
@@ -224,6 +232,50 @@ impl TaskLine {
             return Some(lines);
         }
         Some(vec![format!("{prefix}[x] {} {DONE} {today}{id}", trim_end(&body))])
+    }
+
+    /// The line after its status is set to [status] from a status menu, a
+    /// board column or the command line. Done from open is the tick, a
+    /// repeat and all; else the done and cancelled dates follow the status's
+    /// type, kept when it was of that type already. The old reason goes with
+    /// the old status unless [reason] gives one, and a blank one takes it
+    /// away; to the same status only the reason changes. `None` when nothing
+    /// does.
+    pub fn with_status(raw: &str, status: char, reason: Option<&str>, today: &str) -> Option<Vec<String>> {
+        let statuses = TaskStatuses::current();
+        let mut fields = Self::fields(raw)?;
+        let given = reason.map(|r| Some(r.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|r| !r.is_empty()));
+        if status == fields.status {
+            let reason = given?;
+            if fields.reason == reason {
+                return None;
+            }
+            fields.reason = reason;
+            return Self::edited(raw, &fields).map(|line| vec![line]);
+        }
+        let reason = given.flatten();
+        let (from, to) = (statuses.kind(fields.status), statuses.kind(status));
+        if to == TaskType::Done && !from.is_closed() {
+            let mut lines = Self::toggled(raw, today)?;
+            if status != 'x' || reason.is_some() {
+                let last = lines.last_mut()?;
+                let mut done = Self::fields(last)?;
+                done.status = status;
+                done.reason = reason;
+                *last = Self::edited(last, &done)?;
+            }
+            return Some(lines);
+        }
+        let date = |kind: TaskType, now: &Option<String>| match (to == kind, from == kind) {
+            (true, true) => now.clone(),
+            (true, false) => Some(today.to_string()),
+            _ => None,
+        };
+        fields.done = date(TaskType::Done, &fields.done);
+        fields.cancelled = date(TaskType::Cancelled, &fields.cancelled);
+        fields.status = status;
+        fields.reason = reason;
+        Self::edited(raw, &fields).map(|line| vec![line])
     }
 
     /// The next occurrence above the one just done, every date moved by the
@@ -269,7 +321,8 @@ impl TaskLine {
     pub fn fields(raw: &str) -> Option<TaskFields> {
         let caps = FIELDS_LINE.captures(raw)?;
         let (text, meta) = TaskMetadata::split(&caps[3]);
-        let mut fields = TaskFields { status: caps[2].chars().next()?, text, ..TaskFields::default() };
+        let (text, reason) = TaskReason::take(&text);
+        let mut fields = TaskFields { status: caps[2].chars().next()?, text, reason, ..TaskFields::default() };
         for m in meta {
             let value = (!m.value.is_empty()).then(|| m.value.clone());
             match m.emoji.as_str() {
@@ -292,6 +345,9 @@ impl TaskLine {
     pub fn edited(raw: &str, fields: &TaskFields) -> Option<String> {
         let caps = FIELDS_LINE.captures(raw)?;
         let mut parts = vec![trim(&fields.text).to_string()];
+        if let Some(reason) = fields.reason.as_deref().and_then(TaskReason::field) {
+            parts.push(reason);
+        }
         if let Some(priority) = &fields.priority {
             parts.push(priority.clone());
         }
@@ -323,6 +379,85 @@ impl TaskLine {
         parts.retain(|p| !p.is_empty());
         let id = caps.get(4).map_or("", |m| m.as_str());
         Some(format!("{}[{}] {}{}", &caps[1], fields.status, parts.join(" "), id))
+    }
+}
+
+/// Why a task is in its status, cancelled or waiting: a Dataview field in
+/// its description, `[reason:: no budget left]`, after the text and before
+/// the Tasks plugin's signifiers, which the plugin keeps as part of the
+/// description. The rules are Daftar's on macOS and Android.
+pub struct TaskReason;
+
+impl TaskReason {
+    /// Where the first field is in [text], in bytes, and its value. The key
+    /// comes straight after the bracket, in any case, and the value runs to
+    /// the bracket that closes the field, so a `[[link]]` can be in it.
+    /// A field that never closes is text.
+    fn find(text: &str) -> Option<(std::ops::Range<usize>, String)> {
+        let mut from = 0;
+        while let Some(at) = text[from..].find('[').map(|i| from + i) {
+            from = at + 1;
+            let rest = &text[at + 1..];
+            let Some(key) = rest.get(..6).filter(|k| k.eq_ignore_ascii_case("reason")) else { continue };
+            let after = rest[key.len()..].trim_start_matches(is_blank);
+            let Some(value) = after.strip_prefix("::") else { continue };
+            let start = text.len() - value.len();
+            let mut depth = 1;
+            let close = text[start..].char_indices().find_map(|(i, c)| {
+                depth += match c {
+                    '[' => 1,
+                    ']' => -1,
+                    _ => 0,
+                };
+                (depth == 0).then_some(start + i)
+            });
+            let Some(close) = close else { continue };
+            return Some((at..close + 1, trim(&text[start..close]).to_string()));
+        }
+        None
+    }
+
+    /// [text] without its field, the spaces around it folded into one, and
+    /// the reason; `None` for none or an empty one.
+    pub fn take(text: &str) -> (String, Option<String>) {
+        if !text.contains("::") {
+            return (text.to_string(), None);
+        }
+        let Some((range, value)) = Self::find(text) else { return (text.to_string(), None) };
+        let (before, after) = (trim_end(&text[..range.start]), text[range.end..].trim_start_matches(is_blank));
+        let joined = if before.is_empty() || after.is_empty() { format!("{before}{after}") } else { format!("{before} {after}") };
+        (trim(&joined).to_string(), Some(value).filter(|v| !v.is_empty()))
+    }
+
+    /// Where the field is in [text], in bytes.
+    pub fn range(text: &str) -> Option<std::ops::Range<usize>> {
+        if text.contains("::") { Self::find(text).map(|(range, _)| range) } else { None }
+    }
+
+    /// [text] without its field.
+    pub fn remove(text: &str) -> String {
+        Self::take(text).0
+    }
+
+    /// The field for [value]: on one line, and with brackets that do not
+    /// balance made round, so the field still closes where it should.
+    /// `None` for a blank one.
+    pub fn field(value: &str) -> Option<String> {
+        let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        if value.is_empty() {
+            return None;
+        }
+        let mut depth = 0i32;
+        let balanced = value.chars().all(|c| {
+            depth += match c {
+                '[' => 1,
+                ']' => -1,
+                _ => 0,
+            };
+            depth >= 0
+        }) && depth == 0;
+        let value = if balanced { value } else { value.replace('[', "(").replace(']', ")") };
+        Some(format!("[reason:: {value}]"))
     }
 }
 
@@ -407,6 +542,8 @@ pub struct TaskFields {
     pub due: Option<String>,
     pub cancelled: Option<String>,
     pub done: Option<String>,
+    /// The `[reason:: …]` field's value.
+    pub reason: Option<String>,
     /// Signifiers the form does not show (🏁, ⛔, 🆔), kept as they are.
     pub other: Vec<Meta>,
 }
@@ -424,6 +561,7 @@ impl Default for TaskFields {
             due: None,
             cancelled: None,
             done: None,
+            reason: None,
             other: Vec::new(),
         }
     }
@@ -574,6 +712,62 @@ mod tests {
         assert_eq!(fields.due.as_deref(), Some("2026-10-25"));
         assert_eq!(fields.other, [Meta::new("🏁", "delete")]);
         assert_eq!(TaskLine::edited(raw, &fields).as_deref(), Some(raw));
+    }
+
+    #[test]
+    fn the_reason_is_a_field_after_the_text() {
+        let task = TaskLine::parse("- [-] Deploy [reason:: no budget] ➕ 2025-05-17 ❌ 2025-11-16", 0, "").unwrap();
+        assert_eq!((task.text.as_str(), task.reason.as_deref()), ("Deploy", Some("no budget")));
+        assert_eq!((task.created.as_deref(), task.cancelled.as_deref()), (Some("2025-05-17"), Some("2025-11-16")));
+        let linked = TaskLine::parse("- [r] Ship [reason:: waiting on [[Amir]]] 📅 2026-11-02 ^imp", 0, "").unwrap();
+        assert_eq!(
+            (linked.text.as_str(), linked.reason.as_deref(), linked.due.as_deref()),
+            ("Ship", Some("waiting on [[Amir]]"), Some("2026-11-02"))
+        );
+        let middle = TaskLine::parse("- [ ] Call [Reason ::busy] the bank", 0, "").unwrap();
+        assert_eq!((middle.text.as_str(), middle.reason.as_deref()), ("Call the bank", Some("busy")));
+        // Only the first is the reason; one that never closes is text.
+        assert_eq!(TaskReason::take("a [reason:: one] b [reason:: two]"), ("a b [reason:: two]".into(), Some("one".into())));
+        assert_eq!(TaskReason::take("a [reason:: open"), ("a [reason:: open".into(), None));
+        assert_eq!(TaskReason::take("a [reason::] b"), ("a b".into(), None));
+    }
+
+    #[test]
+    fn the_reason_is_written_before_the_signifiers() {
+        let raw = "- [ ] T 📅 2026-11-02 ^b";
+        let mut fields = TaskLine::fields(raw).unwrap();
+        fields.reason = Some("a ] b".into());
+        let with = TaskLine::edited(raw, &fields).unwrap();
+        assert_eq!(with, "- [ ] T [reason:: a ) b] 📅 2026-11-02 ^b");
+        let mut back = TaskLine::fields(&with).unwrap();
+        assert_eq!(back.reason.as_deref(), Some("a ) b"));
+        back.reason = Some("  ".into());
+        assert_eq!(TaskLine::edited(&with, &back).as_deref(), Some(raw));
+    }
+
+    #[test]
+    fn cancelling_with_a_reason_and_opening_again() {
+        let cancelled = TaskLine::with_status("- [ ] Write ⏳ 2026-10-04", '-', Some("no\n time"), "2026-10-28").unwrap();
+        assert_eq!(cancelled, ["- [-] Write [reason:: no time] ⏳ 2026-10-04 ❌ 2026-10-28"]);
+        assert_eq!(toggled(&cancelled[0], "2026-10-29"), ["- [ ] Write ⏳ 2026-10-04"]);
+        // A new status without a reason leaves the old one behind.
+        assert_eq!(TaskLine::with_status(&cancelled[0], '/', None, "2026-10-29").unwrap(), ["- [/] Write ⏳ 2026-10-04"]);
+        // The same status: only the reason changes, or nothing does.
+        assert_eq!(
+            TaskLine::with_status(&cancelled[0], '-', Some("later"), "2026-10-29").unwrap(),
+            ["- [-] Write [reason:: later] ⏳ 2026-10-04 ❌ 2026-10-28"]
+        );
+        assert_eq!(TaskLine::with_status(&cancelled[0], '-', None, "2026-10-29"), None);
+        assert_eq!(TaskLine::with_status("- [ ] W", 'x', None, "2026-10-29").unwrap(), ["- [x] W ✅ 2026-10-29"]);
+        assert_eq!(TaskLine::with_status("- [x] W ✅ 2026-10-20", 'X', None, "2026-10-29").unwrap(), ["- [X] W ✅ 2026-10-20"]);
+    }
+
+    #[test]
+    fn a_repeat_ticked_leaves_its_reason_behind() {
+        assert_eq!(
+            toggled("- [/] Water [reason:: away] 🔁 every week 📅 2026-10-25", "2026-10-25"),
+            ["- [ ] Water 🔁 every week 📅 2026-11-01", "- [x] Water 🔁 every week 📅 2026-10-25 ✅ 2026-10-25"]
+        );
     }
 
     #[test]

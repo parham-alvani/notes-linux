@@ -106,6 +106,25 @@ pub fn postpone(root: &Path, path: &str, at: usize, amount: &str, today: Day) ->
     Ok(after.split('\n').nth(at).unwrap_or_default().to_string())
 }
 
+/// Sets the status of the task on line [at] of [path] to [symbol] (`x`,
+/// `-`, `r`, …), as a status menu in the app does: its dates follow the
+/// status, and [reason] goes on it in a `[reason:: …]` field. The old reason
+/// goes with the old status; an empty one takes it away. Returns the line,
+/// under the next occurrence a repeating task leaves above it.
+pub fn set_status(root: &Path, path: &str, at: usize, symbol: &str, reason: Option<&str>, today: Day) -> Result<String, String> {
+    let mut chars = symbol.chars();
+    let (Some(status), None) = (chars.next(), chars.next()) else {
+        return Err(format!("a status is one character, as x, - or /, not “{symbol}”"));
+    };
+    let text = fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+    let raw = text.split('\n').nth(at).ok_or(format!("{path} has no line {}", at + 1))?;
+    let task = TaskLine::parse(raw.trim_end_matches('\r'), at, "").ok_or(format!("{path}:{} is not a task", at + 1))?;
+    VaultEdits::apply(path, root, |now| VaultEdits::set_task_status(now, at, &task, status, reason, today)).map_err(|e| e.to_string())?;
+    let after = fs::read_to_string(root.join(path)).unwrap_or_default();
+    let line = if after.split('\n').count() > text.split('\n').count() { at + 1 } else { at };
+    Ok(after.split('\n').nth(line).unwrap_or_default().trim_end_matches('\r').to_string())
+}
+
 /// The periodic note of [day]'s period, as the Daily notes plugin names
 /// it, made from its template when it is not there and [create] is set.
 pub fn daily(root: &Path, files: &BTreeSet<String>, day: Day, create: bool, clock: Clock) -> Result<String, String> {
@@ -165,6 +184,19 @@ mod tests {
         assert_eq!(read(&root, "A.md"), "#job/alpha here");
         assert_eq!(read(&root, "B.md"), "---\ntags: [job]\n---\nbody");
         assert!(rename_tag(root.path(), &index, "work", "12", false).is_err());
+    }
+
+    #[test]
+    fn a_status_is_set_with_its_reason() {
+        let (root, _) = vault(&[("T.md", "# T\n- [ ] Write ⏳ 2026-10-04\n- [ ] Water 🔁 every week 📅 2026-10-25\n")]);
+        let day = Day::parse("2026-10-28").unwrap();
+        let line = set_status(root.path(), "T.md", 1, "-", Some("no time"), day).unwrap();
+        assert_eq!(line, "- [-] Write [reason:: no time] ⏳ 2026-10-04 ❌ 2026-10-28");
+        assert_eq!(set_status(root.path(), "T.md", 1, "/", None, day).unwrap(), "- [/] Write ⏳ 2026-10-04");
+        // A repeat leaves its next one above: the line done is under it.
+        assert_eq!(set_status(root.path(), "T.md", 2, "x", None, day).unwrap(), "- [x] Water 🔁 every week 📅 2026-10-25 ✅ 2026-10-28");
+        assert!(set_status(root.path(), "T.md", 0, "x", None, day).is_err());
+        assert!(set_status(root.path(), "T.md", 1, "xy", None, day).is_err());
     }
 
     #[test]

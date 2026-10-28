@@ -19,7 +19,8 @@ use webkit6::prelude::*;
 use webkit6::{NavigationPolicyDecision, PolicyDecisionType, URISchemeRequest, URISchemeResponse, WebView};
 
 use daftar_core::{
-    Base, BaseCell, BaseEngine, BaseImage, BaseLayout, Canvas, Day, Detected, NoteParser, QueryTask, TasksQuery, Vault, VaultIndex,
+    Base, BaseCell, BaseEngine, BaseImage, BaseLayout, Canvas, Day, Detected, NoteParser, QueryTask, TaskStatuses, TasksQuery, Vault,
+    VaultIndex,
 };
 
 use crate::settings::AppSettings;
@@ -693,17 +694,23 @@ fn run_query(store: &VaultStore, source: &str, path: Option<&str>) -> Value {
     let rows: Vec<Value> = found
         .iter()
         .map(|task| {
-            for link in NoteParser::parse(&task.task.text).links {
+            let words = format!("{} {}", task.task.text, task.task.reason.as_deref().unwrap_or(""));
+            for link in NoteParser::parse(&words).links {
                 if !links.contains_key(&link.target)
                     && let Some(target) = index.resolve(&link.target, &task.path)
                 {
                     links.insert(link.target, target.into());
                 }
             }
+            // The status by its name when the vault's settings add it, and
+            // whether it is closed, which the page cannot tell from its symbol.
+            let status = TaskStatuses::current().status(task.task.status);
             json!({
                 "path": task.path, "line": task.task.line, "status": task.task.status.to_string(),
                 "text": task.task.text, "title": Vault::title(&task.path), "groups": query.groups(&QueryTask::from(task)),
                 "due": task.task.due, "scheduled": task.task.scheduled, "done": task.task.done,
+                "reason": task.task.reason, "closed": status.kind.is_closed(),
+                "statusName": (!status.is_default()).then_some(status.name),
             })
         })
         .collect();

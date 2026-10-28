@@ -15,49 +15,22 @@ use regex::Regex;
 
 use crate::day::Day;
 use crate::task_expression::{TaskExpression, Value};
+use crate::task_status::{TaskStatuses, TaskType};
 use crate::vault::VaultTask;
 
-/// The four states the Tasks plugin knows a task by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskState {
-    Todo,
-    InProgress,
-    Done,
-    Cancelled,
-}
+/// The states the Tasks plugin knows a task by: its status's type.
+pub type TaskState = TaskType;
 
-impl TaskState {
+impl TaskType {
+    /// The type the vault's settings give [status]; one they do not know is
+    /// still to do.
     pub fn new(status: char) -> TaskState {
-        match status {
-            'x' | 'X' => TaskState::Done,
-            '-' => TaskState::Cancelled,
-            '/' => TaskState::InProgress,
-            // The plugin treats a status it does not know as still to do.
-            _ => TaskState::Todo,
-        }
+        TaskStatuses::current().kind(status)
     }
 
-    /// Ticked or cancelled: no longer to be done.
+    /// Ticked, cancelled or not a task: no longer to be done.
     pub fn is_finished(self) -> bool {
-        matches!(self, TaskState::Done | TaskState::Cancelled)
-    }
-
-    pub fn type_name(self) -> &'static str {
-        match self {
-            TaskState::Todo => "TODO",
-            TaskState::InProgress => "IN_PROGRESS",
-            TaskState::Done => "DONE",
-            TaskState::Cancelled => "CANCELLED",
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            TaskState::Todo => "Todo",
-            TaskState::InProgress => "In Progress",
-            TaskState::Done => "Done",
-            TaskState::Cancelled => "Cancelled",
-        }
+        self.is_closed()
     }
 }
 
@@ -66,6 +39,10 @@ impl TaskState {
 pub struct QueryTask {
     pub text: String,
     pub state: TaskState,
+    /// The status's symbol and its name in the settings, `In Review`.
+    pub symbol: char,
+    pub status_name: String,
+    pub reason: Option<String>,
     /// The note's path inside the vault, `Folder/Note.md`.
     pub path: String,
     /// The heading above the task.
@@ -81,6 +58,21 @@ impl QueryTask {
         QueryTask {
             text: text.into(),
             state,
+            symbol: match state {
+                TaskState::Done => 'x',
+                TaskState::InProgress => '/',
+                TaskState::Cancelled => '-',
+                _ => ' ',
+            },
+            status_name: match state {
+                TaskState::Done => "Done",
+                TaskState::InProgress => "In Progress",
+                TaskState::Cancelled => "Cancelled",
+                TaskState::NonTask => "Non-task",
+                TaskState::Todo => "Todo",
+            }
+            .into(),
+            reason: None,
             path: path.into(),
             section: String::new(),
             due: None,
@@ -109,9 +101,13 @@ impl QueryTask {
 
 impl From<&VaultTask> for QueryTask {
     fn from(task: &VaultTask) -> QueryTask {
+        let status = TaskStatuses::current().status(task.task.status);
         QueryTask {
             text: task.task.text.clone(),
-            state: TaskState::new(task.task.status),
+            state: status.kind,
+            symbol: status.symbol,
+            status_name: status.name,
+            reason: task.task.reason.clone(),
             path: task.path.clone(),
             section: task.task.section.clone(),
             due: task.task.due.clone(),
@@ -141,7 +137,10 @@ static LIMIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^limit (?:to )?(\d
 static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{([^}]*)\}\}").unwrap());
 static NEGATION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?i)NOT\s*\(").unwrap());
 static STATUS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?i)status\.type is( not)? (todo|in[_ ]progress|done|cancelled)$").unwrap());
+    LazyLock::new(|| Regex::new(r"^(?i)status\.type is( not)? (todo|in[_ ]progress|done|cancelled|non[_ ]task)$").unwrap());
+static STATUS_NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?i)status\.name (is|is not|includes|does not include)\s+(.+)$").unwrap());
+static REASON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?i)reason (includes|does not include)\s+(.+)$").unwrap());
 static HAS_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?i)(has|no) (due|scheduled|done|happens) date$").unwrap());
 static DATE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?i)(due|scheduled|done|happens)( on or before| on or after| before| after| on| in)?\s+(.+)$").unwrap());
@@ -295,6 +294,8 @@ fn filter(line: &str) -> Option<Filter> {
         "not done" => return Some(Box::new(|task, _| !task.state.is_finished())),
         "is recurring" => return Some(Box::new(|task, _| task.recurring.is_some())),
         "is not recurring" => return Some(Box::new(|task, _| task.recurring.is_none())),
+        "has reason" => return Some(Box::new(|task, _| task.reason.is_some())),
+        "no reason" => return Some(Box::new(|task, _| task.reason.is_none())),
         _ => {}
     }
     if let Some(caps) = STATUS.captures(text) {
@@ -302,10 +303,29 @@ fn filter(line: &str) -> Option<Filter> {
             "todo" => TaskState::Todo,
             "in_progress" => TaskState::InProgress,
             "done" => TaskState::Done,
+            "non_task" => TaskState::NonTask,
             _ => TaskState::Cancelled,
         };
         let negate = caps.get(1).is_some();
         return Some(Box::new(move |task, _| (task.state == wanted) != negate));
+    }
+    if let Some(caps) = STATUS_NAME.captures(text) {
+        let relation = caps[1].to_lowercase();
+        let wanted = caps[2].trim().to_lowercase();
+        return Some(Box::new(move |task, _| {
+            let name = task.status_name.to_lowercase();
+            match relation.as_str() {
+                "is" => name == wanted,
+                "is not" => name != wanted,
+                "includes" => name.contains(&wanted),
+                _ => !name.contains(&wanted),
+            }
+        }));
+    }
+    if let Some(caps) = REASON.captures(text) {
+        let negate = caps[1].to_lowercase().starts_with("does not");
+        let wanted = caps[2].trim().to_lowercase();
+        return Some(Box::new(move |task, _| task.reason.as_deref().unwrap_or("").to_lowercase().contains(&wanted) != negate));
     }
     if let Some(caps) = HAS_DATE.captures(text) {
         let field = date_field(&caps[2])?;
@@ -641,6 +661,30 @@ mod tests {
         );
         assert_eq!(query.not_understood.len(), 3);
         assert_eq!(TasksQuery::parse("folder includes {{query.file.folder}}", None).not_understood.len(), 1);
+    }
+
+    #[test]
+    fn reasons_and_status_names() {
+        let review = QueryTask {
+            symbol: 'r',
+            status_name: "In Review".into(),
+            reason: Some("waiting on Amir".into()),
+            ..QueryTask::new("Ship", TaskState::InProgress, "Tasks/Work.md")
+        };
+        let dropped = QueryTask { reason: Some("No budget".into()), ..QueryTask::new("Qdrant", TaskState::Cancelled, "Tasks/Work.md") };
+        let all = || vec![review.clone(), dropped.clone(), QueryTask::new("Plain", TaskState::Todo, "Tasks/Work.md")];
+        let run = |source: &str| {
+            TasksQuery::parse(source, None).run(all(), today(), |t| t.clone()).into_iter().map(|t| t.text).collect::<Vec<_>>()
+        };
+        assert_eq!(run("has reason\nsort by description"), ["Qdrant", "Ship"]);
+        assert_eq!(run("no reason"), ["Plain"]);
+        assert_eq!(run("reason includes budget"), ["Qdrant"]);
+        assert_eq!(run("reason does not include budget"), ["Ship", "Plain"]);
+        assert_eq!(run("status.name is in review"), ["Ship"]);
+        assert_eq!(run("status.type is IN_PROGRESS"), ["Ship"]);
+        assert_eq!(run("filter by function task.reason && task.status.symbol === 'r'"), ["Ship"]);
+        assert_eq!(run("filter by function task.reason === null"), ["Plain"]);
+        assert_eq!(run("status.name does not include o\nnot done"), ["Ship"]);
     }
 
     #[test]

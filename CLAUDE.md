@@ -4,7 +4,7 @@ Guidance for Claude Code in this repository.
 
 ## What this is
 
-**Daftar for Linux**: a native Rust app (GTK 4, libadwaita, WebKitGTK 6.0) for an Obsidian vault in a Git repository, meant to replace Obsidian on a Linux desktop, a tiling Wayland compositor first. It is the sister of `notes-mac` (Daftar for macOS, Swift) and `notes-droid` (Daftar for Android, Kotlin). The three apps share no code, but they share rules: how a wikilink resolves, what a task line is and how it is ticked, the format of the week notes in `Calendar/`, the config file and the colors. When a rule changes in one, change it in the others.
+**Daftar for Linux**: a native Rust app (GTK 4, libadwaita, WebKitGTK 6.0) for an Obsidian vault in a Git repository, meant to replace Obsidian on a Linux desktop, a tiling Wayland compositor first. It is the sister of `notes-mac` (Daftar for macOS, Swift) and `notes-droid` (Daftar for Android, Kotlin). The three apps share no code, but they share rules: how a wikilink resolves, what a task line is and how it is ticked, the task statuses (`task_status.rs`, from the Tasks plugin's settings in the vault) and the `[reason:: …]` field (`TaskReason` in `task_line.rs`): a reason goes with the status it was given with, the format of the week notes in `Calendar/`, the config file and the colors. When a rule changes in one, change it in the others.
 
 The repository is **public**; the vault it reads is private. Every test fixture is synthetic.
 

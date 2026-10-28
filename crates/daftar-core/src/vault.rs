@@ -15,6 +15,7 @@ use crate::note_parser::{NoteParser, ParsedNote};
 use crate::search::SearchIndex;
 use crate::tag_tree::TagNode;
 use crate::task_line::ParsedTask;
+use crate::task_status::TaskStatuses;
 use crate::text::{slugs, standard_compare, trim};
 
 /// One note in the index.
@@ -288,7 +289,10 @@ impl Vault {
     }
 
     /// Builds the whole index of the vault at [root].
+    /// The vault's task statuses are read again too, for the rules given only
+    /// a symbol: see `TaskStatuses::current`.
     pub fn index(root: &Path, search: Option<&SearchIndex>) -> VaultIndex {
+        TaskStatuses::set_current(TaskStatuses::load(root));
         let mut index = VaultIndex { files: Self::scan(root), ..VaultIndex::default() };
         index.empty_folders = Self::empty_folders(root, &index.files);
         let paths: Vec<String> = index.files.iter().filter(|p| Self::is_note(p)).cloned().collect();
@@ -316,6 +320,9 @@ impl Vault {
     /// [update] on [index] itself, with no copy of it: a vault of 20,000
     /// notes takes a sixth of a second to copy, at every change.
     pub fn update_in_place(index: &mut VaultIndex, changed: &BTreeSet<String>, root: &Path, search: Option<&SearchIndex>) {
+        if changed.contains(TaskStatuses::PATH) {
+            TaskStatuses::set_current(TaskStatuses::load(root));
+        }
         let mut reread: Vec<String> = Vec::new();
         // A folder came or went, or its last file did: the empty ones are found again.
         let mut folders = false;

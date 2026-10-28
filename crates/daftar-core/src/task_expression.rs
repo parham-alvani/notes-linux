@@ -62,7 +62,9 @@ impl TaskExpression {
     fn property(path: &str) -> Option<Node> {
         let node: Node = match path {
             "status.type" => Box::new(|t| Value::String(t.state.type_name().into())),
-            "status.name" => Box::new(|t| Value::String(t.state.name().into())),
+            "status.name" => Box::new(|t| Value::String(t.status_name.clone())),
+            "status.symbol" => Box::new(|t| Value::String(t.symbol.to_string())),
+            "reason" => Box::new(|t| t.reason.clone().map_or(Value::Null, Value::String)),
             "description" => Box::new(|t| Value::String(t.text.clone())),
             "heading" => Box::new(|t| if t.section.trim().is_empty() { Value::Null } else { Value::String(t.section.clone()) }),
             "hasHeading" => Box::new(|t| Value::Bool(!t.section.trim().is_empty())),

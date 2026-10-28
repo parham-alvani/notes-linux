@@ -55,7 +55,9 @@ impl VaultEdits {
     }
 
     /// The task on [line] of [text] written from [fields]. [before] is the
-    /// task the form was opened on, which the line must still hold.
+    /// task the form was opened on, which the line must still hold. A new
+    /// status is set as `TaskLine::with_status` sets it: its dates, a repeat,
+    /// and the old reason gone unless the form gave a new one.
     pub fn edit_task(text: &str, line: usize, before: &TaskFields, fields: &TaskFields) -> Result<String, Failure> {
         let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
         let raw = lines.get(line).ok_or(Failure::TaskMoved)?;
@@ -64,8 +66,15 @@ impl VaultEdits {
         if TaskLine::fields(clean).as_ref() != Some(before) {
             return Err(Failure::TaskMoved);
         }
-        let replacement = TaskLine::edited(clean, fields).ok_or(Failure::TaskMoved)?;
-        lines[line] = if crlf { replacement + "\r" } else { replacement };
+        let status = fields.status;
+        let written = TaskFields { status: before.status, reason: before.reason.clone(), ..fields.clone() };
+        let edited = TaskLine::edited(clean, &written).ok_or(Failure::TaskMoved)?;
+        let reason = (fields.reason != before.reason).then(|| fields.reason.clone().unwrap_or_default());
+        let replacement = match TaskLine::with_status(&edited, status, reason.as_deref(), &Day::today().to_string()) {
+            Some(lines) => lines,
+            None => vec![edited],
+        };
+        lines.splice(line..=line, replacement.into_iter().map(|l| if crlf { l + "\r" } else { l }));
         Ok(lines.join("\n"))
     }
 
@@ -121,6 +130,23 @@ mod tests {
         assert_eq!(VaultEdits::toggle_task(text, 0, ' ', day("2026-10-05")), Err(Failure::TaskMoved));
         assert_eq!(VaultEdits::toggle_task(text, 1, 'x', day("2026-10-05")), Err(Failure::TaskMoved));
         assert_eq!(VaultEdits::toggle_task(text, 9, ' ', day("2026-10-05")), Err(Failure::TaskMoved));
+    }
+
+    #[test]
+    fn the_form_sets_a_status_and_its_reason() {
+        let text = "- [/] Ship [reason:: review] 📅 2026-11-02\n";
+        let before = TaskLine::fields("- [/] Ship [reason:: review] 📅 2026-11-02").unwrap();
+        let today = Day::today().to_string();
+        let cancel = TaskFields { status: '-', reason: Some("no budget".into()), ..before.clone() };
+        assert_eq!(
+            VaultEdits::edit_task(text, 0, &before, &cancel).unwrap(),
+            format!("- [-] Ship [reason:: no budget] 📅 2026-11-02 ❌ {today}\n")
+        );
+        // A new status with the reason untouched leaves the old one behind.
+        let open = TaskFields { status: ' ', ..before.clone() };
+        assert_eq!(VaultEdits::edit_task(text, 0, &before, &open).unwrap(), "- [ ] Ship 📅 2026-11-02\n");
+        let cleared = TaskFields { reason: None, ..before.clone() };
+        assert_eq!(VaultEdits::edit_task(text, 0, &before, &cleared).unwrap(), "- [/] Ship 📅 2026-11-02\n");
     }
 
     #[test]

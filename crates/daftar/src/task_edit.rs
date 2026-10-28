@@ -1,5 +1,5 @@
 //! The Tasks plugin's "edit task", as a dialog: the text, the status, the
-//! priority, the dates and the repeat rule, each in its color. The line is
+//! reason, the priority, the dates and the repeat rule, each in its color. The line is
 //! read from the file when the dialog opens and again before it is written,
 //! and the save is refused when it changed meanwhile. The Mac's
 //! `TaskEditSheet`.
@@ -9,12 +9,83 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use daftar_core::{BoardDrop, Day, Postpone, Recurrence, TaskFields, TaskLine, Vault, VaultTask};
+use daftar_core::{BoardDrop, Day, Postpone, Recurrence, TaskFields, TaskLine, TaskStatus, TaskStatuses, TaskType, Vault, VaultTask};
 
 use crate::store::VaultStore;
 
-const STATUSES: [(char, &str, &str); 4] =
-    [(' ', "To do", "t-accent"), ('/', "In progress", "t-purple"), ('x', "Done", "t-green"), ('-', "Cancelled", "t-red")];
+/// A status's color, by its type.
+pub fn status_tint(kind: TaskType) -> &'static str {
+    match kind {
+        TaskType::Todo => "t-accent",
+        TaskType::InProgress => "t-purple",
+        TaskType::Done => "t-green",
+        TaskType::Cancelled => "t-red",
+        TaskType::NonTask => "t-muted",
+    }
+}
+
+/// The name of a status that is not one of the four every vault has, as
+/// `In Review`, in its color; `None` for those four.
+pub fn status_badge(symbol: char) -> Option<gtk::Label> {
+    let status = TaskStatuses::current().status(symbol);
+    (!status.is_default()).then(|| gtk::Label::builder().label(&status.name).css_classes(["daftar-day", status_tint(status.kind)]).build())
+}
+
+/// The reason a task is in its status, muted, after a speech balloon.
+pub fn reason_label(reason: &str, rtl: bool) -> gtk::Box {
+    let row = gtk::Box::builder()
+        .spacing(5)
+        .css_classes(["daftar-muted", "caption"])
+        .halign(if rtl { gtk::Align::End } else { gtk::Align::Start })
+        .build();
+    row.append(&gtk::Label::new(Some("💬")));
+    row.append(
+        &gtk::Label::builder()
+            .label(crate::today::plain(reason))
+            .wrap(true)
+            .lines(2)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .xalign(if rtl { 1.0 } else { 0.0 })
+            .build(),
+    );
+    row.set_tooltip_text(Some(reason));
+    row
+}
+
+/// Whether setting [to] on a task now [from] cancels it, which asks why first.
+pub fn cancels(from: char, to: char) -> bool {
+    let statuses = TaskStatuses::current();
+    statuses.kind(to) == TaskType::Cancelled && statuses.kind(from) != TaskType::Cancelled
+}
+
+/// "Cancel Task": why, in one line that may be left empty. [done] gets the
+/// reason when the task is cancelled; Escape or "Don't Cancel" leaves it as
+/// it is.
+pub fn ask_reason(parent: &impl IsA<gtk::Widget>, text: &str, current: Option<&str>, done: impl Fn(String) + 'static) {
+    let dialog = adw::AlertDialog::builder()
+        .heading("Cancel Task")
+        .body(format!("Why is “{}” cancelled? The reason is kept on the task, and it may be left empty.", crate::today::plain(text)))
+        .close_response("back")
+        .default_response("cancel")
+        .build();
+    dialog.add_responses(&[("back", "Don't Cancel"), ("cancel", "Cancel Task")]);
+    dialog.set_response_appearance("cancel", adw::ResponseAppearance::Destructive);
+    let entry = gtk::Entry::builder().placeholder_text("Reason").text(current.unwrap_or("")).activates_default(true).build();
+    dialog.set_extra_child(Some(&entry));
+    {
+        let entry = entry.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "cancel" {
+                done(entry.text().to_string());
+            }
+        });
+    }
+    dialog.present(Some(parent));
+    // The dialog focuses its buttons as it opens: the reason is what is typed.
+    gtk::glib::idle_add_local_once(move || {
+        entry.grab_focus();
+    });
+}
 
 const PRIORITIES: [(Option<&str>, &str, &str); 6] = [
     (None, "None", "t-muted"),
@@ -106,30 +177,58 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
     }
     content.append(&text);
 
-    // Status and priority, as rows of pills of which one is on.
-    let statuses = gtk::Box::builder().spacing(6).build();
+    // Status and priority, as rows of pills of which one is on: every
+    // status the vault's Tasks plugin settings name, and the task's own.
+    let reason = gtk::Entry::builder()
+        .text(before.reason.as_deref().unwrap_or(""))
+        .placeholder_text("Why it is cancelled, or what it waits for")
+        .hexpand(true)
+        .build();
+    let statuses = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .column_spacing(6)
+        .row_spacing(6)
+        .max_children_per_line(8)
+        .hexpand(true)
+        .build();
+    let mut all: Vec<TaskStatus> = TaskStatuses::current().all.clone();
+    if !all.iter().any(|s| s.symbol == before.status) && before.status != 'X' {
+        all.push(TaskStatuses::current().status(before.status));
+    }
     let mut group: Option<gtk::ToggleButton> = None;
-    for (status, name, tint) in STATUSES {
+    for status in all {
+        let symbol = status.symbol;
         let pill = gtk::ToggleButton::builder()
-            .label(name)
-            .css_classes(["daftar-pill", "daftar-chip", tint])
-            .active(before.status == status)
+            .label(&status.name)
+            .tooltip_text(format!("[{symbol}]"))
+            .css_classes(["daftar-pill", "daftar-chip", status_tint(status.kind)])
+            .active(before.status == symbol || (before.status == 'X' && symbol == 'x'))
             .build();
-        if before.status == 'X' && status == 'x' {
-            pill.set_active(true);
-        }
         pill.set_group(group.as_ref());
         group.get_or_insert(pill.clone());
-        let (fields, refresh) = (fields.clone(), refresh.clone());
+        let (fields, refresh, reason, from) = (fields.clone(), refresh.clone(), reason.clone(), before.status);
         pill.connect_toggled(move |pill| {
             if pill.is_active() {
-                fields.borrow_mut().status = status;
+                fields.borrow_mut().status = symbol;
                 refresh();
+                // Cancelling asks why: the reason is the next thing to type.
+                if cancels(from, symbol) {
+                    reason.grab_focus();
+                }
             }
         });
-        statuses.append(&pill);
+        statuses.insert(&pill, -1);
     }
     content.append(&row("Status", &statuses));
+    {
+        let (fields, refresh) = (fields.clone(), refresh.clone());
+        reason.connect_changed(move |entry| {
+            let text = entry.text().trim().to_string();
+            fields.borrow_mut().reason = Some(text).filter(|t| !t.is_empty());
+            refresh();
+        });
+    }
+    content.append(&row("Reason", &reason));
 
     let priorities = gtk::Box::builder().spacing(6).build();
     let mut group: Option<gtk::ToggleButton> = None;

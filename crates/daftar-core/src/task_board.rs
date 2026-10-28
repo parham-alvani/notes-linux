@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::day::Day;
 use crate::task_line::{ParsedTask, TaskFields, TaskLine};
+use crate::task_status::{TaskStatuses, TaskType};
 use crate::text::standard_compare;
 use crate::vault::{Vault, VaultTask};
 use crate::vault_edits::{Failure, VaultEdits};
@@ -34,7 +35,8 @@ impl Grouping {
 /// What a column writes on a task dropped on it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Drop {
-    Status(char),
+    /// The status, and the reason for it, asked for when a task is cancelled.
+    Status(char, Option<String>),
     /// The due date; `None` takes it away.
     Due(Option<String>),
     /// The Tasks plugin's Postpone: see `TaskLine::postponed`.
@@ -144,20 +146,22 @@ impl TaskBoard {
                     Some(since) => date.as_deref().and_then(Day::parse).is_some_and(|d| d >= since),
                 };
                 let (mut todo, mut doing, mut done, mut cancelled) = (vec![], vec![], vec![], vec![]);
+                let statuses = TaskStatuses::current();
                 for task in tasks {
-                    match task.task.status {
-                        '/' => doing.push(task.clone()),
-                        'x' | 'X' => {
+                    match statuses.kind(task.task.status) {
+                        TaskType::InProgress => doing.push(task.clone()),
+                        TaskType::Done => {
                             if recent(&task.task.done) {
                                 done.push(task.clone())
                             }
                         }
-                        '-' => {
+                        TaskType::Cancelled => {
                             if recent(&task.task.cancelled) {
                                 cancelled.push(task.clone())
                             }
                         }
-                        _ => todo.push(task.clone()),
+                        TaskType::Todo => todo.push(task.clone()),
+                        TaskType::NonTask => {}
                     }
                 }
                 todo.sort_by(open);
@@ -165,10 +169,10 @@ impl TaskBoard {
                 done.sort_by(|a, b| closed(&a.task.done, &b.task.done, a, b));
                 cancelled.sort_by(|a, b| closed(&a.task.cancelled, &b.task.cancelled, a, b));
                 vec![
-                    column("todo", "To Do", todo, Some(Drop::Status(' '))),
-                    column("doing", "In Progress", doing, Some(Drop::Status('/'))),
-                    column("done", "Done", done, Some(Drop::Status('x'))),
-                    column("cancelled", "Cancelled", cancelled, Some(Drop::Status('-'))),
+                    column("todo", "To Do", todo, Some(Drop::Status(' ', None))),
+                    column("doing", "In Progress", doing, Some(Drop::Status('/', None))),
+                    column("done", "Done", done, Some(Drop::Status('x', None))),
+                    column("cancelled", "Cancelled", cancelled, Some(Drop::Status('-', None))),
                 ]
             }
             Grouping::Day => {
@@ -225,19 +229,12 @@ impl TaskBoard {
     pub fn moved(raw: &str, drop: &Drop, today: Day) -> Option<Vec<String>> {
         let mut fields = TaskLine::fields(raw)?;
         match drop {
-            Drop::Status(status) => {
-                let status = *status;
-                let was_closed = TaskLine::is_closed(fields.status);
-                if status == fields.status || (status == 'x' && fields.status == 'X') {
-                    return None;
-                }
-                // Done from open: the tick a click makes, recurrence and all.
-                if status == 'x' && !was_closed {
-                    return TaskLine::toggled(raw, &today.to_string());
-                }
-                fields.status = status;
-                fields.done = (status == 'x').then(|| today.to_string());
-                fields.cancelled = (status == '-').then(|| today.to_string());
+            Drop::Status(status, reason) => {
+                // A card keeps its own status when it is already of the
+                // column's type, as an In Review card in In Progress.
+                let statuses = TaskStatuses::current();
+                let status = if statuses.kind(*status) == statuses.kind(fields.status) { fields.status } else { *status };
+                return TaskLine::with_status(raw, status, reason.as_deref(), &today.to_string());
             }
             Drop::Due(day) => {
                 if fields.due == *day {
@@ -278,6 +275,30 @@ fn rank(priority: Option<&str>) -> u8 {
 }
 
 impl VaultEdits {
+    /// The task on [line] of [text] set to exactly [status], with [reason]:
+    /// see `TaskLine::with_status`. [task] is what was shown, whose status and
+    /// words the line must still hold.
+    pub fn set_task_status(
+        text: &str,
+        line: usize,
+        task: &ParsedTask,
+        status: char,
+        reason: Option<&str>,
+        today: Day,
+    ) -> Result<String, Failure> {
+        let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+        let raw = lines.get(line).ok_or(Failure::TaskMoved)?;
+        let crlf = raw.ends_with('\r');
+        let clean = raw.strip_suffix('\r').unwrap_or(raw).to_string();
+        let now = TaskLine::parse(&clean, line, "").ok_or(Failure::TaskMoved)?;
+        if now.status != task.status || now.text != task.text {
+            return Err(Failure::TaskMoved);
+        }
+        let Some(replacement) = TaskLine::with_status(&clean, status, reason, &today.to_string()) else { return Ok(text.to_string()) };
+        lines.splice(line..=line, replacement.into_iter().map(|l| if crlf { l + "\r" } else { l }));
+        Ok(lines.join("\n"))
+    }
+
     /// The task on [line] of [text] dropped on a board column. [task] is
     /// what the card showed, whose status and words the line must still hold.
     pub fn move_task(text: &str, line: usize, task: &ParsedTask, drop: &Drop, today: Day) -> Result<String, Failure> {
@@ -367,17 +388,17 @@ mod tests {
         let date = today().to_string();
         let moved = |raw: &str, drop: Drop| TaskBoard::moved(raw, &drop, today());
         let one = |s: String| Some(vec![s]);
-        assert_eq!(moved("- [ ] Write 📅 2026-10-27", Drop::Status('/')), one("- [/] Write 📅 2026-10-27".into()));
-        assert_eq!(moved("- [/] Write", Drop::Status('x')), one(format!("- [x] Write ✅ {date}")));
-        assert_eq!(moved("- [ ] Write", Drop::Status('-')), one(format!("- [-] Write ❌ {date}")));
-        assert_eq!(moved("- [x] Write ✅ 2026-10-20", Drop::Status(' ')), one("- [ ] Write".into()));
-        assert_eq!(moved("- [x] Write ✅ 2026-10-20", Drop::Status('/')), one("- [/] Write".into()));
-        assert_eq!(moved("- [ ] Write", Drop::Status(' ')), None);
+        assert_eq!(moved("- [ ] Write 📅 2026-10-27", Drop::Status('/', None)), one("- [/] Write 📅 2026-10-27".into()));
+        assert_eq!(moved("- [/] Write", Drop::Status('x', None)), one(format!("- [x] Write ✅ {date}")));
+        assert_eq!(moved("- [ ] Write", Drop::Status('-', None)), one(format!("- [-] Write ❌ {date}")));
+        assert_eq!(moved("- [x] Write ✅ 2026-10-20", Drop::Status(' ', None)), one("- [ ] Write".into()));
+        assert_eq!(moved("- [x] Write ✅ 2026-10-20", Drop::Status('/', None)), one("- [/] Write".into()));
+        assert_eq!(moved("- [ ] Write", Drop::Status(' ', None)), None);
         assert_eq!(moved("- [ ] Write 📅 2026-10-27", Drop::Due(Some("2026-10-25".into()))), one("- [ ] Write 📅 2026-10-25".into()));
         assert_eq!(moved("- [ ] Write 📅 2026-10-27", Drop::Due(None)), one("- [ ] Write".into()));
         // A recurring task is ticked as a click ticks it: the next one comes above.
         assert_eq!(
-            moved("- [ ] Water 🔁 every week 📅 2026-10-25", Drop::Status('x')),
+            moved("- [ ] Water 🔁 every week 📅 2026-10-25", Drop::Status('x', None)),
             Some(vec!["- [ ] Water 🔁 every week 📅 2026-11-01".to_string(), format!("- [x] Water 🔁 every week 📅 2026-10-25 ✅ {date}")])
         );
     }
@@ -386,8 +407,8 @@ mod tests {
     fn a_drop_refuses_a_line_that_changed() {
         let text = "# Kit\n- [ ] Write\n- [ ] Read\n";
         let shown = task("- [ ] Write").task;
-        assert_eq!(VaultEdits::move_task(text, 1, &shown, &Drop::Status('/'), today()).unwrap(), "# Kit\n- [/] Write\n- [ ] Read\n");
-        assert_eq!(VaultEdits::move_task(text, 2, &shown, &Drop::Status('/'), today()), Err(Failure::TaskMoved));
+        assert_eq!(VaultEdits::move_task(text, 1, &shown, &Drop::Status('/', None), today()).unwrap(), "# Kit\n- [/] Write\n- [ ] Read\n");
+        assert_eq!(VaultEdits::move_task(text, 2, &shown, &Drop::Status('/', None), today()), Err(Failure::TaskMoved));
     }
 
     fn postponed(raw: &str, amount: Postpone) -> Option<String> {

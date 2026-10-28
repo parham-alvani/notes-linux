@@ -1104,6 +1104,13 @@ fn task_item(task: &VaultTask, theme: &Theme, today: &str) -> Item {
     let mut spans = std::mem::take(&mut block.prefix);
     spans.extend(block.spans);
     let closed = TaskLine::is_closed(t.status);
+    let status = daftar_core::TaskStatuses::current().status(t.status);
+    if !status.is_default() {
+        spans.push(Span::styled(format!("  {}", status.name), Style::new().fg(theme.purple)));
+    }
+    if let Some(reason) = &t.reason {
+        spans.push(Span::styled(format!("  💬 {reason}"), Style::new().fg(theme.muted).add_modifier(Modifier::ITALIC)));
+    }
     for (mark, value, color) in [("⏳", &t.scheduled, theme.blue), ("📅", &t.due, theme.orange), ("✅", &t.done, theme.green)] {
         if let Some(value) = value {
             let color = if mark == "📅" && !closed && value.as_str() < today { theme.red } else { color };
