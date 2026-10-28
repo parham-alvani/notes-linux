@@ -16,6 +16,7 @@ test("a task box is named by its task and says what a box cannot", () => {
   assert.match(html, /data-status="-" checked aria-label="Drop, cancelled">/);
   assert.match(html, /data-status="x" checked aria-label="Done">/);
   assert.equal(taskLabel("Ask [a](https://x) ⏫", "?"), "Ask a, status ?");
+  assert.equal(taskLabel("Drop [reason:: no budget] ❌ 2026-10-28", "-"), "Drop, cancelled");
 });
 
 test("a picture's alt text is the embed's words or the file's name", () => {

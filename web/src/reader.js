@@ -152,13 +152,14 @@ async function fillQueries(root) {
         open[level] = name;
         if (name) parts.push(`<div class="query-group level-${level}" dir="auto">${escape(name)}</div>`);
       });
-      const checked = isClosed(task.status) ? " checked" : "";
+      const closed = task.closed ?? isClosed(task.status);
+      const checked = closed ? " checked" : "";
       // Each date as a chip in its own colour; a due date in the past is red.
       const today = new Date().toLocaleDateString("sv");
       const chip = (kind, emoji, day) => `<span class="query-date ${kind}">${emoji} ${escape(day)}</span>`;
       const dates = [
-        task.due && !isClosed(task.status) && chip(task.due < today ? "is-late" : "is-due", "📅", task.due),
-        task.due && isClosed(task.status) && chip("is-past", "📅", task.due),
+        task.due && !closed && chip(task.due < today ? "is-late" : "is-due", "📅", task.due),
+        task.due && closed && chip("is-past", "📅", task.due),
         task.scheduled && chip("is-scheduled", "⏳", task.scheduled),
         task.done && chip("is-done", "✅", task.done),
       ].filter(Boolean).join("");
@@ -166,6 +167,11 @@ async function fillQueries(root) {
         `<li class="task-list-item${checked ? " is-checked" : ""}" data-task="${escape(task.status)}" dir="auto">` +
           `<input type="checkbox" class="task-list-item-checkbox" data-path="${escape(task.path)}" data-line="${task.line}" data-status="${escape(task.status)}"${checked}>` +
           `<span class="query-text">${renderInline(task.text, { path: task.path, links: result.links })}</span>` +
+          // A status of the vault's own by its name, and the reason, muted.
+          (task.statusName ? ` <span class="task-status-name">${escape(task.statusName)}</span>` : "") +
+          (task.reason
+            ? ` <span class="task-reason"><span class="task-reason-mark" aria-hidden="true">💬</span> ${renderInline(task.reason, { path: task.path, links: result.links })}</span>`
+            : "") +
           (dates ? ` <span class="query-dates">${dates}</span>` : "") +
           ` <a class="internal-link query-source" href="#" data-path="${escape(task.path)}">${escape(task.title)}</a></li>`,
       );

@@ -931,8 +931,18 @@ impl Window {
         self.redraw_page();
     }
 
-    /// A card dropped on a board column, or moved from its menu.
+    /// A card dropped on a board column, or moved from its menu. Dropped on
+    /// Cancelled, the task is cancelled once the reason is asked for.
     fn move_task(&self, task: &daftar_core::VaultTask, drop: &daftar_core::BoardDrop) {
+        if let daftar_core::BoardDrop::Status(status, None) = drop
+            && task_edit::cancels(task.task.status, *status)
+        {
+            let (this, card, status) = (self.clone(), task.clone(), *status);
+            task_edit::ask_reason(&self.window, &task.task.text, task.task.reason.as_deref(), move |reason| {
+                this.move_task(&card, &daftar_core::BoardDrop::Status(status, Some(reason)));
+            });
+            return;
+        }
         let Some(store) = self.store.borrow().clone() else { return };
         if store.move_task(task, drop).is_err() {
             let text = crate::today::plain(&task.task.text);

@@ -14,7 +14,7 @@ use regex::Regex;
 use unicode_width::UnicodeWidthChar;
 
 use daftar_core::text::direction;
-use daftar_core::{TaskLine, TaskMetadata};
+use daftar_core::{TaskLine, TaskMetadata, TaskReason, TaskStatuses, TaskType};
 
 use super::theme::Theme;
 
@@ -260,14 +260,15 @@ fn line_block(body: &str, depth: usize, callout: &mut Option<String>, quote: Vec
         let rest = &caps[3];
         if let Some(task) = CHECKBOX.captures(rest).filter(|_| TaskLine::is_task(body)) {
             let status = task[1].chars().next().unwrap_or(' ');
-            let (glyph, color) = match status {
-                'x' | 'X' => ("☑", theme.green),
-                '-' => ("☒", theme.done),
-                '/' => ("◐", theme.accent),
-                '>' => ("↪", theme.blue),
-                '!' => ("!", theme.red),
-                '?' => ("?", theme.yellow),
-                _ => ("☐", theme.accent),
+            // A status the vault's settings add is drawn by its type.
+            let (glyph, color) = match (status, TaskStatuses::current().kind(status)) {
+                ('>', TaskType::Todo) => ("↪", theme.blue),
+                ('!', TaskType::Todo) => ("!", theme.red),
+                ('?', TaskType::Todo) => ("?", theme.yellow),
+                (_, TaskType::Done) => ("☑", theme.green),
+                (_, TaskType::Cancelled | TaskType::NonTask) => ("☒", theme.done),
+                (_, TaskType::InProgress) => ("◐", theme.accent),
+                (_, TaskType::Todo) => ("☐", theme.accent),
             };
             block.prefix.push(Span::raw(pad.clone()));
             block.prefix.push(Span::styled(format!("{glyph} "), Style::new().fg(color)));
@@ -276,7 +277,11 @@ fn line_block(body: &str, depth: usize, callout: &mut Option<String>, quote: Vec
             let style = if closed { Style::new().fg(theme.done).add_modifier(Modifier::CROSSED_OUT) } else { text_style };
             let body = BLOCK_ID.replace(&task[2], "").to_string();
             let (sentence, metas) = TaskMetadata::split(&body);
+            let (sentence, reason) = TaskReason::take(&sentence);
             let (mut spans, links) = inline(&sentence, style, theme);
+            if let Some(reason) = reason {
+                spans.push(Span::styled(format!("  💬 {reason}"), Style::new().fg(theme.muted).add_modifier(Modifier::ITALIC)));
+            }
             for meta in metas {
                 let kind = TaskMetadata::kind(&meta.emoji).unwrap_or("");
                 let color = match kind {

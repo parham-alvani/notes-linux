@@ -121,6 +121,40 @@ export function plainText(source) {
 }
 
 const TASK_FIELDS = /[📅⏳🛫✅❌➕🔁🔺⏫🔼🔽⏬]/u;
+const REASON_KEY = /^reason[ \t]*::/i;
+/** Where a task's reason field was, until the inline rules have run. */
+const REASON_MARK = "\uE000";
+
+/**
+ * The first `[reason:: …]` field in a task's text: where it starts and
+ * ends, and its value, null when empty. The value ends at the `]` that
+ * closes the field, so `[[links]]` in it stay whole. The app's rules
+ * (`TaskReason` in TaskLine.swift).
+ */
+export function findReason(text) {
+  if (!text.includes("::")) return null;
+  for (let open = text.indexOf("["); open >= 0; open = text.indexOf("[", open + 1)) {
+    const key = REASON_KEY.exec(text.slice(open + 1));
+    if (!key) continue;
+    const from = open + 1 + key[0].length;
+    let depth = 1;
+    for (let at = from; at < text.length; at++) {
+      if (text[at] === "[") depth++;
+      else if (text[at] === "]" && --depth === 0) {
+        const value = text.slice(from, at).trim();
+        return { start: open, end: at + 1, value: value || null };
+      }
+    }
+  }
+  return null;
+}
+
+/** A task's first line before its signifiers: where the reason is looked for. */
+function description(content) {
+  const line = content.split("\n")[0];
+  const cut = line.search(TASK_FIELDS);
+  return cut >= 0 ? line.slice(0, cut) : line;
+}
 
 /**
  * The name a task's checkbox has: its sentence without marks, links as
@@ -128,8 +162,11 @@ const TASK_FIELDS = /[📅⏳🛫✅❌➕🔁🔺⏫🔼🔽⏬]/u;
  * checkbox cannot show (in progress, cancelled).
  */
 export function taskLabel(source, status) {
-  const cut = source.search(TASK_FIELDS);
-  const text = plainText(cut >= 0 ? source.slice(0, cut) : source);
+  let sentence = source.replaceAll(REASON_MARK, " ");
+  const field = findReason(description(sentence));
+  if (field) sentence = sentence.slice(0, field.start) + " " + sentence.slice(field.end);
+  const cut = sentence.search(TASK_FIELDS);
+  const text = plainText(cut >= 0 ? sentence.slice(0, cut) : sentence);
   const words = taskStatusWords(status);
   return words ? `${text}, ${words}` : text;
 }
@@ -412,6 +449,52 @@ function callouts(md) {
  * click can ask the app to tick exactly that line.
  */
 function tasks(md) {
+  // The reason field leaves the text before it is parsed, a mark in its
+  // place; after, the mark becomes the reason, muted, after a balloon.
+  md.core.ruler.before("inline", "task_reason", (state) => {
+    const tokens = state.tokens;
+    for (let i = 2; i < tokens.length; i++) {
+      const inline = tokens[i];
+      if (inline.type !== "inline" || tokens[i - 1].type !== "paragraph_open" || tokens[i - 2].type !== "list_item_open") continue;
+      if (!TASK.test(inline.content)) continue;
+      const field = findReason(description(inline.content));
+      if (!field) continue;
+      inline.content = inline.content.slice(0, field.start) + REASON_MARK + inline.content.slice(field.end);
+      inline.meta = { ...inline.meta, reason: field.value };
+    }
+  });
+  md.core.ruler.after("inline", "task_reason_show", (state) => {
+    for (const inline of state.tokens) {
+      if (inline.type !== "inline" || inline.meta?.reason === undefined) continue;
+      const children = [];
+      for (const child of inline.children) {
+        const at = child.content.indexOf(REASON_MARK);
+        if (at < 0) {
+          children.push(child);
+          continue;
+        }
+        if (child.type !== "text") {
+          child.content = child.content.replaceAll(REASON_MARK, "");
+          children.push(child);
+          continue;
+        }
+        const before = new state.Token("text", "", 0);
+        before.content = child.content.slice(0, at);
+        const after = new state.Token("text", "", 0);
+        after.content = child.content.slice(at + 1).replaceAll(REASON_MARK, "");
+        children.push(before);
+        if (inline.meta.reason) {
+          const reason = new state.Token("task_reason", "", 0);
+          reason.meta = { reason: inline.meta.reason };
+          children.push(reason);
+        }
+        children.push(after);
+      }
+      inline.children = children;
+    }
+  });
+  md.renderer.rules.task_reason = (tokens, idx, options, env) =>
+    `<span class="task-reason"><span class="task-reason-mark" aria-hidden="true">💬</span> ${md.renderInline(tokens[idx].meta.reason, env)}</span>`;
   md.core.ruler.after("inline", "task", (state) => {
     const tokens = state.tokens;
     const offset = state.env.lineOffset ?? 0;

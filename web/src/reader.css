@@ -248,6 +248,12 @@ li.task-list-item > input, li.task-list-item > p > input { margin-inline: -1.55e
 li.task-list-item.is-checked[data-task="x"], li.task-list-item.is-checked[data-task="X"] { color: var(--done-color); }
 li.task-list-item.is-checked[data-task="x"] > p, li.task-list-item.is-checked[data-task="x"]:not(:has(> p)) { text-decoration: line-through; text-decoration-color: var(--text-faint); }
 li.task-list-item[data-task="-"] { color: var(--done-color); text-decoration: line-through; }
+/* A task's reason, after its text: muted, never struck through. */
+.task-reason { color: var(--text-muted); font-size: 0.9em; display: inline-block; text-decoration: none; }
+.task-status-name {
+  font-size: 0.75em; font-weight: 600; color: var(--h6-color); padding: 0 0.45em; border-radius: 1em;
+  background: color-mix(in srgb, var(--h6-color) 14%, transparent); vertical-align: 0.1em;
+}
 
 
 blockquote {

@@ -177,3 +177,22 @@ test("a markdown image of the vault is found as its links are, and sized with a 
   assert.match(html, /<img src="vault:\/\/\/pics\/cat\.gif" alt="two" width="240">/);
   assert.match(html, /src="https:\/\/example\.org\/x\.png"/);
 });
+
+test("a task's reason leaves its text and follows it, muted", () => {
+  const html = render("- [-] Deploy Qdrant [reason:: waiting on [[Inbox]]] ➕ 2025-05-17 ❌ 2025-11-16\n", { links });
+  assert.match(html, /Deploy Qdrant <span class="task-reason"><span class="task-reason-mark" aria-hidden="true">💬<\/span> waiting on <a [^>]*data-path="Notes\/Inbox.md"[^>]*>Inbox<\/a><\/span> ➕/);
+  assert.doesNotMatch(html, /reason::/);
+  assert.doesNotMatch(html, //);
+  // Only a task's first field is its reason; elsewhere it is text.
+  assert.match(render("- [ ] a [reason:: x] b [reason:: y]\n"), /b \[reason:: y\]/);
+  assert.match(render("Not a task [reason:: x]\n"), /\[reason:: x\]/);
+});
+
+test("findReason balances brackets and takes the first field", async () => {
+  const { findReason } = await import("../src/render.js");
+  assert.deepEqual(findReason("Ship [reason:: waiting on [[Amir]]] x"), { start: 5, end: 35, value: "waiting on [[Amir]]" });
+  assert.equal(findReason("Ship [REASON ::  busy ]").value, "busy");
+  assert.equal(findReason("Ship [reason:: ]").value, null);
+  assert.equal(findReason("Ship [reason:: open"), null);
+  assert.equal(findReason("Ship [reasons:: x]"), null);
+});

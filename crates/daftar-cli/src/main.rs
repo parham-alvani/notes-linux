@@ -26,7 +26,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 
 use daftar_core::{
     Candidate, Clock, ConfigFile, Day, ExcludedFiles, Git, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions, SearchIndex, Side,
-    SyncFailure, TaskLine, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
+    SyncFailure, TaskLine, TaskStatuses, TaskType, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
 };
 
 #[derive(Parser)]
@@ -91,6 +91,31 @@ enum Command {
         /// The line, from 1, as `tasks` prints it.
         line: usize,
     },
+    /// Sets the status of the task on a line of a note, as the app's status
+    /// menu does: `daftar-cli set-status Tasks/Work.md 12 r --reason 'waiting on review'`.
+    SetStatus {
+        note: String,
+        /// The line, from 1, as `tasks` prints it.
+        line: usize,
+        /// One character: ` ` to do, `/` in progress, `x` done, `-` cancelled,
+        /// or one the Tasks plugin's settings add (see `statuses`).
+        status: String,
+        /// Why, kept on the task as `[reason:: …]`; empty takes it away.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Cancels the task on a line of a note, with the reason why:
+    /// `daftar-cli cancel Tasks/Work.md 12 --reason 'no budget left'`.
+    Cancel {
+        note: String,
+        /// The line, from 1, as `tasks` prints it.
+        line: usize,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// The task statuses of the vault: the four every vault has and the ones
+    /// the Tasks plugin's settings add, with their symbol and type.
+    Statuses,
     /// The notes that link to a note.
     Backlinks { note: String },
     /// Links that go nowhere.
@@ -471,6 +496,26 @@ fn run(cli: Cli) -> Result<(), String> {
             let moved = vault_commands::sort_tasks(&root, &path, dry_run)?;
             out!("{path}\t{}", if moved { "sorted" } else { "in order already" });
         }
+        Command::SetStatus { note, line, status, reason } => {
+            let index = Vault::index(&root, None);
+            let path = note_path(&index, &note)?;
+            let at = line.checked_sub(1).ok_or("lines count from 1")?;
+            out!("{}", vault_commands::set_status(&root, &path, at, &status, reason.as_deref(), Day::today())?);
+        }
+        Command::Cancel { note, line, reason } => {
+            let index = Vault::index(&root, None);
+            let path = note_path(&index, &note)?;
+            let at = line.checked_sub(1).ok_or("lines count from 1")?;
+            // The vault's own cancelled status, `-` unless its settings say otherwise.
+            let statuses = TaskStatuses::current();
+            let symbol = statuses.all.iter().find(|s| s.kind == TaskType::Cancelled).map_or('-', |s| s.symbol);
+            out!("{}", vault_commands::set_status(&root, &path, at, &symbol.to_string(), reason.as_deref(), Day::today())?);
+        }
+        Command::Statuses => {
+            for status in &TaskStatuses::load(&root).all {
+                out!("[{}]\t{}\t{}\tnext [{}]", status.symbol, status.name, status.kind.type_name(), status.next);
+            }
+        }
         Command::Postpone { note, line, by } => {
             let index = Vault::index(&root, None);
             let path = note_path(&index, &note)?;
@@ -595,10 +640,13 @@ fn vault_around(folder: &std::path::Path) -> Option<PathBuf> {
 fn task_line(task: &VaultTask) -> String {
     let t = &task.task;
     let mut line = format!("{}:{}\t[{}] {}", task.path, t.line + 1, t.status, t.text);
-    for (mark, value) in [("⏳", &t.scheduled), ("📅", &t.due), ("✅", &t.done), ("🔁", &t.recurring)] {
+    for (mark, value) in [("⏳", &t.scheduled), ("📅", &t.due), ("✅", &t.done), ("❌", &t.cancelled), ("🔁", &t.recurring)] {
         if let Some(value) = value {
             line.push_str(&format!(" {mark} {value}"));
         }
+    }
+    if let Some(reason) = &t.reason {
+        line.push_str(&format!(" 💬 {reason}"));
     }
     line
 }

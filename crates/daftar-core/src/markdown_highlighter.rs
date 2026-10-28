@@ -15,6 +15,8 @@ use std::sync::LazyLock;
 use fancy_regex::Regex;
 
 use crate::editor_commands::line_range;
+use crate::task_line::TaskReason;
+use crate::task_status::{TaskStatuses, TaskType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -314,10 +316,12 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
     if let Ok(Some(caps)) = TASK.captures(rest) {
         let shift = |r: Range<usize>| body + r.start..body + r.end;
         push(Kind::ListMarker, l.at(shift(caps.get(1).unwrap().range())));
-        let kind = match caps.get(3).unwrap().as_str() {
-            " " => Kind::TaskOpen,
-            "x" | "X" => Kind::TaskDone,
-            "-" => Kind::TaskCancelled,
+        // By the type the vault's Tasks plugin settings give the status.
+        let symbol = caps.get(3).unwrap().as_str().chars().next().unwrap_or(' ');
+        let kind = match (symbol, TaskStatuses::current().kind(symbol)) {
+            (' ', _) => Kind::TaskOpen,
+            (_, TaskType::Done) => Kind::TaskDone,
+            (_, TaskType::Cancelled | TaskType::NonTask) => Kind::TaskCancelled,
             _ => Kind::TaskOther,
         };
         push(kind, l.at(shift(caps.get(2).unwrap().range())));
@@ -326,6 +330,9 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
             push(kind, l.at(end..line.len()));
         }
         each(&TASK_METADATA, line, |m| push(Kind::Metadata, l.at(m.get(0).unwrap().range())));
+        if let Some(reason) = TaskReason::range(&line[end..]) {
+            push(Kind::Metadata, l.at(end + reason.start..end + reason.end));
+        }
     } else if let Ok(Some(caps)) = LIST.captures(rest) {
         let marker = caps.get(1).unwrap();
         push(Kind::ListMarker, l.at(body + marker.start()..body + marker.end()));

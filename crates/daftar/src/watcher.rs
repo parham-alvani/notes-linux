@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use daftar_core::Vault;
 use daftar_core::text::slugs;
+use daftar_core::{TaskStatuses, Vault};
 use gtk::glib;
 use notify::{RecursiveMode, Watcher};
 
@@ -50,11 +50,12 @@ impl FileWatcher {
     }
 }
 
-/// [path] as a vault path, when it is in [base] and the app reads it.
+/// [path] as a vault path, when it is in [base] and the app reads it: a
+/// note or a file, or the Tasks plugin's settings, which name the statuses.
 fn relative(base: &Path, path: &Path) -> Option<String> {
     let rest = path.strip_prefix(base).ok()?.to_str()?;
     let relative = slugs::normalize(rest);
-    (!relative.is_empty() && Vault::counts(&relative)).then_some(relative)
+    (!relative.is_empty() && (Vault::counts(&relative) || relative == TaskStatuses::PATH)).then_some(relative)
 }
 
 #[cfg(test)]
@@ -66,6 +67,8 @@ mod tests {
         let base = Path::new("/vault");
         assert_eq!(relative(base, Path::new("/vault/Notes/Inbox.md")).as_deref(), Some("Notes/Inbox.md"));
         assert_eq!(relative(base, Path::new("/vault/.git/index")), None);
+        let settings = "/vault/.obsidian/plugins/obsidian-tasks-plugin/data.json";
+        assert_eq!(relative(base, Path::new(settings)).as_deref(), Some(TaskStatuses::PATH));
         assert_eq!(relative(base, Path::new("/vault/web/node_modules/a.js")), None);
         assert_eq!(relative(base, Path::new("/vault/Notes/.Inbox.md.daftar-12")), None);
         assert_eq!(relative(base, Path::new("/elsewhere/a.md")), None);

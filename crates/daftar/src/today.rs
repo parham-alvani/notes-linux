@@ -30,7 +30,7 @@ impl TaskGroups {
         let horizon = today.adding_days(days);
         for task in tasks.into_iter().filter(|t| t.task.is_open()) {
             let Some(day) = task.task.day().and_then(Day::parse) else {
-                if task.task.status == '/' {
+                if daftar_core::TaskState::new(task.task.status) == daftar_core::TaskType::InProgress {
                     groups.in_progress.push(task);
                 }
                 continue;
@@ -258,7 +258,7 @@ impl Today {
         let row = gtk::Box::builder().spacing(8).css_classes(["daftar-task", tint]).build();
         let check = gtk::CheckButton::builder().valign(gtk::Align::Start).tooltip_text("Complete").build();
         // The phone's squares: open, and in progress half filled.
-        check.set_inconsistent(t.status == '/');
+        check.set_inconsistent(daftar_core::TaskState::new(t.status) == daftar_core::TaskType::InProgress);
         {
             let (this, path, line, status) = (self.clone(), task.path.clone(), t.line, t.status);
             check.connect_toggled(move |_| (this.toggle)(&path, line, status));
@@ -277,9 +277,15 @@ impl Today {
                 .xalign(if rtl { 1.0 } else { 0.0 })
                 .build(),
         );
+        if let Some(reason) = &t.reason {
+            lines.append(&crate::task_edit::reason_label(reason, rtl));
+        }
         // A Persian task's note and dates stand under it, on the right.
         let meta =
             gtk::Box::builder().spacing(6).css_classes(["caption"]).halign(if rtl { gtk::Align::End } else { gtk::Align::Start }).build();
+        if let Some(badge) = crate::task_edit::status_badge(t.status) {
+            meta.append(&badge);
+        }
         meta.append(&gtk::Label::builder().label(Vault::title(&task.path)).css_classes(["daftar-note"]).build());
         if !t.section.is_empty() {
             meta.append(

@@ -511,7 +511,7 @@ impl Board {
         let top = gtk::Box::builder().spacing(8).build();
         // Space ticks the focused card: the box itself never takes the focus.
         let check = gtk::CheckButton::builder().valign(gtk::Align::Start).active(!t.is_open()).focusable(false).build();
-        check.set_inconsistent(t.status == '/');
+        check.set_inconsistent(daftar_core::TaskState::new(t.status) == daftar_core::TaskType::InProgress);
         check.set_tooltip_text(Some(if t.is_open() { "Complete" } else { "Open again" }));
         {
             let toggle = self.toggle();
@@ -534,7 +534,13 @@ impl Board {
                 .build(),
         );
         card.append(&top);
+        if let Some(reason) = &t.reason {
+            card.append(&crate::task_edit::reason_label(reason, rtl));
+        }
         let meta = gtk::Box::builder().spacing(5).css_classes(["caption"]).build();
+        if let Some(badge) = crate::task_edit::status_badge(t.status) {
+            meta.append(&badge);
+        }
         meta.append(
             &gtk::Label::builder()
                 .label(Vault::title(&task.path))
@@ -678,7 +684,11 @@ pub fn shown(tasks: Vec<VaultTask>, file: Option<&str>, query: &str) -> Vec<Vaul
     tasks
         .into_iter()
         .filter(|t| file.is_none_or(|f| t.path == f))
-        .filter(|t| needle.is_empty() || slugs::fold(&format!("{} {} {}", t.task.text, t.task.section, t.path)).contains(&needle))
+        .filter(|t| {
+            needle.is_empty()
+                || slugs::fold(&format!("{} {} {} {}", t.task.text, t.task.reason.as_deref().unwrap_or(""), t.task.section, t.path))
+                    .contains(&needle)
+        })
         .collect()
 }
 
