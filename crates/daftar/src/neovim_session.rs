@@ -93,6 +93,10 @@ vim.api.nvim_create_autocmd('WinScrolled', { group = group, callback = function(
   vim.rpcnotify(chan, 'daftar_scroll', vim.fn.line('w0'))
 end })
 vim.o.autoread = true
+-- The bar says the command line and messages: Neovim's own windows for
+-- them (ui2), when the config turns them on, would stand over the text.
+local ui2 = package.loaded['vim._core.ui2']
+if ui2 then pcall(ui2.enable, { enable = false }) end
 send()
 "#;
 
