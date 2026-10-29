@@ -116,6 +116,26 @@ fn plain(text: &str) -> String {
     kept.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
+/// The anchors as written of the links to [target] on [line] that the
+/// parser read as [parsed]: the parser leaves a code span out of a link's
+/// anchor, and the reader does not.
+fn written_anchors(line: &str, target: &str, parsed: &str) -> Vec<String> {
+    let squeeze = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let open = format!("[[{target}#");
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(i) = rest.find(&open) {
+        let after = &rest[i + open.len()..];
+        let Some(end) = after.find("]]") else { break };
+        let written = after[..end].split('|').next().unwrap_or("");
+        if squeeze(&INLINE_CODE.replace_all(written, "")) == squeeze(parsed) {
+            out.push(written.to_string());
+        }
+        rest = &after[end..];
+    }
+    out
+}
+
 /// Whether the note at [to] has the heading or the `^block` [anchor] names.
 fn has_anchor(index: &daftar_core::VaultIndex, root: &Path, to: &str, anchor: &str, texts: &mut HashMap<String, String>) -> bool {
     let Some(note) = index.notes.get(to) else { return true };
@@ -155,6 +175,8 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
     paths.sort();
     for path in &paths {
         let note = &index.notes[*path];
+        let source = fs::read_to_string(root.join(path.as_str())).unwrap_or_default();
+        let source_lines: Vec<&str> = source.lines().collect();
         for link in &note.parsed.links {
             if link.target.is_empty() || link.target.contains("://") {
                 continue;
@@ -164,6 +186,9 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
                 Some(to) => {
                     if let Some(anchor) = link.anchor.as_deref().filter(|a| !a.is_empty())
                         && !has_anchor(&index, root, &to, anchor, &mut blocks_of)
+                        && !written_anchors(source_lines.get(link.line).copied().unwrap_or(""), &link.target, anchor)
+                            .iter()
+                            .any(|a| has_anchor(&index, root, &to, a, &mut blocks_of))
                     {
                         let mark = if link.embed { "!" } else { "" };
                         let what = if anchor.starts_with('^') { "block" } else { "heading" };
@@ -313,7 +338,8 @@ mod tests {
     #[test]
     fn finds_what_is_broken() {
         let dir = vault(&[
-            ("D.md", "[[C#No such]] [[C#^nope]] [[Learning/B#Title]] [[C#^here]]\n"),
+            ("D.md", "[[C#No such]] [[C#^nope]] [[Learning/B#Title]] [[C#^here]] [[E#`code` heading]]\n"),
+            ("E.md", "## `code` heading\n"),
             ("A.md", "See [[Nowhere]] and ![[gone.png]].\n\n> [!read] Book\n> glued\n\n> [!nope]\n"),
             ("Learning/B.md", "# Title\n\nUse `[[Learning/B]]` here.\n"),
             ("uploads/used.png", ""),
