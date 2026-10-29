@@ -10,7 +10,9 @@ macro_rules! out {
     };
 }
 
+mod check;
 mod clip;
+mod fmt;
 mod images;
 mod lint;
 mod tui;
@@ -238,6 +240,34 @@ enum Command {
         /// A folder or file of the vault to leave out (as .markdownlintignore).
         #[arg(long)]
         ignore: Vec<String>,
+    },
+    /// Formats the notes as Prettier does with the vault's .prettierrc (its
+    /// Markdown, and YAML front matter): the whole vault, or the files and
+    /// folders given, but what .prettierignore names. Lists what it changed.
+    Fmt {
+        paths: Vec<PathBuf>,
+        /// Writes nothing: lists the notes that are not formatted, and fails
+        /// when there is one.
+        #[arg(long)]
+        check: bool,
+        /// A folder or file of the vault to leave out (as .prettierignore).
+        #[arg(long)]
+        ignore: Vec<String>,
+    },
+    /// Checks what lint cannot see: embeds of files that are not there,
+    /// links to no note, links a code span stops, callouts that fall apart,
+    /// pictures no note shows. Fails on an error; on a warning too with
+    /// --strict.
+    Check {
+        /// Fails on warnings too.
+        #[arg(long)]
+        strict: bool,
+        /// A folder whose notes must not have an H1.
+        #[arg(long = "no-h1")]
+        no_h1: Vec<String>,
+        /// A callout type beyond the standard ones.
+        #[arg(long)]
+        callout: Vec<String>,
     },
     /// Removes pictures no note names, makes the others JPEGs under 1 MB and
     /// renames them in the notes, as notes-cli does.
@@ -537,6 +567,20 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             if outcome.problems > 0 {
                 return Err(format!("{} problems in {} of {} notes", outcome.problems, outcome.notes, outcome.checked));
+            }
+        }
+        Command::Fmt { paths, check, ignore } => {
+            let outcome = fmt::run(&root, &paths, &ignore, check, |line| out!("{line}"))?;
+            if check && outcome.changed > 0 {
+                return Err(format!("{} of {} notes are not formatted; run daftar-cli fmt", outcome.changed, outcome.checked));
+            }
+        }
+        Command::Check { strict, no_h1, callout } => {
+            let options = check::Options { strict, no_h1, callouts: callout };
+            let outcome = check::run(&root, |path| hidden.contains(path), &options, |line| out!("{line}"));
+            eprintln!("daftar-cli: {} errors, {} warnings in {} notes", outcome.errors, outcome.warnings, outcome.notes);
+            if outcome.errors > 0 || (options.strict && outcome.warnings > 0) {
+                return Err("check failed".to_string());
             }
         }
         Command::Clip { url, folder, title } => {

@@ -32,10 +32,21 @@ pub fn config(root: &Path) -> Result<LintConfig, String> {
 /// hidden folders, `node_modules`, the lines of `.markdownlintignore` and
 /// [ignore] are left out.
 pub fn notes(root: &Path, paths: &[PathBuf], ignore: &[String]) -> Vec<String> {
+    notes_but(root, paths, ignore, ".markdownlintignore")
+}
+
+/// The notes of [paths], else the vault, but those [ignore_file] and
+/// [ignore] name (a folder or a file each, `**` patterns taken as their
+/// folder).
+pub fn notes_but(root: &Path, paths: &[PathBuf], ignore: &[String], ignore_file: &str) -> Vec<String> {
     let mut ignored: Vec<String> = ignore.iter().map(|i| i.trim_matches('/').to_string()).collect();
-    if let Ok(text) = fs::read_to_string(root.join(".markdownlintignore")) {
-        ignored
-            .extend(text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(|l| l.trim_matches('/').to_string()));
+    if let Ok(text) = fs::read_to_string(root.join(ignore_file)) {
+        ignored.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(|l| l.split('*').next().unwrap_or(l).trim_matches('/').to_string()),
+        );
     }
     let left_out = |relative: &str| {
         relative.split('/').any(|part| part.starts_with('.') || part == "node_modules")
