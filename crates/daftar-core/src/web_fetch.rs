@@ -73,10 +73,10 @@ fn probe_agent(agent: &str) -> ureq::Agent {
         .into()
 }
 
-/// [ask] on each of [items], thirty-two at a time: the time goes in waiting.
-fn each<T: Sync, R: Send>(items: &[T], ask: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
+/// [ask] on each of [items], [threads] at a time: the time goes in waiting.
+fn each<T: Sync, R: Send>(items: &[T], threads: usize, ask: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
     use rayon::prelude::*;
-    match rayon::ThreadPoolBuilder::new().num_threads(32).build() {
+    match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
         Ok(pool) => pool.install(|| items.par_iter().map(&ask).collect()),
         Err(_) => items.iter().map(ask).collect(),
     }
@@ -87,7 +87,7 @@ fn each<T: Sync, R: Send>(items: &[T], ask: impl Fn(&T) -> R + Sync + Send) -> V
 /// GET. The bodies are not read.
 pub fn answers(urls: &[String], agent: &str) -> Vec<Answer> {
     let agent = probe_agent(agent);
-    each(urls, |url| match agent.head(url).call() {
+    each(urls, 32, |url| match agent.head(url).call() {
         Ok(response) if response.status().as_u16() < 400 => Answer::Status(response.status().as_u16()),
         Ok(_) => match agent.get(url).call() {
             Ok(response) => Answer::Status(response.status().as_u16()),
@@ -102,7 +102,7 @@ pub fn answers(urls: &[String], agent: &str) -> Vec<Answer> {
 /// for a private one [token] can see.
 pub fn github_repos(repos: &[String], token: &str, agent: &str) -> Vec<Answer> {
     let agent = probe_agent(agent);
-    each(repos, |repo| {
+    each(repos, 32, |repo| {
         let call = agent
             .get(&format!("https://api.github.com/repos/{repo}"))
             .header("Authorization", &format!("Bearer {token}"))
@@ -118,4 +118,54 @@ pub fn github_repos(repos: &[String], token: &str, agent: &str) -> Vec<Answer> {
             Err(error) => Answer::Unreachable(error.to_string()),
         }
     })
+}
+
+/// The Wayback Machine's copy of each of [urls] closest to now, over https,
+/// or `None` when it has none. Two at a time, and a 429 waits as long as
+/// it asks (`Retry-After`, else a few seconds, longer each time) and asks
+/// again: archive.org turns a crowd away.
+pub fn archived(urls: &[String], agent: &str) -> Vec<Option<String>> {
+    let agent = probe_agent(agent);
+    each(urls, 2, |url| {
+        for attempt in 1..=5 {
+            let mut response = agent.get("https://archive.org/wayback/available").query("url", url).call().ok()?;
+            match response.status().as_u16() {
+                200 => {
+                    let body = response.body_mut().with_config().limit(1024 * 1024).read_to_string().ok()?;
+                    return snapshot(&body);
+                }
+                429 | 503 => {
+                    let asked = response.headers().get("retry-after").and_then(|v| v.to_str().ok()?.trim().parse::<u64>().ok());
+                    std::thread::sleep(Duration::from_secs(asked.unwrap_or(5 * attempt).min(60)));
+                }
+                _ => return None,
+            }
+        }
+        None
+    })
+}
+
+/// The snapshot in an answer of archive.org's availability API, over https.
+fn snapshot(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let closest = &value["archived_snapshots"]["closest"];
+    if closest["available"].as_bool() != Some(true) || closest["status"].as_str().is_some_and(|s| s != "200") {
+        return None;
+    }
+    let url = closest["url"].as_str()?;
+    Some(url.strip_prefix("http://").map_or_else(|| url.to_string(), |rest| format!("https://{rest}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_snapshot_is_read_from_the_wayback_machines_answer() {
+        let found = r#"{"url":"x.io/p","archived_snapshots":{"closest":{"status":"200","available":true,"url":"http://web.archive.org/web/20200101000000/https://x.io/p","timestamp":"20200101000000"}}}"#;
+        assert_eq!(snapshot(found).as_deref(), Some("https://web.archive.org/web/20200101000000/https://x.io/p"));
+        assert_eq!(snapshot(r#"{"url":"x.io/p","archived_snapshots":{}}"#), None);
+        let missing = r#"{"archived_snapshots":{"closest":{"status":"404","available":true,"url":"http://web.archive.org/web/1/x"}}}"#;
+        assert_eq!(snapshot(missing), None);
+    }
 }

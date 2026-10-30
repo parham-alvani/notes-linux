@@ -297,6 +297,10 @@ enum Command {
         /// does not ask.
         #[arg(long = "skip-url")]
         skip_url: Vec<String>,
+        /// With --urls, asks the Wayback Machine for a copy of each dead
+        /// address and names it; --fix puts the copy in its place.
+        #[arg(long, requires = "urls")]
+        archive: bool,
         /// Mends what has one answer: a bare link whose name more than one
         /// note has gets the shortest path to the note it goes to now, and
         /// shows the text it showed. Prints each change.
@@ -628,7 +632,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{} of {} notes are not formatted; run daftar-cli fmt", outcome.changed, outcome.checked));
             }
         }
-        Command::Check { strict, no_h1, callout, urls, unreachable, skip_url, fix, dry_run } => {
+        Command::Check { strict, no_h1, callout, urls, unreachable, skip_url, archive, fix, dry_run } => {
             let github_token = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).ok();
             let options = check::Options {
                 strict,
@@ -638,6 +642,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 unreachable,
                 github_token,
                 skip_urls: skip_url,
+                archive,
                 github: report::github(),
                 fix,
                 dry_run,

@@ -43,6 +43,9 @@ pub struct Options {
     /// Web addresses not to ask: a host, which takes its subdomains, or the
     /// start of an address.
     pub skip_urls: Vec<String>,
+    /// With [urls], asks the Wayback Machine for a copy of each dead
+    /// address, which [fix] puts in its place.
+    pub archive: bool,
     /// Prints GitHub Actions annotations.
     pub github: bool,
     /// Mends what has one answer, and prints each change instead.
@@ -413,7 +416,7 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
     let mut texts: Vec<String> = Vec::new();
     let mut blocks_of: HashMap<String, String> = HashMap::new();
     let mut web: HashMap<String, Vec<(String, usize)>> = HashMap::new();
-    let mut fixes: BTreeSet<(String, usize, String, String)> = BTreeSet::new();
+    let mut fixes: BTreeSet<(String, usize, &'static str, String, String)> = BTreeSet::new();
     let mut paths: Vec<&String> = index.notes.keys().filter(|p| !hidden(p)).collect();
     paths.sort();
     for path in &paths {
@@ -449,7 +452,7 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
                         if options.fix
                             && let Some(new) = unique_target(&index, &to, path)
                         {
-                            fixes.insert(((*path).clone(), link.line, link.target.clone(), new));
+                            fixes.insert(((*path).clone(), link.line, "ambiguous-link", link.target.clone(), new));
                         } else {
                             found.insert((
                                 (*path).clone(),
@@ -669,9 +672,26 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
         if unanswered > 0 && !options.unreachable {
             eprintln!("daftar-cli: {unanswered} web addresses did not answer (a private network, or gone); --unreachable lists them");
         }
-        for (url, why) in dead {
+        let copies: Vec<Option<String>> = if options.archive {
+            let gone: Vec<String> = dead.iter().map(|(url, _)| (*url).clone()).collect();
+            eprintln!("daftar-cli: asking the Wayback Machine for {} dead addresses", gone.len());
+            daftar_core::web_fetch::archived(&gone, agent)
+        } else {
+            vec![None; dead.len()]
+        };
+        for ((url, why), copy) in dead.into_iter().zip(copies) {
             for (path, line) in &web[url] {
-                found.insert((path.clone(), *line, false, "dead-url", format!("{url} {why}")));
+                match &copy {
+                    Some(copy) if options.fix => {
+                        fixes.insert((path.clone(), line - 1, "dead-url", url.clone(), copy.clone()));
+                    }
+                    Some(copy) => {
+                        found.insert((path.clone(), *line, false, "dead-url", format!("{url} {why}; archived at {copy}")));
+                    }
+                    None => {
+                        found.insert((path.clone(), *line, false, "dead-url", format!("{url} {why}")));
+                    }
+                }
             }
         }
     }
@@ -694,13 +714,19 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
     Outcome { fixed, errors, warnings, notes: paths.len() }
 }
 
-/// Each of [fixes], `(path, line, target, new)`, made in its note through
-/// `VaultEdits`, which reads the file again, and printed. The number made.
-fn mend(root: &Path, fixes: &BTreeSet<(String, usize, String, String)>, dry_run: bool, print: &mut impl FnMut(String)) -> usize {
+/// Each of [fixes], `(path, line, kind, old, new)`, made in its note
+/// through `VaultEdits`, which reads the file again, and printed. The
+/// number made.
+fn mend(
+    root: &Path,
+    fixes: &BTreeSet<(String, usize, &'static str, String, String)>,
+    dry_run: bool,
+    print: &mut impl FnMut(String),
+) -> usize {
     let mut made = 0;
-    let mut by_note: HashMap<&str, Vec<(usize, &str, &str)>> = HashMap::new();
-    for (path, line, target, new) in fixes {
-        by_note.entry(path).or_default().push((*line, target, new));
+    let mut by_note: HashMap<&str, Vec<(usize, &str, &str, &str)>> = HashMap::new();
+    for (path, line, kind, old, new) in fixes {
+        by_note.entry(path).or_default().push((*line, kind, old, new));
     }
     let mut notes: Vec<_> = by_note.into_iter().collect();
     notes.sort();
@@ -708,12 +734,12 @@ fn mend(root: &Path, fixes: &BTreeSet<(String, usize, String, String)>, dry_run:
         let mut changes = Vec::new();
         let edit = VaultEdits::apply(path, root, |text| {
             let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
-            for (line, target, new) in &fixes {
-                let Some(old) = lines.get(*line) else { continue };
-                let mended = retarget(old, target, new);
-                if mended != *old {
-                    changes.push((*line, old.trim().to_string(), mended.trim().to_string()));
-                    lines[*line] = mended;
+            for (line, kind, old, new) in &fixes {
+                let Some(before) = lines.get(*line) else { continue };
+                let after = if *kind == "dead-url" { swap_url(before, old, new) } else { retarget(before, old, new) };
+                if after != *before {
+                    changes.push((*line, *kind, before.trim().to_string(), after.trim().to_string()));
+                    lines[*line] = after;
                 }
             }
             Ok(if dry_run { text.to_string() } else { lines.join("\n") })
@@ -722,12 +748,32 @@ fn mend(root: &Path, fixes: &BTreeSet<(String, usize, String, String)>, dry_run:
             eprintln!("daftar-cli: {path}: {error}");
             continue;
         }
-        for (line, old, new) in changes {
+        for (line, kind, before, after) in changes {
             made += 1;
-            print(format!("{path}:{}\tfixed\tambiguous-link\t{old} → {new}", line + 1));
+            print(format!("{path}:{}\tfixed\t{kind}\t{before} → {after}", line + 1));
         }
     }
     made
+}
+
+/// [line] with the address [old] made [new] where it stands whole: not
+/// where it starts a longer one.
+fn swap_url(line: &str, old: &str, new: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(at) = rest.find(old) {
+        let after = &rest[at + old.len()..];
+        let whole = after.chars().next().is_none_or(|c| {
+            c.is_whitespace()
+                || ")]>|\"'`".contains(c)
+                || (".,;:!?".contains(c) && after[1..].chars().next().is_none_or(char::is_whitespace))
+        });
+        out.push_str(&rest[..at]);
+        out.push_str(if whole { new } else { old });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -759,6 +805,7 @@ mod tests {
             unreachable: false,
             github_token: None,
             skip_urls: Vec::new(),
+            archive: false,
             github: false,
             fix: false,
             dry_run: false,
@@ -812,6 +859,15 @@ mod tests {
         assert!(of("[[#Travle Plans]]").ends_with("did you mean “Travel Plans”?"));
         assert!(of("[[#Nothing like it]]").ends_with("has no such heading"));
         assert!(of("(#travel)").ends_with("did you mean “Travel Plans”?"));
+    }
+
+    #[test]
+    fn a_dead_address_is_swapped_only_where_it_stands_whole() {
+        let line = "[a](https://x.io/p) https://x.io/p, https://x.io/page <https://x.io/p>";
+        assert_eq!(
+            swap_url(line, "https://x.io/p", "https://web.archive.org/web/1/https://x.io/p"),
+            "[a](https://web.archive.org/web/1/https://x.io/p) https://web.archive.org/web/1/https://x.io/p, https://x.io/page <https://web.archive.org/web/1/https://x.io/p>"
+        );
     }
 
     #[test]
