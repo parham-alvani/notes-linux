@@ -88,6 +88,7 @@ daftar-cli cancel Inbox 12 --reason 'no budget left'  # cancels it, saying why
 daftar-cli set-status Inbox 12 r --reason 'waiting on review'  # any status the vault has
 daftar-cli statuses               # the vault's task statuses, from the Tasks plugin's settings
 daftar-cli sort-tasks Inbox       # done and cancelled tasks first in each section
+daftar-cli sort-headings Inbox Plan  # the headings right under “Plan” by name, each with its section
 daftar-cli daily                  # today's periodic note, made from its template when missing
 daftar-cli rename-tag project work --dry-run   # the notes #project (and #project/…) is in
 daftar-cli replace 'Ana' 'Sara' --whole-word --dry-run  # each match's line, before → after

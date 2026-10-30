@@ -29,8 +29,8 @@ use gtk::{gdk, glib};
 use sourceview5::prelude::*;
 
 use daftar_core::{
-    BufferMirror, Candidate, Day, EditorCommands, Fuzzy, HtmlMarkdown, MarkdownTable, QuickSwitcher, Return, Snippet, TaskSorter, Vault,
-    VaultMoves,
+    BufferMirror, Candidate, Day, EditorCommands, Fuzzy, HtmlMarkdown, MarkdownTable, QuickSwitcher, Return, Sections, Snippet, TaskSorter,
+    Vault, VaultMoves,
 };
 
 #[path = "editor_media.rs"]
@@ -1239,6 +1239,18 @@ impl Editor {
         let cursor = self.cursor().min(sorted.chars().count());
         self.replace(0..self.buffer.char_count().max(0) as usize, &sorted, Some(cursor..cursor));
         true
+    }
+
+    /// "Sort Headings Under This" on heading [index], or on the heading of
+    /// the section the cursor is in, as one step to undo; else what to say.
+    pub fn sort_headings(&self, index: Option<usize>) -> Result<(), String> {
+        let text = self.text();
+        let cursor = self.cursor();
+        let line = text.chars().take(cursor).filter(|c| *c == '\n').count();
+        let sorted = Sections::sort_headings(&text, index, line)?;
+        let cursor = cursor.min(sorted.chars().count());
+        self.replace(0..self.buffer.char_count().max(0) as usize, &sorted, Some(cursor..cursor));
+        Ok(())
     }
 
     fn paste_picture(&self, texture: &gdk::Texture) {

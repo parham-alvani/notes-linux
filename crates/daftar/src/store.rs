@@ -11,7 +11,8 @@ use std::time::UNIX_EPOCH;
 
 use daftar_core::{
     BoardDrop, Bookmarks, CalendarDay, CalendarWeek, Clock, DailyNotes, Day, ExcludedFiles, Failure, Iconic, PeriodicNotes, ReplaceMatch,
-    ReplacePattern, SearchIndex, TagRename, TaskFields, TaskSorter, Templates, Vault, VaultEdits, VaultIndex, VaultReplace, VaultTask,
+    ReplacePattern, SearchIndex, Sections, TagRename, TaskFields, TaskSorter, Templates, Vault, VaultEdits, VaultIndex, VaultReplace,
+    VaultTask,
 };
 
 use crate::places::PlaceBook;
@@ -186,6 +187,20 @@ impl VaultStore {
             })
         })?;
         Ok(sorted)
+    }
+
+    /// The headings right under heading [index] of [path], or under the
+    /// heading of the section [line] is in, in the order of their names.
+    /// `Ok(Some(why))` when nothing changed.
+    pub fn sort_headings(&self, path: &str, index: Option<usize>, line: usize) -> Result<Option<String>, Failure> {
+        let mut why = None;
+        self.write(path, |text| {
+            Ok(Sections::sort_headings(text, index, line).unwrap_or_else(|reason| {
+                why = Some(reason);
+                text.to_string()
+            }))
+        })?;
+        Ok(why)
     }
 
     /// The notes that have the tag [tag] or one under it.

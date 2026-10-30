@@ -1,6 +1,6 @@
 # Daftar outline rules: closing headings and sorting the headings under one
 
-Shared by Daftar for macOS (`notes-mac`, commit `723e125`) and Android (`notes-droid`, branch `outline-close-and-sort`); Linux has neither yet. Both features act on the outline, the list of a note's headings beside it; neither folds the note's own text.
+Shared by Daftar for macOS (`notes-mac`, commit `723e125`), Android (`notes-droid`, commit `ebb7aef`) and Linux (`notes-linux`, branch `outline-close-and-sort`). Both features act on the outline, the list of a note's headings beside it; neither folds the note's own text.
 
 ## 1. Closing a heading in the outline
 
@@ -9,9 +9,9 @@ Shared by Daftar for macOS (`notes-mac`, commit `723e125`) and Android (`notes-d
 - A heading closed under a closed one is hidden with it, and is still closed when that one opens.
 - A heading with nothing under it has nothing to hide: a key for it changes nothing.
 - The current section's mark goes to the closed heading it is hidden under.
-- Close and Open act on one heading; "Close (Open) every heading of this level" on every heading of its level that has children. On the Mac, Option with a click on the arrow does the same.
+- Close and Open act on one heading; "Close (Open) every heading of this level" on every heading of its level that has children. On the Mac, Option with a click on the arrow does the same; on Linux, Shift with a click.
 - The closed headings are kept per note as `level:text` keys (`2:Plan`), which an edit above the heading does not move, apart from the reader's folds. They are kept across launches, and through a reindex of the note even when its text changed.
-- On the Mac they follow the note's move or rename, as its folds do; on Android, where folds do not follow a rename yet, they do not either.
+- On the Mac and Linux they follow the note's move or rename, as its folds do; on Android, where folds do not follow a rename yet, they do not either.
 
 ## 2. Sort Headings Under This
 
@@ -21,7 +21,7 @@ Shared by Daftar for macOS (`notes-mac`, commit `723e125`) and Android (`notes-d
 - Every line of the note is still there once after a sort; a second sort changes nothing.
 - Nothing changes when the heading has fewer than two children, or they are in order already; the app says so: "“X” has fewer than two headings right under it.", "The headings under “X” are in order already."
 - With no heading given, it acts on the heading of the section the cursor (or, with no editor, the reading place) is in; with none there it says "Put the cursor in a section to sort the headings under it." (Android: "Scroll into a section…").
-- It is in the outline heading's menu (disabled with fewer than two children) and with the note's commands. The editor's text is saved first, and the sorted text is written as any other edit of the app.
+- It is in the outline heading's menu (disabled with fewer than two children) and with the note's commands; on Linux also `daftar-cli sort-headings NOTE HEADING`, where HEADING is the heading's text or a line in its section. The editor's text is saved first, and the sorted text is written as any other edit of the app; on Linux, in the editor it is one step to undo.
 
 ## 3. Tests every app has
 
