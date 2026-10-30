@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
+use daftar_core::properties::{PropertyEdit, PropertySheet};
 use daftar_core::{
     BoardDrop, Bookmarks, CalendarDay, CalendarWeek, Clock, DailyNotes, Day, ExcludedFiles, Failure, Iconic, PeriodicNotes, ReplaceMatch,
     ReplacePattern, SearchIndex, Sections, TagRename, TaskFields, TaskSorter, Templates, Vault, VaultEdits, VaultIndex, VaultReplace,
@@ -217,6 +218,23 @@ impl VaultStore {
             })
         })?;
         Ok(moved)
+    }
+
+    /// [edit] made to the front matter of [path], or why it was not: YAML
+    /// the form cannot show, a name that is taken, or a file that changed.
+    pub fn set_property(&self, path: &str, edit: &PropertyEdit) -> Result<(), String> {
+        let mut why = None;
+        let written = self.write(path, |text| match PropertySheet::edit(text, edit) {
+            Ok(new) => Ok(new),
+            Err(reason) => {
+                why = Some(reason);
+                Ok(text.to_string())
+            }
+        });
+        if let Some(why) = why {
+            return Err(why);
+        }
+        written.map_err(|e| format!("The property could not be written: {e}."))
     }
 
     /// The notes that have the tag [tag] or one under it.

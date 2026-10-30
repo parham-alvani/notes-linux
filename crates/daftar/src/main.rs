@@ -19,6 +19,7 @@ mod palette;
 mod picture_viewer;
 mod places;
 mod preferences;
+mod properties_form;
 mod read_aloud;
 mod reader;
 mod settings;

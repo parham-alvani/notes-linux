@@ -1,4 +1,5 @@
-//! The inspector (Ctrl+Alt+I), as on the Mac: the note's outline with the
+//! The inspector (Ctrl+Alt+I), as on the Mac: the note's properties as a
+//! form (`properties_form.rs`), the note's outline with the
 //! section on screen marked, where a heading with headings under it closes
 //! and opens, a right click sorts the headings under one and a heading
 //! dropped on another of its level takes its place, the notes that link to it, the unlinked
@@ -16,6 +17,7 @@ use gtk::{gio, glib};
 use daftar_core::text::direction;
 use daftar_core::{Detected, DetectedKind, Failure, Heading, Mention, Sections, UnlinkedMentions, Vault, VaultEdits};
 
+use crate::properties_form::{self, Chosen};
 use crate::store::VaultStore;
 
 /// A few mentions from each note, so one note that names it all the time
@@ -47,6 +49,9 @@ pub struct Inspector {
     outline: RefCell<Option<Outline>>,
     /// The heading line of the section on screen in the reader.
     section: Cell<Option<usize>>,
+    /// The note drawn last, and the types picked for its new properties.
+    path: RefCell<String>,
+    chosen: Chosen,
 }
 
 impl Inspector {
@@ -70,6 +75,8 @@ impl Inspector {
             tag: Box::new(tag),
             outline: RefCell::new(None),
             section: Cell::new(None),
+            path: RefCell::new(String::new()),
+            chosen: Chosen::default(),
         })
     }
 
@@ -108,6 +115,25 @@ impl Inspector {
 
         let note = store.index().notes.get(path).cloned();
         let Some(note) = note else { return };
+
+        // The properties, read from the file as it is on disk now.
+        if *self.path.borrow() != path {
+            self.chosen.borrow_mut().clear();
+            path.clone_into(&mut self.path.borrow_mut());
+        }
+        let text = std::fs::read_to_string(store.root.join(path)).unwrap_or_default();
+        let count = match daftar_core::properties::PropertySheet::read(&text) {
+            daftar_core::properties::FrontMatterForm::Form(sheet) => sheet.properties().len(),
+            _ => 0,
+        };
+        self.content.append(&title("Properties", count));
+        let names = {
+            let index = store.index();
+            Rc::new(daftar_core::properties::PropertyNames::ranked(
+                index.notes.values().flat_map(|n| n.parsed.properties.iter().map(|(key, _)| key.as_str())),
+            ))
+        };
+        self.content.append(&properties_form::form(&text, &daftar_core::BaseEngine::types(&store.root), names, &self.chosen));
 
         // The outline, each level further in; a click goes to the heading.
         if !note.parsed.headings.is_empty() {

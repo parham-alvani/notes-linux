@@ -6,6 +6,7 @@
 use adw::prelude::*;
 use gtk::{gio, glib};
 
+use daftar_core::properties::PropertyEdit;
 use daftar_core::{BoardDrop, Day, Postpone, Vault};
 
 use super::Window;
@@ -44,6 +45,15 @@ impl Window {
             this.sort_headings(index);
         });
         self.window.add_action(&sort);
+        // A change the inspector's properties form made: an encoded `PropertyEdit`.
+        let set_property = gio::SimpleAction::new("set-property", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        set_property.connect_activate(move |_, target| {
+            if let Some(edit) = target.and_then(glib::Variant::get::<String>).and_then(|t| PropertyEdit::decode(&t)) {
+                this.set_property(&edit);
+            }
+        });
+        self.window.add_action(&set_property);
         // A heading dropped in the outline: "index:position" among its level.
         let move_section = gio::SimpleAction::new("move-section", Some(glib::VariantTy::STRING));
         let this = self.clone();
@@ -223,6 +233,19 @@ impl Window {
             Ok(Some(why)) => self.toasts.add_toast(adw::Toast::new(&why)),
             Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The headings could not be sorted: {error}."))),
         }
+    }
+
+    /// [edit] made to the front matter of the note on screen, the editor
+    /// saved first; the store says why when it writes nothing.
+    fn set_property(&self, edit: &PropertyEdit) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let tab = self.tab();
+        let Some(path) = self.note_to_write(&tab) else { return };
+        if let Err(why) = store.set_property(&path, edit) {
+            self.toasts.add_toast(adw::Toast::new(&why));
+        }
+        self.written(&tab);
+        self.refresh_inspector();
     }
 
     /// The section of heading [index] at place [position] among the

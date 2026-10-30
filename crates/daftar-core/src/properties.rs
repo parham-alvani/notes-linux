@@ -536,6 +536,75 @@ impl PropertySheet {
     }
 }
 
+/// One change the form makes, as the app's `win.set-property` action
+/// carries it from the inspector to the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropertyEdit {
+    Set(String, PropertyValue),
+    Add(String, PropertyValue),
+    Remove(String),
+    Rename(String, String),
+}
+
+/// Between the parts of an encoded edit, and between a list's items: no
+/// property and no value holds them.
+const PART: char = '\u{1e}';
+const ITEM: char = '\u{1f}';
+
+impl PropertyEdit {
+    /// The edit as one string: the operation, the key, and the value.
+    pub fn encode(&self) -> String {
+        let value = |value: &PropertyValue| match value {
+            PropertyValue::Empty => "empty".to_string(),
+            PropertyValue::Text(text) => format!("text{PART}{text}"),
+            PropertyValue::List(items) => format!("list{PART}{}", items.join(&ITEM.to_string())),
+        };
+        match self {
+            PropertyEdit::Set(key, v) => format!("set{PART}{key}{PART}{}", value(v)),
+            PropertyEdit::Add(key, v) => format!("add{PART}{key}{PART}{}", value(v)),
+            PropertyEdit::Remove(key) => format!("remove{PART}{key}"),
+            PropertyEdit::Rename(key, to) => format!("rename{PART}{key}{PART}{to}"),
+        }
+    }
+
+    pub fn decode(text: &str) -> Option<PropertyEdit> {
+        let parts: Vec<&str> = text.splitn(4, PART).collect();
+        let value = || match parts.get(2..) {
+            Some(["empty"]) => Some(PropertyValue::Empty),
+            Some(["text", text]) => Some(PropertyValue::Text((*text).to_string())),
+            Some(["list", ""]) => Some(PropertyValue::List(Vec::new())),
+            Some(["list", items]) => Some(PropertyValue::List(items.split(ITEM).map(str::to_string).collect())),
+            _ => None,
+        };
+        let key = (*parts.get(1)?).to_string();
+        match parts[0] {
+            "set" => Some(PropertyEdit::Set(key, value()?)),
+            "add" => Some(PropertyEdit::Add(key, value()?)),
+            "remove" if parts.len() == 2 => Some(PropertyEdit::Remove(key)),
+            "rename" if parts.len() == 3 => Some(PropertyEdit::Rename(key, parts[2].to_string())),
+            _ => None,
+        }
+    }
+}
+
+impl PropertySheet {
+    /// [note] with [edit] made to its front matter, or why it cannot be:
+    /// front matter the form cannot show, or a name that is taken.
+    pub fn edit(note: &str, edit: &PropertyEdit) -> Result<String, String> {
+        let mut sheet = match PropertySheet::read(note) {
+            FrontMatterForm::Absent(sheet) | FrontMatterForm::Form(sheet) => sheet,
+            FrontMatterForm::Source(reason) => return Err(reason),
+        };
+        match edit {
+            PropertyEdit::Set(key, value) => sheet.set(key, value.clone()),
+            PropertyEdit::Add(key, value) => sheet.add(key, value.clone()).map_err(|e| e.to_string())?,
+            PropertyEdit::Remove(key) => sheet.remove(key),
+            PropertyEdit::Rename(key, to) => sheet.rename(key, to).map_err(|e| e.to_string())?,
+        }
+        sheet.applied(note).ok_or_else(|| "The front matter changed meanwhile.".to_string())
+    }
+}
+
 fn content(line: &str) -> &str {
     line.strip_suffix('\r').unwrap_or(line)
 }
@@ -1069,6 +1138,35 @@ mod tests {
         assert_eq!(PropertySheet::length("no front matter"), 0);
         assert_eq!(PropertySheet::length("---\nt: 😀\n---\nbody"), "---\nt: 😀\n---\n".chars().count());
         assert_eq!(PropertySheet::length("---\nopen"), 0);
+    }
+
+    #[test]
+    fn an_edit_goes_through_one_string_and_back() {
+        let edits = [
+            PropertyEdit::Set("due date".into(), PropertyValue::Text("2026-10-25".into())),
+            PropertyEdit::Set("tags".into(), PropertyValue::List(vec!["a, b".into(), "c".into()])),
+            PropertyEdit::Set("tags".into(), PropertyValue::List(Vec::new())),
+            PropertyEdit::Add("done".into(), PropertyValue::Empty),
+            PropertyEdit::Remove("x".into()),
+            PropertyEdit::Rename("a".into(), "b: c".into()),
+        ];
+        for edit in edits {
+            assert_eq!(PropertyEdit::decode(&edit.encode()), Some(edit));
+        }
+        assert_eq!(PropertyEdit::decode("set"), None);
+        assert_eq!(PropertyEdit::decode("drop\u{1e}x"), None);
+    }
+
+    #[test]
+    fn an_edit_is_made_to_a_note_or_says_why_not() {
+        let note = "---\ntitle: a\n---\nbody";
+        let set = PropertyEdit::Set("title".into(), PropertyValue::Text("b".into()));
+        assert_eq!(PropertySheet::edit(note, &set).unwrap(), "---\ntitle: b\n---\nbody");
+        let add = PropertyEdit::Add("title".into(), PropertyValue::Empty);
+        assert_eq!(PropertySheet::edit(note, &add), Err("The note has a property “title” already.".into()));
+        assert!(PropertySheet::edit("---\n# c\nx: 1\n---\n", &set).unwrap_err().contains("comment"));
+        let tags = PropertyEdit::Add("tags".into(), PropertyValue::List(vec!["x".into()]));
+        assert_eq!(PropertySheet::edit("body", &tags).unwrap(), "---\ntags:\n  - x\n---\nbody");
     }
 
     #[test]
