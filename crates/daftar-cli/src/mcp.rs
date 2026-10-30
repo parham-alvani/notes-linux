@@ -138,8 +138,8 @@ impl Server {
             "check_vault" => {
                 let options = check::Options {
                     strict: false,
-                    no_h1: Vec::new(),
-                    callouts: Vec::new(),
+                    no_h1: args.list("no_h1"),
+                    callouts: args.list("callouts"),
                     urls: false,
                     unreachable: false,
                     github_token: None,
@@ -466,6 +466,14 @@ impl Arguments<'_> {
             .unwrap_or(default)
     }
 
+    fn list(&self, name: &str) -> Vec<String> {
+        self.0
+            .get(name)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
     fn day(&self, name: &str) -> Result<Day, String> {
         match self.optional(name) {
             None | Some("today") => Ok(Day::today()),
@@ -585,8 +593,11 @@ fn tools(read_only: bool) -> Vec<Value> {
         ),
         tool(
             "check_vault",
-            "The vault's audit, as `daftar-cli check`: broken links and embeds, missing headings, ambiguous links, bad task dates, broken callouts, unused pictures.",
-            json!({}),
+            "The vault's audit, as `daftar-cli check`: broken links and embeds, missing headings, ambiguous links, broken callouts, unused pictures, and tasks whose status and dates disagree. Pass the options the vault's `just check` passes (its justfile), or its own callouts are errors.",
+            json!({
+                "callouts": { "type": "array", "items": { "type": "string" }, "description": "Callout types the vault adds, as `--callout`" },
+                "no_h1": { "type": "array", "items": { "type": "string" }, "description": "Folders whose notes must have no H1, as `--no-h1`" },
+            }),
             &[],
             false,
         ),

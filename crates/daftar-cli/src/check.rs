@@ -4,8 +4,8 @@
 //! working, a callout that falls apart, an H1 where the vault wants none.
 //! Warnings are a backlog: a link to a note not written yet, a bare link
 //! whose name more than one note has, a fence in a fence, a picture no note
-//! shows, a block id written twice, and with `--urls` a web address that is
-//! gone. Prints `path:line`, a tab, `error` or `warning`, a tab, the kind
+//! shows, a block id written twice, a task whose status and dates disagree,
+//! and with `--urls` a web address that is gone. Prints `path:line`, a tab, `error` or `warning`, a tab, the kind
 //! and what it found; in GitHub Actions, an annotation for each. With
 //! `--fix` it mends what has one answer: a bare link whose name more than
 //! one note has gets the shortest path that names the note it goes to now,
@@ -19,7 +19,7 @@ use std::sync::LazyLock;
 use chrono::NaiveDate;
 use daftar_core::vault::LOGO_NAMES;
 use daftar_core::web_fetch::Answer;
-use daftar_core::{Vault, VaultEdits};
+use daftar_core::{Day, ParsedTask, Recurrence, TaskStatuses, TaskType, Vault, VaultEdits};
 use percent_encoding::percent_decode_str;
 use regex::Regex;
 
@@ -398,6 +398,63 @@ fn retarget(line: &str, target: &str, new: &str) -> String {
     out
 }
 
+/// What is wrong with a task by the Tasks plugin's rules, each a kind and
+/// a sentence: a status and dates that disagree, a repeat rule with nothing
+/// to repeat from, dates in an order no plan has. A task done before its
+/// ➕ day is not one: it was written down after it was done. A date that is not a day
+/// is `task-date`'s, and is not compared here.
+fn task_problems(task: &ParsedTask, statuses: &TaskStatuses, today: &str) -> Vec<(&'static str, String)> {
+    fn day(d: Option<&String>) -> Option<&str> {
+        d.map(String::as_str).filter(|d| d.len() == 10 && NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok())
+    }
+    let mut found = Vec::new();
+    let known = statuses.all.iter().any(|s| s.symbol == task.status) || task.status == 'X';
+    if !known {
+        found.push(("task-status", format!("[{}] is not one of the vault's statuses, so it is read as to do", task.status)));
+    }
+    match statuses.kind(task.status) {
+        TaskType::Done if task.done.is_none() => {
+            found.push(("task-undated", "done with no ✅ date, so a review of the week cannot place it".to_string()));
+        }
+        TaskType::Cancelled if task.cancelled.is_none() => {
+            found.push(("task-undated", "cancelled with no ❌ date, so a review of the week cannot place it".to_string()));
+        }
+        TaskType::Todo | TaskType::InProgress if known => {
+            for (mark, date) in [("✅", &task.done), ("❌", &task.cancelled)] {
+                if date.is_some() {
+                    found.push(("task-stale-date", format!("open, but keeps its {mark} date from before it was opened again")));
+                }
+            }
+        }
+        _ => {}
+    }
+    if let Some(rule) = &task.recurring {
+        if Recurrence::parse(rule).is_none() {
+            found.push(("task-repeat", format!("🔁 {rule} is not a rule it can repeat by (every 2 weeks, every month when done)")));
+        } else if task.due.is_none() && task.scheduled.is_none() && task.start.is_none() {
+            found.push(("task-repeat", "repeats, but has no 📅, ⏳ or 🛫 date to repeat from".to_string()));
+        }
+    }
+    let (due, scheduled, start, done) =
+        (day(task.due.as_ref()), day(task.scheduled.as_ref()), day(task.start.as_ref()), day(task.done.as_ref()));
+    if let (Some(scheduled), Some(due)) = (scheduled, due)
+        && scheduled > due
+    {
+        found.push(("task-date-order", format!("scheduled ⏳ {scheduled}, after it is due 📅 {due}")));
+    }
+    if let (Some(start), Some(due)) = (start, due)
+        && start > due
+    {
+        found.push(("task-date-order", format!("starts 🛫 {start}, after it is due 📅 {due}")));
+    }
+    if let Some(done) = done
+        && done > today
+    {
+        found.push(("task-date-order", format!("done ✅ {done}, a day still to come")));
+    }
+    found
+}
+
 fn stem(path: &str) -> &str {
     let name = path.rsplit('/').next().unwrap_or(path);
     name.strip_suffix(".md").unwrap_or(name)
@@ -419,8 +476,15 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
     let mut fixes: BTreeSet<(String, usize, &'static str, String, String)> = BTreeSet::new();
     let mut paths: Vec<&String> = index.notes.keys().filter(|p| !hidden(p)).collect();
     paths.sort();
+    let statuses = TaskStatuses::load(root);
+    let today = Day::today().to_string();
     for path in &paths {
         let note = &index.notes[*path];
+        for task in &note.parsed.tasks {
+            for (kind, what) in task_problems(task, &statuses, &today) {
+                found.insert(((*path).clone(), task.line + 1, false, kind, what));
+            }
+        }
         let source = fs::read_to_string(root.join(path.as_str())).unwrap_or_default();
         let source_lines: Vec<&str> = source.lines().collect();
         for link in &note.parsed.links {
@@ -914,6 +978,35 @@ mod tests {
             ],
             "{lines:#?}"
         );
+    }
+
+    #[test]
+    fn finds_tasks_whose_status_and_dates_disagree() {
+        let dir = vault(&[(
+            "T.md",
+            "- [x] Done, no date\n- [x] Done ✅ 2026-01-02\n- [-] Dropped\n- [ ] Reopened ✅ 2026-01-02\n\
+             - [ ] Monthly 🔁 every month\n- [ ] Odd 🔁 2026-05-21 📅 2026-05-21\n- [ ] Fine 🔁 every 2 weeks ⏳ 2026-01-01\n\
+             - [ ] Late ⏳ 2026-03-02 📅 2026-03-01\n- [x] Ahead ✅ 2999-01-01\n- [?] Asked\n\
+             - [x] Logged after ➕ 2026-02-01 ✅ 2026-01-20\n",
+        )]);
+        let lines = findings(dir.path(), &options());
+        let kinds: Vec<(&str, &str)> = lines.iter().map(|l| (l.split('\t').next().unwrap(), l.split('\t').nth(2).unwrap())).collect();
+        assert_eq!(
+            kinds,
+            [
+                ("T.md:1", "task-undated"),
+                ("T.md:3", "task-undated"),
+                ("T.md:4", "task-stale-date"),
+                ("T.md:5", "task-repeat"),
+                ("T.md:6", "task-repeat"),
+                ("T.md:8", "task-date-order"),
+                ("T.md:9", "task-date-order"),
+                ("T.md:10", "task-status"),
+            ],
+            "{lines:#?}"
+        );
+        // Warnings: they fail only with --strict.
+        assert!(lines.iter().all(|l| l.contains("\twarning\t")));
     }
 
     #[test]
