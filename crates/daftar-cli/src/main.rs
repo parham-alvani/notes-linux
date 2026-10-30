@@ -15,6 +15,7 @@ mod clip;
 mod fmt;
 mod images;
 mod lint;
+mod mcp;
 mod report;
 mod tui;
 mod vault_commands;
@@ -309,6 +310,16 @@ enum Command {
         /// With --fix, prints the changes and writes nothing.
         #[arg(long, requires = "fix")]
         dry_run: bool,
+    },
+    /// The vault as an MCP server on stdin and stdout, for Claude Code and
+    /// other agents: search, notes, links, tags, tasks and their queries,
+    /// git history, the audit, and the app's safe writes (capture, add to a
+    /// note, a new note, tick, set a status, postpone). `claude mcp add
+    /// --scope user daftar -- daftar-cli mcp --vault ~/org`.
+    Mcp {
+        /// Leaves the tools that write out.
+        #[arg(long)]
+        read_only: bool,
     },
     /// Removes pictures no note names, makes the others JPEGs under 1 MB and
     /// renames them in the notes, as notes-cli does.
@@ -660,6 +671,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Clip { url, folder, title } => {
             out!("{}", clip::run(&root, &url, &folder, title.as_deref())?);
         }
+        Command::Mcp { read_only } => mcp::run(root, cli.hidden, read_only)?,
         Command::Images { folder, dry_run, keep_originals } => {
             let folder = if folder.is_absolute() { folder } else { root.join(folder) };
             if !folder.is_dir() {

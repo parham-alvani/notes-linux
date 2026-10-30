@@ -572,6 +572,7 @@ dependencies = [
  "ratatui",
  "rayon",
  "regex",
+ "serde_json",
  "tempfile",
  "unicode-width",
  "walkdir",
