@@ -1,13 +1,16 @@
 //! `lint`: the vault's notes against its `.markdownlint.jsonc`, as
 //! `markdownlint-cli2` checks them, with no Node: `daftar_core::MarkdownLint`.
 //! Prints `path:line[:column] rule/name description [detail]` for each
-//! problem; `--fix` mends what can be mended first, through `VaultEdits`.
+//! problem, or a GitHub Actions annotation in a workflow; `--fix` mends what
+//! can be mended first, through `VaultEdits`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use daftar_core::{LintConfig, MarkdownLint, VaultEdits};
 use walkdir::WalkDir;
+
+use crate::report;
 
 /// What a run found: the problems left, and the notes they are in.
 pub struct Outcome {
@@ -73,7 +76,14 @@ pub fn notes_but(root: &Path, paths: &[PathBuf], ignore: &[String], ignore_file:
     out
 }
 
-pub fn run(root: &Path, paths: &[PathBuf], ignore: &[String], fix: bool, mut print: impl FnMut(String)) -> Result<Outcome, String> {
+pub fn run(
+    root: &Path,
+    paths: &[PathBuf],
+    ignore: &[String],
+    fix: bool,
+    github: bool,
+    mut print: impl FnMut(String),
+) -> Result<Outcome, String> {
     let config = config(root)?;
     let notes = notes(root, paths, ignore);
     let mut fixed = 0;
@@ -88,15 +98,20 @@ pub fn run(root: &Path, paths: &[PathBuf], ignore: &[String], fix: bool, mut pri
     }
     let (mut problems, mut with) = (0, 0);
     for path in &notes {
-        let Ok(text) = fs::read_to_string(root.join(path)) else { continue };
-        let found = MarkdownLint::lint(&text, &config);
+        let Ok(bytes) = fs::read(root.join(path)) else { continue };
+        let found = MarkdownLint::lint_bytes(&bytes, &config);
         if !found.is_empty() {
             with += 1;
         }
         for p in &found {
             problems += 1;
-            let column = p.column.map(|c| format!(":{c}")).unwrap_or_default();
             let detail = if p.detail.is_empty() { String::new() } else { format!(" {}", p.detail) };
+            if github {
+                let title = format!("{}/{}", p.rule, p.name());
+                print(report::annotation("error", path, p.line, p.column, &title, &format!("{}{detail}", p.description())));
+                continue;
+            }
+            let column = p.column.map(|c| format!(":{c}")).unwrap_or_default();
             print(format!("{path}:{}{column} {}/{} {}{detail}", p.line, p.rule, p.name(), p.description()));
         }
     }

@@ -15,6 +15,7 @@ mod clip;
 mod fmt;
 mod images;
 mod lint;
+mod report;
 mod tui;
 mod vault_commands;
 
@@ -250,14 +251,19 @@ enum Command {
         /// when there is one.
         #[arg(long)]
         check: bool,
+        /// With --check, shows what formatting would change in each note.
+        #[arg(long, requires = "check")]
+        diff: bool,
         /// A folder or file of the vault to leave out (as .prettierignore).
         #[arg(long)]
         ignore: Vec<String>,
     },
     /// Checks what lint cannot see: embeds of files that are not there,
-    /// links to no note, links a code span stops, callouts that fall apart,
-    /// pictures no note shows. Fails on an error; on a warning too with
-    /// --strict.
+    /// links to no note or to no heading or block, links a code span stops,
+    /// callouts that fall apart, task dates that are not days, front matter
+    /// never closed, block ids written twice, pictures no note shows, and
+    /// web addresses written wrong, and with --urls web addresses that are
+    /// gone. Fails on an error; on a warning too with --strict.
     Check {
         /// Fails on warnings too.
         #[arg(long)]
@@ -268,6 +274,21 @@ enum Command {
         /// A callout type beyond the standard ones.
         #[arg(long)]
         callout: Vec<String>,
+        /// Asks every web address the notes link to whether it is still
+        /// there: one that answers 404 or 410, or does not answer, is a
+        /// warning. Addresses on the local network are left out. Off unless
+        /// asked: how an address is written is checked every time.
+        #[arg(long, env = "DAFTAR_CHECK_URLS")]
+        urls: bool,
+        /// With --urls, lists the addresses nothing answered at too: a name
+        /// no server has, a refused connection, a bad certificate. A host
+        /// on a VPN is one of them.
+        #[arg(long, requires = "urls")]
+        unreachable: bool,
+        /// A host (with its subdomains) or the start of an address --urls
+        /// does not ask.
+        #[arg(long = "skip-url")]
+        skip_url: Vec<String>,
     },
     /// Removes pictures no note names, makes the others JPEGs under 1 MB and
     /// renames them in the notes, as notes-cli does.
@@ -328,7 +349,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let by = match due.as_deref() {
                 None => None,
                 Some("today") => Some(Day::today().to_string()),
-                Some(text) => Some(Day::parse(text).ok_or(format!("{text} is not a day (YYYY-MM-DD)"))?.to_string()),
+                Some(text) => Some(Day::parse(text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?.to_string()),
             };
             let mut tasks: Vec<_> = hidden
                 .tasks(&index)
@@ -339,7 +360,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 .collect();
             // Due first, the earliest on top; then by note and line.
             tasks.sort_by(|a, b| {
-                let day = |t: &daftar_core::VaultTask| t.task.due.clone().or(t.task.scheduled.clone()).unwrap_or_else(|| "9999".into());
+                let day = |t: &VaultTask| t.task.due.clone().or_else(|| t.task.scheduled.clone()).unwrap_or_else(|| "9999".into());
                 day(a).cmp(&day(b)).then(a.path.cmp(&b.path)).then(a.task.line.cmp(&b.task.line))
             });
             for task in tasks {
@@ -391,8 +412,8 @@ fn run(cli: Cli) -> Result<(), String> {
             let path = note_path(&index, &note)?;
             let at = line.checked_sub(1).ok_or("lines count from 1")?;
             let text = fs::read_to_string(root.join(&path)).map_err(|e| format!("{path}: {e}"))?;
-            let raw = text.split('\n').nth(at).ok_or(format!("{path} has no line {line}"))?;
-            let task = TaskLine::parse(raw.trim_end_matches('\r'), at, "").ok_or(format!("{path}:{line} is not a task"))?;
+            let raw = text.split('\n').nth(at).ok_or_else(|| format!("{path} has no line {line}"))?;
+            let task = TaskLine::parse(raw.trim_end_matches('\r'), at, "").ok_or_else(|| format!("{path}:{line} is not a task"))?;
             VaultEdits::apply(&path, &root, |text| VaultEdits::toggle_task(text, at, task.status, Day::today()))
                 .map_err(|e| e.to_string())?;
             let after = fs::read_to_string(root.join(&path)).unwrap_or_default();
@@ -473,7 +494,8 @@ fn run(cli: Cli) -> Result<(), String> {
             match show {
                 Some(hash) => {
                     // A commit before a rename knows the note by its old path.
-                    let revision = history.iter().find(|r| r.hash.starts_with(&hash)).ok_or(format!("no commit {hash} changed {path}"))?;
+                    let revision =
+                        history.iter().find(|r| r.hash.starts_with(&hash)).ok_or_else(|| format!("no commit {hash} changed {path}"))?;
                     let text = git.content(&revision.path, &revision.hash).map_err(|e| e.to_string())?;
                     print!("{text}");
                 }
@@ -555,13 +577,13 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Daily { day, no_create } => {
             let index = Vault::index(&root, None);
             let day = match day {
-                Some(text) => Day::parse(&text).ok_or(format!("{text} is not a day (YYYY-MM-DD)"))?,
+                Some(text) => Day::parse(&text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,
                 None => Day::today(),
             };
             out!("{}", vault_commands::daily(&root, &index.files, day, !no_create, Clock::now())?);
         }
         Command::Lint { paths, fix, ignore } => {
-            let outcome = lint::run(&root, &paths, &ignore, fix, |line| out!("{line}"))?;
+            let outcome = lint::run(&root, &paths, &ignore, fix, report::github(), |line| out!("{line}"))?;
             if fix && outcome.fixed > 0 {
                 eprintln!("daftar-cli: fixed {} of {} notes", outcome.fixed, outcome.checked);
             }
@@ -569,14 +591,25 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{} problems in {} of {} notes", outcome.problems, outcome.notes, outcome.checked));
             }
         }
-        Command::Fmt { paths, check, ignore } => {
-            let outcome = fmt::run(&root, &paths, &ignore, check, |line| out!("{line}"))?;
+        Command::Fmt { paths, check, diff, ignore } => {
+            let options = fmt::Options { check, diff, github: report::github() };
+            let outcome = fmt::run(&root, &paths, &ignore, &options, |line| out!("{line}"))?;
             if check && outcome.changed > 0 {
                 return Err(format!("{} of {} notes are not formatted; run daftar-cli fmt", outcome.changed, outcome.checked));
             }
         }
-        Command::Check { strict, no_h1, callout } => {
-            let options = check::Options { strict, no_h1, callouts: callout };
+        Command::Check { strict, no_h1, callout, urls, unreachable, skip_url } => {
+            let github_token = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).ok();
+            let options = check::Options {
+                strict,
+                no_h1,
+                callouts: callout,
+                urls,
+                unreachable,
+                github_token,
+                skip_urls: skip_url,
+                github: report::github(),
+            };
             let outcome = check::run(&root, |path| hidden.contains(path), &options, |line| out!("{line}"));
             eprintln!("daftar-cli: {} errors, {} warnings in {} notes", outcome.errors, outcome.warnings, outcome.notes);
             if outcome.errors > 0 || (options.strict && outcome.warnings > 0) {
@@ -603,7 +636,7 @@ fn emit(line: std::fmt::Arguments) {
         if error.kind() != std::io::ErrorKind::BrokenPipe {
             eprintln!("daftar-cli: {error}");
         }
-        std::process::exit(if error.kind() == std::io::ErrorKind::BrokenPipe { 0 } else { 1 });
+        std::process::exit(i32::from(error.kind() != std::io::ErrorKind::BrokenPipe));
     }
 }
 
@@ -658,15 +691,16 @@ fn repository(root: &std::path::Path) -> Result<Git, String> {
 fn vault(given: Option<PathBuf>) -> Result<PathBuf, String> {
     let root = match given {
         Some(root) => root,
-        None => match std::env::current_dir().ok().as_deref().and_then(vault_around) {
-            Some(root) => root,
-            None => {
+        None => {
+            if let Some(root) = std::env::current_dir().ok().as_deref().and_then(vault_around) {
+                root
+            } else {
                 let text = fs::read_to_string(ConfigFile::default_path()).unwrap_or_default();
                 ConfigFile::new(text)
                     .vault()
                     .ok_or("no vault: run it in one, pass --vault, or set `vault` in ~/.config/daftar/config.toml")?
             }
-        },
+        }
     };
     if !root.is_dir() {
         return Err(format!("{} is not a folder", root.display()));
@@ -723,7 +757,7 @@ fn note_path(index: &VaultIndex, note: &str) -> Result<String, String> {
         return Ok(note.to_string());
     }
     let target = note.strip_suffix(".md").unwrap_or(note);
-    index.resolve(target, "").filter(|p| Vault::is_note(p)).ok_or(format!("no note {note}"))
+    index.resolve(target, "").filter(|p| Vault::is_note(p)).ok_or_else(|| format!("no note {note}"))
 }
 
 #[cfg(test)]

@@ -4,6 +4,9 @@
 //! front matter are what they are in Obsidian, not lint. Each rule keeps
 //! markdownlint's number, name and options, so a config written for it means
 //! the same here, and `fix` mends what markdownlint's own `--fix` mends.
+//! Past markdownlint's rules come a few of rumdl's (a Rust markdownlint),
+//! with rumdl's numbers and names: what a vault synced by git and written
+//! on a phone gets wrong, as merge conflict markers and broken footnotes.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -32,7 +35,7 @@ impl Problem {
 }
 
 /// markdownlint's rules this checks: number, name and what it says.
-pub const RULES: [(&str, &str, &str); 38] = [
+pub const RULES: &[(&str, &str, &str)] = &[
     ("MD001", "heading-increment", "Heading levels should only increment by one level at a time"),
     ("MD003", "heading-style", "Heading style"),
     ("MD004", "ul-style", "Unordered list style"),
@@ -71,10 +74,27 @@ pub const RULES: [(&str, &str, &str); 38] = [
     ("MD049", "emphasis-style", "Emphasis style"),
     ("MD050", "strong-style", "Strong style"),
     ("MD058", "blanks-around-tables", "Tables should be surrounded by blank lines"),
+    ("MD028", "no-blanks-blockquote", "Blank line inside blockquote"),
+    ("MD033", "no-inline-html", "Inline HTML"),
+    ("MD036", "no-emphasis-as-heading", "Emphasis used instead of a heading"),
+    ("MD051", "link-fragments", "Link fragments should be valid"),
+    ("MD052", "reference-links-images", "Reference links and images should use a label that is defined"),
+    ("MD053", "link-image-reference-definitions", "Link and image reference definitions should be needed"),
+    ("MD055", "table-pipe-style", "Table pipe style"),
+    ("MD056", "table-column-count", "Table column count"),
+    ("MD059", "descriptive-link-text", "Link text should be descriptive"),
+    // rumdl's.
+    ("MD066", "footnote-validation", "Footnote references and definitions should match"),
+    ("MD068", "empty-footnote-definition", "Footnote definitions should not be empty"),
+    ("MD069", "no-duplicate-list-markers", "A list marker repeated, as a paste leaves it"),
+    ("MD084", "invisible-characters", "Invisible characters"),
+    ("MD086", "no-unclosed-comments", "A comment that is never closed"),
+    ("MD092", "merge-conflict-markers", "Merge conflict markers"),
+    ("MD094", "invalid-encoding", "The file is not valid UTF-8"),
 ];
 
 /// Rules off unless the config turns them on, as markdownlint ships them.
-const OFF_BY_DEFAULT: [&str; 0] = [];
+const OFF_BY_DEFAULT: [&str; 1] = ["MD084"];
 
 /// Which rules run, with their options, from a `.markdownlint.json(c)`.
 #[derive(Debug, Clone, Default)]
@@ -121,20 +141,20 @@ impl LintConfig {
         }
     }
 
-    fn option(&self, rule: &str, key: &str) -> Option<&serde_json::Value> {
+    pub(crate) fn option(&self, rule: &str, key: &str) -> Option<&serde_json::Value> {
         self.rules.get(rule)?.as_object()?.get(key)
     }
 
-    fn text(&self, rule: &str, key: &str, default: &str) -> String {
+    pub(crate) fn text(&self, rule: &str, key: &str, default: &str) -> String {
         self.option(rule, key).and_then(|v| v.as_str()).unwrap_or(default).to_string()
     }
 
-    fn number(&self, rule: &str, key: &str, default: i64) -> i64 {
-        self.option(rule, key).and_then(|v| v.as_i64()).unwrap_or(default)
+    pub(crate) fn number(&self, rule: &str, key: &str, default: i64) -> i64 {
+        self.option(rule, key).and_then(serde_json::Value::as_i64).unwrap_or(default)
     }
 
-    fn flag(&self, rule: &str, key: &str, default: bool) -> bool {
-        self.option(rule, key).and_then(|v| v.as_bool()).unwrap_or(default)
+    pub(crate) fn flag(&self, rule: &str, key: &str, default: bool) -> bool {
+        self.option(rule, key).and_then(serde_json::Value::as_bool).unwrap_or(default)
     }
 }
 
@@ -238,6 +258,8 @@ struct Document {
     code_spans: Vec<Range<usize>>,
     rules: Vec<usize>,
     texts: Vec<(Range<usize>, String)>,
+    /// HTML as the parser found it, inline or a block's, with where it starts.
+    html: Vec<(usize, String)>,
 }
 
 impl Document {
@@ -325,7 +347,7 @@ impl Document {
                         doc.code.push(CodeBlock { fenced, info, first, last });
                     }
                 }
-                Event::Start(Tag::HtmlBlock) | Event::Start(Tag::MetadataBlock(_)) => {
+                Event::Start(Tag::HtmlBlock | Tag::MetadataBlock(_)) => {
                     let last = doc.content_end(range.end);
                     for l in line..=last.min(doc.lines.len() - 1) {
                         doc.opaque[l] = true;
@@ -346,14 +368,14 @@ impl Document {
                 }
                 Event::Start(Tag::Emphasis) => emphasis.push((range.start, false)),
                 Event::Start(Tag::Strong) => emphasis.push((range.start, true)),
-                Event::End(TagEnd::Emphasis) | Event::End(TagEnd::Strong) => {
+                Event::End(TagEnd::Emphasis | TagEnd::Strong) => {
                     if let Some((start, strong)) = emphasis.pop() {
                         doc.emphasis.push((start..range.end, strong));
                     }
                 }
                 Event::Start(Tag::Link { link_type, dest_url, .. }) => links.push((range.start, link_type, dest_url.to_string(), false)),
                 Event::Start(Tag::Image { link_type, dest_url, .. }) => links.push((range.start, link_type, dest_url.to_string(), true)),
-                Event::End(TagEnd::Link) | Event::End(TagEnd::Image) => {
+                Event::End(TagEnd::Link | TagEnd::Image) => {
                     if let Some((start, kind, dest, image)) = links.pop() {
                         doc.links.push((start..range.end, kind, dest, image));
                         doc.skip.push(start..range.end);
@@ -363,7 +385,11 @@ impl Document {
                     doc.code_spans.push(range.clone());
                     doc.skip.push(range);
                 }
-                Event::InlineMath(_) | Event::InlineHtml(_) | Event::Html(_) => doc.skip.push(range),
+                Event::InlineHtml(html) | Event::Html(html) => {
+                    doc.html.push((range.start, html.to_string()));
+                    doc.skip.push(range);
+                }
+                Event::InlineMath(_) => doc.skip.push(range),
                 Event::Rule => doc.rules.push(line),
                 Event::Text(text) => doc.texts.push((range, text.to_string())),
                 _ => {}
@@ -485,6 +511,21 @@ fn atx_text(line: &str) -> String {
 pub struct MarkdownLint;
 
 impl MarkdownLint {
+    /// The problems of a file's [bytes]: MD094 alone when they are not UTF-8.
+    pub fn lint_bytes(bytes: &[u8], config: &LintConfig) -> Vec<Problem> {
+        match std::str::from_utf8(bytes) {
+            Ok(text) => Self::lint(text, config),
+            Err(error) if config.on("MD094") => {
+                let good = &bytes[..error.valid_up_to()];
+                #[expect(clippy::naive_bytecount, reason = "once, for a file that is not UTF-8")]
+                let line = good.iter().filter(|&&b| b == b'\n').count() + 1;
+                let column = good.rsplit(|&b| b == b'\n').next().map_or(0, |l| String::from_utf8_lossy(l).chars().count()) + 1;
+                vec![Problem { line, column: Some(column), rule: "MD094", detail: format!("[Byte: {}]", error.valid_up_to()) }]
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// The problems of [text], in line order.
     pub fn lint(text: &str, config: &LintConfig) -> Vec<Problem> {
         let doc = Document::parse(text);
@@ -499,6 +540,7 @@ impl MarkdownLint {
         lists(&doc, config, &mut push);
         code(&doc, config, &mut push);
         inline(&doc, config, &mut push);
+        crate::markdown_lint_more::check(&doc_view(&doc), config, &mut push);
         if config.on("MD047") && !ends_well(text) {
             let last = doc.lines.len() - 1;
             push(last, Some(doc.lines[last].chars().count() + 1), "MD047", String::new());
@@ -769,7 +811,7 @@ fn lines(doc: &Document, config: &LintConfig, push: &mut Push) {
     let mut first: Option<String> = None;
     for &n in &doc.rules {
         let rule = doc.lines[n].trim().to_string();
-        let expected = if style == "consistent" { first.get_or_insert(rule.clone()).clone() } else { style.clone() };
+        let expected = if style == "consistent" { first.get_or_insert_with(|| rule.clone()).clone() } else { style.clone() };
         if rule != expected {
             push(n, None, "MD035", format!("[Expected: {expected}; Actual: {rule}]"));
         }
@@ -796,7 +838,7 @@ fn lists(doc: &Document, config: &LintConfig, push: &mut Push) {
             let lead = body.len() - body.trim_start_matches([' ', '\t']).len();
             let rest = &body[lead..];
             let (marker_len, marker) = if list.ordered {
-                let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+                let digits = rest.chars().take_while(char::is_ascii_digit).count();
                 (digits + 1, rest.chars().nth(digits).unwrap_or('.'))
             } else {
                 (1, rest.chars().next().unwrap_or('-'))
@@ -804,7 +846,10 @@ fn lists(doc: &Document, config: &LintConfig, push: &mut Push) {
             let after = &rest[marker_len.min(rest.len())..];
             let spaces = after.len() - after.trim_start_matches(' ').len();
             let column = text.len() - body.len() + lead + 1;
-            if !list.ordered {
+            if list.ordered {
+                let value: u64 = rest.chars().take_while(char::is_ascii_digit).collect::<String>().parse().unwrap_or(0);
+                ordered_values.push((line, value));
+            } else {
                 // MD004
                 let name = |c: char| match c {
                     '*' => "asterisk",
@@ -831,9 +876,6 @@ fn lists(doc: &Document, config: &LintConfig, push: &mut Push) {
                         push(line, Some(1), "MD007", format!("[Expected: {expected}; Actual: {lead}]"));
                     }
                 }
-            } else {
-                let value: u64 = rest.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0);
-                ordered_values.push((line, value));
             }
             // MD030: one space after the mark (a mark with nothing after is fine).
             if !after.trim().is_empty() && spaces != 1 && !after.starts_with('\t') {
@@ -977,7 +1019,7 @@ fn inline(doc: &Document, config: &LintConfig, push: &mut Push) {
             // In the text as the source has it: an escaped or entity URL is left alone.
             let Some(at) = source.find(m.as_str()) else { continue };
             let before = source[..at].chars().last();
-            if matches!(before, Some('<') | Some('(') | Some('[') | Some('"') | Some('\'') | Some('/')) || in_wikilink(source, at) {
+            if matches!(before, Some('<' | '(' | '[' | '"' | '\'' | '/')) || in_wikilink(source, at) {
                 continue;
             }
             if m.as_str().contains('@') && !m.as_str().contains("://") {
@@ -1006,7 +1048,7 @@ fn inline(doc: &Document, config: &LintConfig, push: &mut Push) {
             }
             let start = caps.get(0).unwrap().start();
             // a word's own underscore, or a list's star, is not a mark
-            if start > 0 && text[..start].chars().last().is_some_and(|c| c.is_alphanumeric()) {
+            if start > 0 && text[..start].chars().last().is_some_and(char::is_alphanumeric) {
                 continue;
             }
             let offset = range.start + start;
@@ -1101,6 +1143,33 @@ fn inline(doc: &Document, config: &LintConfig, push: &mut Push) {
     }
 }
 
+/// What the rules in `markdown_lint_more` read of a parsed note.
+fn doc_view(doc: &Document) -> crate::markdown_lint_more::View<'_> {
+    crate::markdown_lint_more::View {
+        lines: &doc.lines,
+        starts: &doc.starts,
+        opaque: &doc.opaque,
+        fenced: doc.code.iter().filter(|c| c.fenced).map(|c| (c.first, c.last)).collect(),
+        headings: doc.headings.iter().map(|h| (h.line, h.text.as_str())).collect(),
+        lists: doc.lists.iter().flat_map(|l| l.first..=l.last).collect(),
+        tables: &doc.tables,
+        links: doc
+            .links
+            .iter()
+            .map(|(range, kind, dest, image)| crate::markdown_lint_more::LinkView {
+                range: range.clone(),
+                wiki: matches!(kind, LinkType::WikiLink { .. }),
+                auto: matches!(kind, LinkType::Autolink | LinkType::Email),
+                destination: dest.as_str(),
+                image: *image,
+            })
+            .collect(),
+        code_spans: &doc.code_spans,
+        html: &doc.html,
+        source: &doc.source,
+    }
+}
+
 fn doc_text(doc: &Document, range: &Range<usize>) -> String {
     doc.source.get(range.clone()).unwrap_or("").to_string()
 }
@@ -1133,7 +1202,7 @@ fn fix_once(text: &str, config: &LintConfig) -> String {
                 let expected = p.detail.trim_start_matches("[Expected: ").split(';').next().unwrap_or("1");
                 let body = strip_quotes(&line);
                 let at = line.len() - body.len() + (body.len() - body.trim_start_matches([' ', '\t']).len());
-                let digits = line[at..].chars().take_while(|c| c.is_ascii_digit()).count();
+                let digits = line[at..].chars().take_while(char::is_ascii_digit).count();
                 lines[n] = format!("{}{expected}{}", &line[..at], &line[at + digits..]);
             }
             "MD004" => {
@@ -1189,7 +1258,7 @@ fn fix_once(text: &str, config: &LintConfig) -> String {
                 static SPAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`( +)([^`]*?\S)( *)`|`([^`]*?\S)( +)`").unwrap());
                 lines[n] = SPAN
                     .replace_all(&line, |c: &regex::Captures| {
-                        let inner = c.get(2).or(c.get(4)).map_or("", |m| m.as_str());
+                        let inner = c.get(2).or_else(|| c.get(4)).map_or("", |m| m.as_str());
                         format!("`{inner}`")
                     })
                     .to_string();
@@ -1197,7 +1266,7 @@ fn fix_once(text: &str, config: &LintConfig) -> String {
             "MD039" => {
                 static LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\s+([^\]]*?)\s*\]\(|\[([^\]]*?\S)\s+\]\(").unwrap());
                 lines[n] = LABEL
-                    .replace_all(&line, |c: &regex::Captures| format!("[{}](", c.get(1).or(c.get(2)).map_or("", |m| m.as_str())))
+                    .replace_all(&line, |c: &regex::Captures| format!("[{}](", c.get(1).or_else(|| c.get(2)).map_or("", |m| m.as_str())))
                     .to_string();
             }
             "MD034" => {

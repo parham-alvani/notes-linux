@@ -27,7 +27,7 @@ pub fn clip(root: &Path, url: &str, folder: &str, title: Option<&str>, agent: &s
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(format!("{url} is not a web address (http:// or https://)"));
     }
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(60))).user_agent(agent).build().into();
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_mins(1))).user_agent(agent).build().into();
     let (bytes, media, at) = fetch(&agent, url, PAGE_LIMIT)?;
     if let Some(media) = &media {
         let kind = media.split(';').next().unwrap_or("").trim().to_lowercase();
@@ -54,4 +54,68 @@ fn fetch(agent: &ureq::Agent, url: &str, limit: u64) -> Result<(Vec<u8>, Option<
     let at = response.get_uri().to_string();
     let bytes = response.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| format!("{url}: {e}"))?;
     Ok((bytes, media, at))
+}
+
+/// What a web address answers: a status, or why nothing answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+    Status(u16),
+    Unreachable(String),
+}
+
+fn probe_agent(agent: &str) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .timeout_connect(Some(Duration::from_secs(8)))
+        .http_status_as_error(false)
+        .user_agent(agent)
+        .build()
+        .into()
+}
+
+/// [ask] on each of [items], thirty-two at a time: the time goes in waiting.
+fn each<T: Sync, R: Send>(items: &[T], ask: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
+    use rayon::prelude::*;
+    match rayon::ThreadPoolBuilder::new().num_threads(32).build() {
+        Ok(pool) => pool.install(|| items.par_iter().map(&ask).collect()),
+        Err(_) => items.iter().map(ask).collect(),
+    }
+}
+
+/// What each of [urls] answers: a HEAD, and a GET when the HEAD's answer is
+/// not a yes, as many servers will not say to a HEAD what they say to a
+/// GET. The bodies are not read.
+pub fn answers(urls: &[String], agent: &str) -> Vec<Answer> {
+    let agent = probe_agent(agent);
+    each(urls, |url| match agent.head(url).call() {
+        Ok(response) if response.status().as_u16() < 400 => Answer::Status(response.status().as_u16()),
+        Ok(_) => match agent.get(url).call() {
+            Ok(response) => Answer::Status(response.status().as_u16()),
+            Err(error) => Answer::Unreachable(error.to_string()),
+        },
+        Err(error) => Answer::Unreachable(error.to_string()),
+    })
+}
+
+/// What GitHub's API says of each `owner/repo` in [repos] to [token]: 404
+/// when it is not there or [token] cannot see it, 200 for a public one, 403
+/// for a private one [token] can see.
+pub fn github_repos(repos: &[String], token: &str, agent: &str) -> Vec<Answer> {
+    let agent = probe_agent(agent);
+    each(repos, |repo| {
+        let call = agent
+            .get(&format!("https://api.github.com/repos/{repo}"))
+            .header("Authorization", &format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .call();
+        match call {
+            Ok(mut response) if response.status().as_u16() == 200 => {
+                let body = response.body_mut().with_config().limit(1024 * 1024).read_to_string().unwrap_or_default();
+                let private = serde_json::from_str::<serde_json::Value>(&body).ok().and_then(|v| v["private"].as_bool()).unwrap_or(false);
+                Answer::Status(if private { 403 } else { 200 })
+            }
+            Ok(response) => Answer::Status(response.status().as_u16()),
+            Err(error) => Answer::Unreachable(error.to_string()),
+        }
+    })
 }

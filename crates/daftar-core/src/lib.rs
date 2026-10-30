@@ -29,6 +29,7 @@ pub mod link_resolver;
 pub mod markdown_format;
 pub mod markdown_highlighter;
 pub mod markdown_lint;
+mod markdown_lint_more;
 pub mod markdown_table;
 pub mod message_pack;
 pub mod neovim;

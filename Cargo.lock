@@ -568,6 +568,7 @@ dependencies = [
  "image",
  "md-5",
  "notify",
+ "percent-encoding",
  "ratatui",
  "rayon",
  "regex",
