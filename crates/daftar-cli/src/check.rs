@@ -183,6 +183,53 @@ fn has_anchor(index: &daftar_core::VaultIndex, root: &Path, to: &str, anchor: &s
     note.parsed.headings.iter().any(|h| plain(&h.text) == wanted || slug(&h.text) == slugged)
 }
 
+/// The heading of the note at [to] that a broken [anchor] most likely
+/// meant: one that starts with it or holds it (a heading renamed longer),
+/// else one a few letters off (a typo). Compared as `plain` or `slug` do.
+fn closest(index: &daftar_core::VaultIndex, to: &str, anchor: &str) -> Option<String> {
+    let note = index.notes.get(to)?;
+    let (wanted, slugged) = (plain(anchor), anchor.to_lowercase());
+    if wanted.is_empty() || anchor.starts_with('^') {
+        return None;
+    }
+    let headings = &note.parsed.headings;
+    let holds = |h: &&daftar_core::Heading| {
+        let (p, s) = (plain(&h.text), slug(&h.text));
+        p.starts_with(&wanted) || s.starts_with(&slugged) || p.contains(&wanted)
+    };
+    if let Some(found) = headings.iter().filter(holds).min_by_key(|h| h.text.len()) {
+        return Some(found.text.clone());
+    }
+    let most = (wanted.chars().count() / 4).clamp(1, 3);
+    headings
+        .iter()
+        .map(|h| (distance(&plain(&h.text), &wanted).min(distance(&slug(&h.text), &slugged)), h))
+        .filter(|(d, _)| *d <= most)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, h)| h.text.clone())
+}
+
+/// How many letters to add, take away or change to make [a] into [b].
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, x) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, y) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1).min(row[j] + 1).min(diagonal + usize::from(x != *y));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
+/// `; did you mean “X”?` for [closest]'s answer, or nothing.
+fn meant(heading: Option<String>) -> String {
+    heading.map(|h| format!("; did you mean “{h}”?")).unwrap_or_default()
+}
+
 /// A heading's anchor as GitHub writes it, `#my-heading`: lower case, the
 /// marks left out, a dash for each space.
 fn slug(heading: &str) -> String {
@@ -394,7 +441,7 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
                             line,
                             false,
                             "missing-anchor",
-                            format!("{mark}[[{}#{anchor}]]: {to} has no such {what}", link.target),
+                            format!("{mark}[[{}#{anchor}]]: {to} has no such {what}{}", link.target, meant(closest(&index, &to, anchor))),
                         ));
                     }
                     if !link.target.contains('/') && by_name.get(link.target.trim_end_matches(".md")).is_some_and(|&n| n > 1) {
@@ -447,7 +494,7 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
                         i + 1,
                         false,
                         "missing-anchor",
-                        format!("{}: this note has no such {what}", &m[0][m[1].len()..]),
+                        format!("{}: this note has no such {what}{}", &m[0][m[1].len()..], meant(closest(&index, path, &anchor))),
                     ));
                 }
             }
@@ -750,6 +797,21 @@ mod tests {
         );
         assert!(lines[0].starts_with("A.md:1\twarning\t"));
         assert!(lines.last().unwrap().starts_with("uploads/lost.png\twarning"));
+    }
+
+    #[test]
+    fn a_broken_heading_link_names_the_heading_it_likely_meant() {
+        let dir = vault(&[(
+            "A.md",
+            "## Checked: Mar Tirrena 1\n## Travel Plans\n\n[[#Checked]] [[#Travle Plans]] [[#Nothing like it]] [x](#travel)\n",
+        )]);
+        let lines = findings(dir.path(), &options());
+        assert_eq!(lines.len(), 4, "{lines:#?}");
+        let of = |link: &str| lines.iter().find(|l| l.contains(link)).unwrap().clone();
+        assert!(of("[[#Checked]]").ends_with("did you mean “Checked: Mar Tirrena 1”?"));
+        assert!(of("[[#Travle Plans]]").ends_with("did you mean “Travel Plans”?"));
+        assert!(of("[[#Nothing like it]]").ends_with("has no such heading"));
+        assert!(of("(#travel)").ends_with("did you mean “Travel Plans”?"));
     }
 
     #[test]
