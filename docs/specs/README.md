@@ -7,3 +7,4 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | Spec | Released in |
 | --- | --- |
 | [Task reasons and custom statuses](task-reasons-and-statuses.md) | Linux 0.6.0, macOS 0.7.0, Android 0.57.0 |
+| [Outline: closing headings and sorting the headings under one](outline-closing-and-heading-sort.md) | macOS (`723e125`), Android (branch `outline-close-and-sort`); not Linux yet |
