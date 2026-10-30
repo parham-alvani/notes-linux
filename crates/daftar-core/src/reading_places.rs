@@ -1,6 +1,6 @@
 //! What the app remembers of each note it showed, kept across launches: the
 //! source line of the reading cursor, so a note opens where it was left; the
-//! sections folded shut; and when the note was last read, so a note changed
+//! sections folded shut; the outline's closed headings; and when the note was last read, so a note changed
 //! by a pull since then can say so. The notes read last are kept, up to
 //! `LIMIT`; a move or a rename takes its entry along.
 
@@ -15,6 +15,8 @@ pub struct Entry {
     pub line: Option<usize>,
     /// Each folded heading as `level:text`, which an edit above it does not move.
     pub folds: Option<Vec<String>>,
+    /// Each heading closed in the outline, as `level:text` too.
+    pub closed: Option<Vec<String>>,
     /// When the note was last on screen, in whole seconds since 1970.
     pub read: Option<i64>,
 }
@@ -49,6 +51,11 @@ impl ReadingPlaces {
         self.entries.get(path).and_then(|e| e.folds.clone()).unwrap_or_default()
     }
 
+    /// The headings closed in [path]'s outline, as `level:text`.
+    pub fn closed(&self, path: &str) -> Vec<String> {
+        self.entries.get(path).and_then(|e| e.closed.clone()).unwrap_or_default()
+    }
+
     /// When [path] was last read, in seconds since 1970.
     pub fn last_read(&self, path: &str) -> Option<i64> {
         self.entries.get(path).and_then(|e| e.read)
@@ -71,6 +78,10 @@ impl ReadingPlaces {
 
     pub fn set_folds(&mut self, path: &str, folds: Vec<String>) {
         self.update(path, |e| e.folds = if folds.is_empty() { None } else { Some(folds) });
+    }
+
+    pub fn set_closed(&mut self, path: &str, closed: Vec<String>) {
+        self.update(path, |e| e.closed = if closed.is_empty() { None } else { Some(closed) });
     }
 
     /// [at] in seconds since 1970; whole seconds, as the file keeps them.
@@ -116,7 +127,7 @@ impl ReadingPlaces {
         self.entries.retain(|p, _| !gone(p));
     }
 
-    /// `{"notes": [{"path": "Folder/Note.md", "line": 12, "folds": ["2:Plan"], "read": "2027-01-15T08:00:00Z"}, …]}`,
+    /// `{"notes": [{"path": "Folder/Note.md", "line": 12, "folds": ["2:Plan"], "closed": ["1:Notes"], "read": "2027-01-15T08:00:00Z"}, …]}`,
     /// read first to read last.
     pub fn data(&self) -> String {
         let notes: Vec<Value> = self
@@ -131,6 +142,9 @@ impl ReadingPlaces {
                 }
                 if let Some(folds) = &entry.folds {
                     note.insert("folds".into(), json!(folds));
+                }
+                if let Some(closed) = &entry.closed {
+                    note.insert("closed".into(), json!(closed));
                 }
                 if let Some(read) = entry.read.and_then(|s| DateTime::<Utc>::from_timestamp(s, 0)) {
                     note.insert("read".into(), json!(read.format("%Y-%m-%dT%H:%M:%SZ").to_string()));
@@ -155,12 +169,13 @@ impl ReadingPlaces {
         }
         for note in file.get("notes").and_then(Value::as_array).into_iter().flatten() {
             let Some(path) = note.get("path").and_then(Value::as_str) else { continue };
+            let keys = |name: &str| {
+                note.get(name).and_then(Value::as_array).map(|keys| keys.iter().filter_map(|k| k.as_str().map(String::from)).collect())
+            };
             let entry = Entry {
                 line: note.get("line").and_then(Value::as_u64).map(|l| l as usize),
-                folds: note
-                    .get("folds")
-                    .and_then(Value::as_array)
-                    .map(|folds| folds.iter().filter_map(|f| f.as_str().map(String::from)).collect()),
+                folds: keys("folds"),
+                closed: keys("closed"),
                 read: note.get("read").and_then(Value::as_str).and_then(|t| DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp()),
             };
             places.update(path, |e| *e = entry);
@@ -268,6 +283,21 @@ mod tests {
         assert!(places.folds("Plan.md").is_empty());
         places.moved(&BTreeMap::from([("Plan.md".to_string(), "Roadmap.md".to_string())]));
         assert!(places.last_read("Roadmap.md").is_some());
+    }
+
+    #[test]
+    fn the_outlines_closed_headings_come_back_apart_from_the_folds() {
+        let mut places = ReadingPlaces::new();
+        places.set_folds("Plan.md", vec!["2:Done".into()]);
+        places.set_closed("Plan.md", vec!["1:Notes".into(), "2:Ideas".into()]);
+        let back = ReadingPlaces::from_data(&places.data());
+        assert_eq!(back.closed("Plan.md"), vec!["1:Notes", "2:Ideas"]);
+        assert_eq!(back.folds("Plan.md"), vec!["2:Done"]);
+        places.set_closed("Plan.md", vec![]);
+        assert!(places.closed("Plan.md").is_empty() && places.folds("Plan.md") == vec!["2:Done"]);
+        places.set_closed("Plan.md", vec!["1:Notes".into()]);
+        places.moved(&BTreeMap::from([("Plan.md".to_string(), "Roadmap.md".to_string())]));
+        assert_eq!(places.closed("Roadmap.md"), vec!["1:Notes"]);
     }
 
     #[test]

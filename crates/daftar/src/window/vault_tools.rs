@@ -36,6 +36,14 @@ impl Window {
         let this = self.clone();
         sort.connect_activate(move |_, _| this.sort_tasks());
         self.window.add_action(&sort);
+        // The heading's place in the outline, or "" for the cursor's section.
+        let sort = gio::SimpleAction::new("sort-headings", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        sort.connect_activate(move |_, target| {
+            let index = target.and_then(glib::Variant::get::<String>).and_then(|i| i.parse().ok());
+            this.sort_headings(index);
+        });
+        self.window.add_action(&sort);
         let rename_tag = gio::SimpleAction::new("rename-tag", Some(glib::VariantTy::STRING));
         let this = self.clone();
         rename_tag.connect_activate(move |_, target| {
@@ -114,6 +122,7 @@ impl Window {
             command(previous, "Go", "win.periodic-previous", "Ctrl+Alt+Left"),
             command(next, "Go", "win.periodic-next", "Ctrl+Alt+Right"),
             command("Sort Tasks (Done First)", "Note", "win.sort-tasks", ""),
+            command("Sort Headings Under This", "Note", "win.sort-headings::", ""),
             command("Rename a Tag…", "Edit", "win.rename-tag::", ""),
             command("Find and Replace in the Vault", "Edit", "win.replace-in-vault", "Ctrl+Shift+H"),
             command("Mark All as Read", "Go", "win.mark-read::", ""),
@@ -181,6 +190,28 @@ impl Window {
             Ok(true) => tab.reader.reload(),
             Ok(false) => self.toasts.add_toast(adw::Toast::new("The tasks are in order already.")),
             Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The tasks could not be sorted: {error}."))),
+        }
+    }
+
+    /// "Sort Headings Under This": the headings right under heading
+    /// [index], or under the heading of the section the cursor (with no
+    /// editor, the reading place) is in, in the order of their names; in the
+    /// editor as a step to undo, else in the file.
+    fn sort_headings(&self, index: Option<usize>) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let tab = self.tab();
+        if tab.editing() {
+            if let Err(why) = tab.editor.sort_headings(index) {
+                self.toasts.add_toast(adw::Toast::new(&why));
+            }
+            return;
+        }
+        let Some(path) = tab.current().filter(|p| Vault::is_note(p)) else { return };
+        let line = store.places.get(&path).unwrap_or(0);
+        match store.sort_headings(&path, index, line) {
+            Ok(None) => tab.reader.reload(),
+            Ok(Some(why)) => self.toasts.add_toast(adw::Toast::new(&why)),
+            Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The headings could not be sorted: {error}."))),
         }
     }
 

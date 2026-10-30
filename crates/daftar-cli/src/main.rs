@@ -28,8 +28,8 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use daftar_core::{
-    Candidate, Clock, ConfigFile, Day, ExcludedFiles, Git, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions, SearchIndex, Side,
-    SyncFailure, TaskLine, TaskStatuses, TaskType, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
+    Candidate, Clock, ConfigFile, Day, ExcludedFiles, Git, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions, SearchIndex, Sections,
+    Side, SyncFailure, TaskLine, TaskStatuses, TaskType, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
 };
 
 #[derive(Parser)]
@@ -115,6 +115,14 @@ enum Command {
         line: usize,
         #[arg(long)]
         reason: Option<String>,
+    },
+    /// Sorts the headings right under one by name, each with its section,
+    /// as the outline's "Sort Headings Under This" does:
+    /// `daftar-cli sort-headings Plants.md 'Plants'`.
+    SortHeadings {
+        note: String,
+        /// The heading's text, or a line, from 1, in its section.
+        heading: String,
     },
     /// The task statuses of the vault: the four every vault has and the ones
     /// the Tasks plugin's settings add, with their symbol and type.
@@ -418,6 +426,20 @@ fn run(cli: Cli) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             let after = fs::read_to_string(root.join(&path)).unwrap_or_default();
             out!("{}", after.split('\n').nth(at).unwrap_or_default());
+        }
+        Command::SortHeadings { note, heading } => {
+            let index = Vault::index(&root, None);
+            let path = note_path(&index, &note)?;
+            let text = fs::read_to_string(root.join(&path)).map_err(|e| format!("{path}: {e}"))?;
+            let headings = Sections::headings(&text);
+            let (at, line) = match heading.parse::<usize>() {
+                Ok(line) => (None, line.checked_sub(1).ok_or("lines count from 1")?),
+                Err(_) => {
+                    (Some(headings.iter().position(|h| h.text == heading).ok_or_else(|| format!("{path} has no heading “{heading}”"))?), 0)
+                }
+            };
+            let sorted = Sections::sort_headings(&text, at, line)?;
+            VaultEdits::apply(&path, &root, |_| Ok(sorted)).map_err(|e| e.to_string())?;
         }
         Command::Backlinks { note } => {
             let index = Vault::index(&root, None);

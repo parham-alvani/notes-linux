@@ -72,6 +72,19 @@ impl PlaceBook {
         self.later();
     }
 
+    /// The headings closed in [path]'s outline, as `level:text`.
+    pub fn closed(&self, path: &str) -> Vec<String> {
+        self.places.borrow().closed(path)
+    }
+
+    pub fn set_closed(self: &std::rc::Rc<Self>, path: &str, closed: Vec<String>) {
+        if self.closed(path) == closed {
+            return;
+        }
+        self.places.borrow_mut().set_closed(path, closed);
+        self.later();
+    }
+
     /// Files moved: each place goes with its note.
     pub fn moved(self: &std::rc::Rc<Self>, moves: &BTreeMap<String, String>) {
         self.places.borrow_mut().moved(moves);

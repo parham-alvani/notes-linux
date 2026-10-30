@@ -1,5 +1,6 @@
 //! The inspector (Ctrl+Alt+I), as on the Mac: the note's outline with the
-//! section on screen marked, the notes that link to it, the unlinked
+//! section on screen marked, where a heading with headings under it closes
+//! and opens and a right click sorts the headings under one, the notes that link to it, the unlinked
 //! mentions -- where other notes write its name or an alias without a link,
 //! each with a button that makes it a link -- the links it makes (those to
 //! no note yet in red), the places it names and its tags.
@@ -12,7 +13,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use daftar_core::text::direction;
-use daftar_core::{Detected, DetectedKind, Failure, Mention, UnlinkedMentions, Vault, VaultEdits};
+use daftar_core::{Detected, DetectedKind, Failure, Heading, Mention, Sections, UnlinkedMentions, Vault, VaultEdits};
 
 use crate::store::VaultStore;
 
@@ -25,10 +26,12 @@ type Open = dyn Fn(&str, usize);
 type Notice = dyn Fn(&str);
 type Tag = dyn Fn(&str);
 
-/// The outline drawn last: its list, and each row's heading line.
+/// The outline drawn last: its list, the note's headings, and the ones it
+/// shows, a row each.
 struct Outline {
     list: gtk::ListBox,
-    lines: Vec<usize>,
+    headings: Vec<Heading>,
+    visible: Vec<usize>,
 }
 
 pub struct Inspector {
@@ -74,7 +77,9 @@ impl Inspector {
         self.section.set(line);
         let outline = self.outline.borrow();
         let Some(outline) = outline.as_ref() else { return };
-        match line.and_then(|line| outline.lines.iter().position(|l| *l == line)) {
+        // A section under a closed heading marks that heading.
+        let index = line.and_then(|line| outline.headings.iter().position(|h| h.line == line));
+        match index.and_then(|i| Sections::shown(i, &outline.visible)).and_then(|i| outline.visible.iter().position(|v| *v == i)) {
             Some(at) => outline.list.select_row(outline.list.row_at_index(at as i32).as_ref()),
             None => outline.list.unselect_all(),
         }
@@ -106,33 +111,9 @@ impl Inspector {
         // The outline, each level further in; a click goes to the heading.
         if !note.parsed.headings.is_empty() {
             self.content.append(&title("Outline", note.parsed.headings.len()));
-            let list = gtk::ListBox::builder()
-                .selection_mode(gtk::SelectionMode::Single)
-                .css_classes(["navigation-sidebar", "daftar-outline"])
-                .build();
-            for heading in &note.parsed.headings {
-                let rtl = direction::starts_rtl(&heading.text);
-                let label = gtk::Label::builder()
-                    .label(&heading.text)
-                    .xalign(if rtl { 1.0 } else { 0.0 })
-                    .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .margin_start(((heading.level.max(1) - 1) * 12) as i32)
-                    .css_classes([format!("outline-h{}", heading.level.min(6))])
-                    .build();
-                list.append(&gtk::ListBoxRow::builder().child(&label).tooltip_text(&heading.text).build());
-            }
-            let lines: Vec<usize> = note.parsed.headings.iter().map(|h| h.line).collect();
-            {
-                let (this, path, lines) = (self.clone(), path.to_string(), lines.clone());
-                list.connect_row_activated(move |_, row| {
-                    if let Some(line) = lines.get(row.index() as usize) {
-                        (this.open)(&path, *line);
-                    }
-                });
-            }
-            self.content.append(&list);
-            *self.outline.borrow_mut() = Some(Outline { list, lines });
-            self.set_section(self.section.get());
+            let place = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
+            self.content.append(&place);
+            self.outline_in(&place, store, path, note.parsed.headings.clone());
         }
 
         // Backlinks, each with the line that links.
@@ -178,6 +159,146 @@ impl Inspector {
             }
             mentions.append(&list);
         });
+    }
+
+    /// The outline in [place], the headings under a closed one left out.
+    fn outline_in(self: &Rc<Self>, place: &gtk::Box, store: &Rc<VaultStore>, path: &str, headings: Vec<Heading>) {
+        while let Some(child) = place.first_child() {
+            place.remove(&child);
+        }
+        let closed = store.places.closed(path);
+        let visible = Sections::visible(&headings, &closed);
+        let list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(["navigation-sidebar", "daftar-outline"])
+            .build();
+        for &index in &visible {
+            let heading = &headings[index];
+            let rtl = direction::starts_rtl(&heading.text);
+            let row = gtk::Box::builder().spacing(2).margin_start(((heading.level.max(1) - 1) * 12) as i32).build();
+            // Shift with a click closes or opens every heading of its level.
+            if Sections::has_children(index, &headings) {
+                let shut = closed.contains(&Sections::key(heading));
+                let icon = match (shut, rtl) {
+                    (false, _) => "pan-down-symbolic",
+                    (true, false) => "pan-end-symbolic",
+                    (true, true) => "pan-start-symbolic",
+                };
+                let arrow = gtk::Button::builder()
+                    .icon_name(icon)
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat", "circular", "daftar-outline-arrow"])
+                    .tooltip_text(if shut { "Open" } else { "Close" })
+                    .build();
+                let (this, place, store, path, headings) = (self.clone(), place.clone(), store.clone(), path.to_string(), headings.clone());
+                arrow.connect_clicked(move |button| {
+                    let keyboard = button.display().default_seat().and_then(|seat| seat.keyboard());
+                    let every = keyboard.is_some_and(|k| k.modifier_state().contains(gtk::gdk::ModifierType::SHIFT_MASK));
+                    this.close(&place, &store, &path, &headings, index, every);
+                });
+                row.append(&arrow);
+            } else {
+                row.append(&gtk::Box::builder().width_request(24).build());
+            }
+            let label = gtk::Label::builder()
+                .label(&heading.text)
+                .xalign(if rtl { 1.0 } else { 0.0 })
+                .hexpand(true)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .css_classes([format!("outline-h{}", heading.level.min(6))])
+                .build();
+            row.append(&label);
+            let item = gtk::ListBoxRow::builder().child(&row).tooltip_text(&heading.text).build();
+            let menu = gtk::GestureClick::builder().button(gtk::gdk::BUTTON_SECONDARY).build();
+            {
+                let (this, place, store, path, headings, item) =
+                    (self.clone(), place.clone(), store.clone(), path.to_string(), headings.clone(), item.clone());
+                menu.connect_pressed(move |_, _, x, y| this.menu(&item, (x, y), &place, &store, &path, &headings, index));
+            }
+            item.add_controller(menu);
+            list.append(&item);
+        }
+        {
+            let (this, path, lines) = (self.clone(), path.to_string(), visible.iter().map(|i| headings[*i].line).collect::<Vec<_>>());
+            list.connect_row_activated(move |_, row| {
+                if let Some(line) = lines.get(row.index() as usize) {
+                    (this.open)(&path, *line);
+                }
+            });
+        }
+        place.append(&list);
+        *self.outline.borrow_mut() = Some(Outline { list, headings, visible });
+        self.set_section(self.section.get());
+    }
+
+    /// Heading [index] closed if open and opened if closed, or, with
+    /// [every], every heading of its level that has headings under it.
+    fn close(self: &Rc<Self>, place: &gtk::Box, store: &Rc<VaultStore>, path: &str, headings: &[Heading], index: usize, every: bool) {
+        let mut closed = store.places.closed(path);
+        let key = Sections::key(&headings[index]);
+        let shut = !closed.contains(&key);
+        let level = headings[index].level;
+        let keys: Vec<String> = if every {
+            (0..headings.len())
+                .filter(|i| headings[*i].level == level && Sections::has_children(*i, headings))
+                .map(|i| Sections::key(&headings[i]))
+                .collect()
+        } else {
+            vec![key]
+        };
+        closed.retain(|k| !keys.contains(k));
+        if shut {
+            closed.extend(keys);
+        }
+        store.places.set_closed(path, closed);
+        self.outline_in(place, store, path, headings.to_vec());
+    }
+
+    /// A heading's menu: close or open it, or every heading of its level,
+    /// and sort the headings right under it.
+    #[expect(clippy::too_many_arguments, reason = "the row's place in the outline, passed through from its handler")]
+    fn menu(
+        self: &Rc<Self>,
+        item: &gtk::ListBoxRow,
+        (x, y): (f64, f64),
+        place: &gtk::Box,
+        store: &Rc<VaultStore>,
+        path: &str,
+        headings: &[Heading],
+        index: usize,
+    ) {
+        let shut = store.places.closed(path).contains(&Sections::key(&headings[index]));
+        let parent = Sections::has_children(index, headings);
+        let actions = gio::SimpleActionGroup::new();
+        for (name, every) in [("toggle", false), ("level", true)] {
+            let action = gio::SimpleAction::new(name, None);
+            action.set_enabled(parent);
+            let (this, place, store, path, headings) = (self.clone(), place.clone(), store.clone(), path.to_string(), headings.to_vec());
+            action.connect_activate(move |_, _| this.close(&place, &store, &path, &headings, index, every));
+            actions.add_action(&action);
+        }
+        let sort = gio::SimpleAction::new("sort", None);
+        sort.set_enabled(Sections::children(index, headings).len() > 1);
+        let widget = self.widget.clone();
+        sort.connect_activate(move |_, _| {
+            let _ = widget.activate_action("win.sort-headings", Some(&index.to_string().to_variant()));
+        });
+        actions.add_action(&sort);
+        item.insert_action_group("outline", Some(&actions));
+        let model = gio::Menu::new();
+        let (one, all) = if shut { ("Open", "Open Every Heading of This Level") } else { ("Close", "Close Every Heading of This Level") };
+        model.append(Some(one), Some("outline.toggle"));
+        model.append(Some(all), Some("outline.level"));
+        model.append(Some("Sort Headings Under This"), Some("outline.sort"));
+        let popover = gtk::PopoverMenu::from_model(Some(&model));
+        popover.set_parent(item);
+        popover.set_has_arrow(false);
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.connect_closed(|popover| {
+            let popover = popover.clone();
+            glib::idle_add_local_once(move || popover.unparent());
+        });
+        popover.popup();
     }
 
     /// The links the note makes, each once: to a note, a file it embeds, or
