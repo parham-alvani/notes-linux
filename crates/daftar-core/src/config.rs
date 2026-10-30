@@ -53,7 +53,7 @@ impl ConfigFile {
     }
 
     pub fn default_path() -> PathBuf {
-        let base = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
+        let base = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map_or_else(|| home().join(".config"), PathBuf::from);
         base.join("daftar/config.toml")
     }
 
@@ -161,7 +161,7 @@ impl ConfigFile {
         match last_in_section {
             Some(at) if section_seen => lines.insert((at + 1) as usize, entry),
             _ => {
-                while lines.last().is_some_and(|l| l.is_empty()) {
+                while lines.last().is_some_and(String::is_empty) {
                     lines.pop();
                 }
                 lines.extend([String::new(), format!("[{section}]"), entry]);

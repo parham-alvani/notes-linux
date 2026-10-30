@@ -110,7 +110,7 @@ pub fn stop() {
 /// The voice stops when the note it reads leaves [view]'s screen.
 pub fn left(view: &webkit6::WebView, path: Option<&str>) {
     let reading = VOICE.with(|voice| {
-        let same_view = voice.view.borrow().as_ref().and_then(|weak| weak.upgrade()).is_some_and(|v| &v == view);
+        let same_view = voice.view.borrow().as_ref().and_then(glib::WeakRef::upgrade).is_some_and(|v| &v == view);
         same_view && voice.path.borrow().as_deref() != path
     });
     if reading && is_speaking() {
@@ -120,7 +120,7 @@ pub fn left(view: &webkit6::WebView, path: Option<&str>) {
 
 /// The page marks block [index] of its last `speechBlocks()`; -1 clears it.
 fn mark(index: i64) {
-    let view = VOICE.with(|voice| voice.view.borrow().as_ref().and_then(|weak| weak.upgrade()));
+    let view = VOICE.with(|voice| voice.view.borrow().as_ref().and_then(glib::WeakRef::upgrade));
     if let Some(view) = view {
         let script = format!("window.daftar && daftar.speaking && daftar.speaking({index}); undefined");
         view.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});

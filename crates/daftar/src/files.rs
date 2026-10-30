@@ -156,7 +156,7 @@ pub fn move_path(store: &VaultStore, from: &str, to: &str) -> Result<Done, MoveF
     let (moves, changed) = {
         let index = store.index();
         let moves = VaultMoves::plan(from, to, &index.files)?;
-        (moves.clone(), VaultMoves::perform(from, to, &index, &store.root)?)
+        (moves, VaultMoves::perform(from, to, &index, &store.root)?)
     };
     let is_file = moves.len() == 1 && moves.contains_key(from);
     let folder = (!is_file).then_some((from, to));
@@ -270,7 +270,7 @@ pub fn present(
         Action::Rename { path } | Action::Move { path } | Action::Trash { path } => Some(path.clone()),
         _ => None,
     };
-    let links = target.as_deref().map(|path| linking_notes(&store.index(), path)).unwrap_or(0);
+    let links = target.as_deref().map_or(0, |path| linking_notes(&store.index(), path));
     let link_note = (links > 0).then(|| {
         let notes = if links == 1 { "1 note links here".to_string() } else { format!("{links} notes link here") };
         if matches!(action, Action::Trash { .. }) {
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(name, "Rollout");
         let path = create_note(root.path(), &index, &name, "Projects", &EditorCommands::extract_body(text)).unwrap();
         assert_eq!(fs::read_to_string(root.path().join(&path)).unwrap(), "Ship it on Monday.");
-        let mut files = index.files.clone();
+        let mut files = index.files;
         files.insert(path.clone());
         assert_eq!(extract_link(&path, &files), "[[Rollout]]");
         // Another note has the name: the link says the path.

@@ -104,7 +104,7 @@ impl Notifier {
         for alert in alerts {
             let wait = (alert.at - Local::now()).to_std().unwrap_or_default();
             // A timer far ahead is planned again before then: the vault changes.
-            if wait > std::time::Duration::from_secs(36 * 3600) {
+            if wait > std::time::Duration::from_hours(36) {
                 continue;
             }
             let id = glib::timeout_add_local_once(wait, move || send(&alert));

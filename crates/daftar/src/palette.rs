@@ -215,7 +215,7 @@ fn show(
         });
     }
     let pick = {
-        let (dialog, rows) = (dialog.clone(), rows.clone());
+        let (dialog, rows) = (dialog.clone(), rows);
         move |at: i32| {
             let path = rows.borrow().get(at as usize).map(|row| row.path.clone());
             if path.is_some() {
@@ -246,7 +246,7 @@ fn show(
     // Up and Down move in the list while the field keeps the keyboard.
     let keys = gtk::EventControllerKey::new();
     {
-        let (list, scroller) = (list.clone(), scroller.clone());
+        let (list, scroller) = (list, scroller);
         keys.connect_key_pressed(move |_, key, _, _| {
             let step = match key {
                 gtk::gdk::Key::Down => 1,
@@ -259,7 +259,7 @@ fn show(
                 // A list box does not scroll to its selection by itself.
                 if let Some(bounds) = row.compute_bounds(&list) {
                     let adjustment = scroller.vadjustment();
-                    let (top, bottom) = (bounds.y() as f64, (bounds.y() + bounds.height()) as f64);
+                    let (top, bottom) = (f64::from(bounds.y()), f64::from(bounds.y() + bounds.height()));
                     if top < adjustment.value() {
                         adjustment.set_value(top);
                     } else if bottom > adjustment.value() + adjustment.page_size() {

@@ -158,7 +158,7 @@ impl Popup {
     fn reveal(&self, row: &gtk::ListBoxRow) {
         let Some(bounds) = row.compute_bounds(&self.list) else { return };
         let adjustment = self.scroller.vadjustment();
-        let (top, bottom) = (bounds.y() as f64, (bounds.y() + bounds.height()) as f64);
+        let (top, bottom) = (f64::from(bounds.y()), f64::from(bounds.y() + bounds.height()));
         if top < adjustment.value() {
             adjustment.set_value(top);
         } else if bottom > adjustment.value() + adjustment.page_size() {

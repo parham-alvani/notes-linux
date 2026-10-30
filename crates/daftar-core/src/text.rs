@@ -7,7 +7,7 @@ use unicode_normalization::UnicodeNormalization;
 /// Normalisation shared by the resolver and the index: NFC, and case folded
 /// without a locale, so a Turkish dotted I in a file name still matches.
 pub mod slugs {
-    use super::*;
+    use super::UnicodeNormalization;
 
     pub fn normalize(text: &str) -> String {
         text.nfc().collect()

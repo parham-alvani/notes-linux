@@ -35,19 +35,19 @@ pub fn rename_tag(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, tag: &s
     extra.append(&note);
     dialog.set_extra_child(Some(&extra));
     let check = {
-        let (dialog, old, new, note, store) = (dialog.clone(), old.clone(), new.clone(), note.clone(), store.clone());
+        let (dialog, old, new, note, store) = (dialog.clone(), old.clone(), new.clone(), note, store.clone());
         move || {
             let (from, to) = (old.text().trim().trim_start_matches('#').to_string(), new.text().trim().trim_start_matches('#').to_string());
             let count = if TagRename::is_valid(&from) { store.notes_tagged(&from).len() } else { 0 };
             note.set_label(&match () {
-                _ if !from.is_empty() && !TagRename::is_valid(&from) => {
+                () if !from.is_empty() && !TagRename::is_valid(&from) => {
                     "A tag is letters, digits, _, - and /, not only digits.".to_string()
                 }
-                _ if !to.is_empty() && !TagRename::is_valid(&to) => {
+                () if !to.is_empty() && !TagRename::is_valid(&to) => {
                     "The new name is letters, digits, _, - and /, not only digits.".to_string()
                 }
-                _ if count == 0 => "No note has this tag.".to_string(),
-                _ => format!(
+                () if count == 0 => "No note has this tag.".to_string(),
+                () => format!(
                     "{} {} #{from}, or a tag under it. Code and links are left as they are.",
                     count,
                     if count == 1 { "note has" } else { "notes have" }
@@ -170,7 +170,7 @@ pub fn replace_in_vault(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, f
 
     // The list drawn from the state.
     let draw: Rc<dyn Fn()> = {
-        let (state, results, status, update_button) = (state.clone(), results.clone(), status.clone(), update_button.clone());
+        let (state, results, status, update_button) = (state.clone(), results, status.clone(), update_button.clone());
         Rc::new(move || {
             while let Some(child) = results.first_child() {
                 results.remove(&child);
@@ -235,7 +235,7 @@ pub fn replace_in_vault(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, f
     // A search, a moment after the last change, read from disk off the window.
     let search: Rc<dyn Fn()> = {
         let (state, store, find_row, replace_row, status, draw, within) =
-            (state.clone(), store.clone(), find_row.clone(), replace_row.clone(), status.clone(), draw.clone(), within.clone());
+            (state.clone(), store.clone(), find_row.clone(), replace_row.clone(), status, draw.clone(), within);
         Rc::new(move || {
             let pattern = match ReplacePattern::new(&find_row.text(), &replace_row.text(), options()) {
                 Ok(pattern) => pattern,
@@ -253,7 +253,7 @@ pub fn replace_in_vault(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, f
             let run = {
                 let mut state = state.borrow_mut();
                 state.run += 1;
-                state.pattern = pattern.clone();
+                state.pattern.clone_from(&pattern);
                 state.run
             };
             let Some(pattern) = pattern else {
@@ -316,7 +316,7 @@ pub fn replace_in_vault(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, f
     }
 
     {
-        let (state, store, search) = (state.clone(), store.clone(), search.clone());
+        let (state, store, search) = (state, store, search.clone());
         replace.connect_clicked(move |_| {
             let (pattern, notes, chosen) = {
                 let state = state.borrow();
@@ -326,7 +326,8 @@ pub fn replace_in_vault(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, f
             };
             let (mut written, mut replaced, mut refused) = (0, 0, Vec::new());
             for (path, matches) in &notes {
-                let ids: BTreeSet<usize> = matches.iter().map(|m| m.id()).filter(|id| chosen.contains(&(path.clone(), *id))).collect();
+                let ids: BTreeSet<usize> =
+                    matches.iter().map(ReplaceMatch::id).filter(|id| chosen.contains(&(path.clone(), *id))).collect();
                 if ids.is_empty() {
                     continue;
                 }
@@ -353,7 +354,7 @@ pub fn replace_in_vault(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, f
     if !find.is_empty() {
         search();
     }
-    let focus = find_row.clone();
+    let focus = find_row;
     glib::idle_add_local_once(move || {
         focus.grab_focus();
     });

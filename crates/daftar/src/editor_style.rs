@@ -314,7 +314,7 @@ impl Styler {
     }
 
     fn style_seen(&self) {
-        let Some(view) = self.view.borrow().as_ref().and_then(|v| v.upgrade()) else { return };
+        let Some(view) = self.view.borrow().as_ref().and_then(glib::WeakRef::upgrade) else { return };
         let rect = view.visible_rect();
         let offset = |y: i32| view.line_at_y(y).0.offset().max(0) as usize;
         let total = self.buffer.char_count().max(0) as usize;
@@ -351,7 +351,9 @@ impl Styler {
         let total = self.buffer.char_count().max(0) as usize;
         let (start, end) = self.paragraph(range.start.min(total), range.end.min(total));
         let state = MarkdownHighlighter::block_state(start, &text);
-        if *self.structure.borrow() != now {
+        if *self.structure.borrow() == now {
+            self.style(start..end, Some(state));
+        } else {
             // A fence or the front matter changed: everything after it is
             // styled again, what is seen now and the rest as it is seen.
             *self.structure.borrow_mut() = now;
@@ -362,8 +364,6 @@ impl Styler {
                 unstyled.push(end..total);
             }
             self.style_seen_soon();
-        } else {
-            self.style(start..end, Some(state));
         }
     }
 

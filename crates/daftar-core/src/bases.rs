@@ -155,7 +155,7 @@ impl Base {
         for node in root.get("views").map(YamlNode::items).unwrap_or_default() {
             let mut view = BaseView {
                 kind: node.get("type").and_then(YamlNode::string).unwrap_or("table").to_string(),
-                name: node.get("name").and_then(YamlNode::string).map_or(format!("View {}", base.views.len() + 1), String::from),
+                name: node.get("name").and_then(YamlNode::string).map_or_else(|| format!("View {}", base.views.len() + 1), String::from),
                 filter: node.get("filters").and_then(BaseFilter::new),
                 ..BaseView::default()
             };
@@ -171,7 +171,7 @@ impl Base {
                 })
                 .collect();
             if let Some(group) = node.get("groupBy")
-                && let Some(property) = group.get("property").and_then(YamlNode::string).or(group.string())
+                && let Some(property) = group.get("property").and_then(YamlNode::string).or_else(|| group.string())
             {
                 view.group_by = Some((property.to_string(), !descending(group.get("direction"))));
             }
@@ -373,7 +373,7 @@ impl<'a> BaseEngine<'a> {
     pub fn stat_file(root: &Path, path: &str) -> Option<Stat> {
         let meta = std::fs::metadata(root.join(path)).ok()?;
         let modified: DateTime<Local> = meta.modified().ok()?.into();
-        let created = meta.created().map(DateTime::<Local>::from).unwrap_or(modified);
+        let created = meta.created().map_or(modified, DateTime::<Local>::from);
         Some(Stat { created, modified, size: meta.len() })
     }
 
@@ -385,6 +385,7 @@ impl<'a> BaseEngine<'a> {
                 self.formulas.insert(name.clone(), expression);
             }
         }
+        #[expect(clippy::needless_collect, reason = "`passes` borrows `self` mutably")]
         let files: Vec<String> = self.index.files.iter().cloned().collect();
         let candidates: Vec<String> = files.into_iter().filter(|p| self.passes(base.filter.as_ref(), p).unwrap_or(true)).collect();
         base.views.iter().map(|view| self.table(view, base, &candidates)).collect()
@@ -432,7 +433,7 @@ impl<'a> BaseEngine<'a> {
             let mut names: Vec<String> = Vec::new();
             for row in rows {
                 let value = self.value_of(&key, &row.path);
-                let name = if is_empty(&value) { String::new() } else { self.display(&value) };
+                let name = if is_empty(&value) { String::new() } else { Self::display(&value) };
                 by_name
                     .entry(name.clone())
                     .or_insert_with(|| {
@@ -537,21 +538,21 @@ impl<'a> BaseEngine<'a> {
             return BaseCell { parts: vec![CellPart { text: title(path), path: Some(path.into()) }], ..BaseCell::default() };
         }
         let value = self.value_of(expression, path);
-        self.cell(&value)
+        Self::cell(&value)
     }
 
-    pub fn cell(&self, value: &BaseValue) -> BaseCell {
+    pub fn cell(value: &BaseValue) -> BaseCell {
         match value {
             BaseValue::Null => BaseCell::default(),
             BaseValue::Bool(flag) => BaseCell { check: Some(*flag), ..BaseCell::default() },
-            BaseValue::Number(_) => BaseCell { parts: vec![CellPart::text(self.display(value))], numeric: true, ..BaseCell::default() },
+            BaseValue::Number(_) => BaseCell { parts: vec![CellPart::text(Self::display(value))], numeric: true, ..BaseCell::default() },
             BaseValue::List(items) => {
                 let mut cell = BaseCell::default();
                 for (offset, item) in items.iter().enumerate() {
                     if offset > 0 {
                         cell.parts.push(CellPart::text(", "));
                     }
-                    cell.parts.extend(self.cell(item).parts);
+                    cell.parts.extend(Self::cell(item).parts);
                 }
                 cell
             }
@@ -562,7 +563,7 @@ impl<'a> BaseEngine<'a> {
             BaseValue::File(path) => {
                 BaseCell { parts: vec![CellPart { text: title(path), path: Some(path.clone()) }], ..BaseCell::default() }
             }
-            _ => BaseCell { parts: vec![CellPart::text(self.display(value))], ..BaseCell::default() },
+            _ => BaseCell { parts: vec![CellPart::text(Self::display(value))], ..BaseCell::default() },
         }
     }
 
@@ -724,7 +725,7 @@ impl<'a> BaseEngine<'a> {
             return BaseValue::Link { path: self.index.resolve(&link.target, path), target: link.target, display: link.alias };
         }
         match kind {
-            Some("number") => text.parse().map(BaseValue::Number).unwrap_or_else(|_| BaseValue::String(text.into())),
+            Some("number") => text.parse().map_or_else(|_| BaseValue::String(text.into()), BaseValue::Number),
             Some("checkbox") => BaseValue::Bool(text.to_lowercase() == "true"),
             Some("date" | "datetime") => parse_date(text).map_or(BaseValue::String(text.into()), |(d, t)| BaseValue::Date(d, t)),
             Some("text") => BaseValue::String(text.into()),
@@ -755,13 +756,13 @@ impl<'a> BaseEngine<'a> {
             BaseValue::String(text) if name == "length" => number(text.chars().count() as f64),
             BaseValue::List(items) if name == "length" => number(items.len() as f64),
             BaseValue::Date(date, _) => match name {
-                "year" => number(date.year() as f64),
-                "month" => number(date.month() as f64),
-                "day" => number(date.day() as f64),
-                "hour" => number(date.hour() as f64),
-                "minute" => number(date.minute() as f64),
-                "second" => number(date.second() as f64),
-                "millisecond" => number((date.nanosecond() / 1_000_000) as f64),
+                "year" => number(f64::from(date.year())),
+                "month" => number(f64::from(date.month())),
+                "day" => number(f64::from(date.day())),
+                "hour" => number(f64::from(date.hour())),
+                "minute" => number(f64::from(date.minute())),
+                "second" => number(f64::from(date.second())),
+                "millisecond" => number(f64::from(date.nanosecond() / 1_000_000)),
                 _ => BaseValue::Null,
             },
             BaseValue::Duration(span) => {
@@ -809,7 +810,7 @@ impl<'a> BaseEngine<'a> {
             ),
             "links" | "embeds" => {
                 let mut seen = HashSet::new();
-                let links = self.index.notes.get(path).map(|n| n.parsed.links.as_slice()).unwrap_or(&[]);
+                let links = self.index.notes.get(path).map_or(&[][..], |n| n.parsed.links.as_slice());
                 BaseValue::List(
                     links
                         .iter()
@@ -878,7 +879,7 @@ impl<'a> BaseEngine<'a> {
                 _ => BaseValue::List(vec![first]),
             },
             "link" => {
-                let shown = values.get(1).map(|v| self.display(v));
+                let shown = values.get(1).map(Self::display);
                 match first {
                     BaseValue::String(target) => BaseValue::Link { path: self.resolve(&target), target, display: shown },
                     BaseValue::File(path) => BaseValue::Link { target: path.clone(), path: Some(path), display: shown },
@@ -900,7 +901,7 @@ impl<'a> BaseEngine<'a> {
                 let fold = if name == "max" { f64::max } else { f64::min };
                 BaseValue::Number(numbers.iter().copied().reduce(fold).unwrap_or(0.0))
             }
-            "escapeHTML" | "html" | "icon" | "image" => BaseValue::String(self.display(&first)),
+            "escapeHTML" | "html" | "icon" | "image" => BaseValue::String(Self::display(&first)),
             "random" => BaseValue::Number(random()),
             _ => {
                 self.note(format!("Unknown function {name}()"));
@@ -955,8 +956,8 @@ impl<'a> BaseEngine<'a> {
         match name {
             "isEmpty" => return BaseValue::Bool(is_empty(&receiver)),
             "isTruthy" => return BaseValue::Bool(truthy(&receiver)),
-            "toString" => return BaseValue::String(self.display(&receiver)),
-            "isType" => return BaseValue::Bool(type_name(&receiver) == self.display(&first).to_lowercase()),
+            "toString" => return BaseValue::String(Self::display(&receiver)),
+            "isType" => return BaseValue::Bool(type_name(&receiver) == Self::display(&first).to_lowercase()),
             _ => {}
         }
         let digits = |value: &BaseValue, low: i64, high: i64| number(value).and_then(whole).unwrap_or(0).clamp(low, high);
@@ -975,7 +976,7 @@ impl<'a> BaseEngine<'a> {
                 _ => {}
             },
             BaseValue::Date(date, time) => match name {
-                "format" => return BaseValue::String(format_date(*date, &self.display(&first))),
+                "format" => return BaseValue::String(format_date(*date, &Self::display(&first))),
                 "relative" => return BaseValue::String(relative(*date, self.now)),
                 "date" => return BaseValue::Date(start_of_day(*date), false),
                 "time" => return BaseValue::String(if *time { format_date(*date, "HH:mm:ss") } else { "00:00:00".into() }),
@@ -986,8 +987,8 @@ impl<'a> BaseEngine<'a> {
                 "containsAll" => return BaseValue::Bool(values.iter().all(|v| items.iter().any(|i| equal(i, v)))),
                 "containsAny" => return BaseValue::Bool(values.iter().any(|v| items.iter().any(|i| equal(i, v)))),
                 "join" => {
-                    let separator = if values.is_empty() { ",".to_string() } else { self.display(&first) };
-                    return BaseValue::String(items.iter().map(|i| self.display(i)).collect::<Vec<_>>().join(&separator));
+                    let separator = if values.is_empty() { ",".to_string() } else { Self::display(&first) };
+                    return BaseValue::String(items.iter().map(Self::display).collect::<Vec<_>>().join(&separator));
                 }
                 "reverse" => return BaseValue::List(items.iter().rev().cloned().collect()),
                 "flat" => {
@@ -1009,7 +1010,7 @@ impl<'a> BaseEngine<'a> {
                 "unique" => {
                     let mut seen = HashSet::new();
                     return BaseValue::List(
-                        items.iter().filter(|i| seen.insert(format!("{}{}", type_name(i), self.display(i)))).cloned().collect(),
+                        items.iter().filter(|i| seen.insert(format!("{}{}", type_name(i), Self::display(i)))).cloned().collect(),
                     );
                 }
                 "slice" => {
@@ -1033,7 +1034,7 @@ impl<'a> BaseEngine<'a> {
                 "values" => return BaseValue::List(entries.iter().map(|(_, v)| v.clone()).collect()),
                 _ => {}
             },
-            BaseValue::Regex(regex, _) if name == "matches" => return BaseValue::Bool(regex.is_match(&self.display(&first))),
+            BaseValue::Regex(regex, _) if name == "matches" => return BaseValue::Bool(regex.is_match(&Self::display(&first))),
             _ => {}
         }
         self.note(format!("Unknown method .{name}() on {}", type_name(&receiver)));
@@ -1042,8 +1043,8 @@ impl<'a> BaseEngine<'a> {
 
     fn string_method(&mut self, text: &str, name: &str, values: &[BaseValue]) -> BaseValue {
         let first = values.first().cloned().unwrap_or(BaseValue::Null);
-        let strings: Vec<String> = values.iter().map(|v| self.display(v)).collect();
-        let shown = self.display(&first);
+        let strings: Vec<String> = values.iter().map(Self::display).collect();
+        let shown = Self::display(&first);
         let string = |s: String| BaseValue::String(s);
         match name {
             "contains" => BaseValue::Bool(text.contains(shown.as_str())),
@@ -1095,7 +1096,7 @@ impl<'a> BaseEngine<'a> {
                 BaseValue::List(parts.into_iter().map(BaseValue::String).collect())
             }
             "replace" => {
-                let replacement = values.get(1).map(|v| self.display(v)).unwrap_or_default();
+                let replacement = values.get(1).map(Self::display).unwrap_or_default();
                 match &first {
                     BaseValue::Regex(regex, true) => string(regex.replace_all(text, replacement.as_str()).into_owned()),
                     BaseValue::Regex(regex, false) => string(regex.replace(text, replacement.as_str()).into_owned()),
@@ -1114,18 +1115,18 @@ impl<'a> BaseEngine<'a> {
         let note = self.index.notes.get(path);
         Some(match name {
             "inFolder" => {
-                let folder = self.display(&first);
+                let folder = Self::display(&first);
                 let folder = folder.trim_matches('/');
                 BaseValue::Bool(folder.is_empty() || path.starts_with(&format!("{folder}/")))
             }
             "hasProperty" => {
-                let key = self.display(&first);
+                let key = Self::display(&first);
                 BaseValue::Bool(note.is_some_and(|n| n.parsed.properties.iter().any(|(k, _)| *k == key)))
             }
             "hasTag" => {
                 let tags: Vec<String> = note.map(|n| n.parsed.tags.iter().map(|t| t.to_lowercase()).collect()).unwrap_or_default();
                 BaseValue::Bool(values.iter().any(|v| {
-                    let wanted = self.display(v).to_lowercase();
+                    let wanted = Self::display(v).to_lowercase();
                     let wanted = wanted.trim_matches('#');
                     tags.iter().any(|t| t == wanted || t.starts_with(&format!("{wanted}/")))
                 }))
@@ -1139,7 +1140,7 @@ impl<'a> BaseEngine<'a> {
             "asLink" => BaseValue::Link {
                 target: path.into(),
                 path: Some(path.into()),
-                display: if values.is_empty() { None } else { Some(self.display(&first)) },
+                display: if values.is_empty() { None } else { Some(Self::display(&first)) },
             },
             "asFile" => BaseValue::File(path.into()),
             _ => return None,
@@ -1184,7 +1185,7 @@ impl<'a> BaseEngine<'a> {
                     return BaseValue::Duration(BaseSpan::new(0, (*date - *other).num_milliseconds() as f64));
                 }
                 let Some(mut span) = span(right) else {
-                    return if symbol == "+" { BaseValue::String(self.display(left) + &self.display(right)) } else { BaseValue::Null };
+                    return if symbol == "+" { BaseValue::String(Self::display(left) + &Self::display(right)) } else { BaseValue::Null };
                 };
                 if symbol == "-" {
                     span = span.negated();
@@ -1198,7 +1199,9 @@ impl<'a> BaseEngine<'a> {
                 None => BaseValue::Null,
             },
             (BaseValue::Duration(span), BaseValue::Number(n), "/") => BaseValue::Number(span.approximate_milliseconds() / n),
-            (BaseValue::String(_), _, "+") | (_, BaseValue::String(_), "+") => BaseValue::String(self.display(left) + &self.display(right)),
+            (BaseValue::String(_), _, "+") | (_, BaseValue::String(_), "+") => {
+                BaseValue::String(Self::display(left) + &Self::display(right))
+            }
             _ => {
                 let (Some(a), Some(b)) = (number(left), number(right)) else { return BaseValue::Null };
                 match symbol {
@@ -1216,7 +1219,7 @@ impl<'a> BaseEngine<'a> {
     // Text
 
     /// A value as text: in a cell, in `+` with a string, in `join`.
-    pub fn display(&self, value: &BaseValue) -> String {
+    pub fn display(value: &BaseValue) -> String {
         match value {
             BaseValue::Null => String::new(),
             BaseValue::Bool(flag) => flag.to_string(),
@@ -1224,12 +1227,12 @@ impl<'a> BaseEngine<'a> {
             BaseValue::String(text) => text.clone(),
             BaseValue::Date(date, time) => format_date(*date, if *time { "YYYY-MM-DD HH:mm" } else { "YYYY-MM-DD" }),
             BaseValue::Duration(span) => humanize(span.approximate_milliseconds() / 1000.0),
-            BaseValue::List(items) => items.iter().map(|i| self.display(i)).collect::<Vec<_>>().join(", "),
+            BaseValue::List(items) => items.iter().map(Self::display).collect::<Vec<_>>().join(", "),
             BaseValue::Link { target, path, display } => {
                 display.clone().or_else(|| path.as_deref().map(title)).unwrap_or_else(|| target.clone())
             }
             BaseValue::File(path) => title(path),
-            BaseValue::Object(entries) => entries.iter().map(|(k, v)| format!("{k}: {}", self.display(v))).collect::<Vec<_>>().join(", "),
+            BaseValue::Object(entries) => entries.iter().map(|(k, v)| format!("{k}: {}", Self::display(v))).collect::<Vec<_>>().join(", "),
             BaseValue::Regex(regex, _) => format!("/{}/", regex.as_str()),
         }
     }
@@ -1383,7 +1386,7 @@ pub fn equal(a: &BaseValue, b: &BaseValue) -> bool {
         (V::Bool(x), V::Bool(y)) => x == y,
         (V::Number(x), V::Number(y)) => x == y,
         (V::String(x), V::String(y)) => x == y,
-        (V::Date(..), V::Date(..)) | (V::Date(..), V::String(_)) | (V::String(_), V::Date(..)) | (V::Duration(_), V::Duration(_)) => {
+        (V::Date(..) | V::String(_), V::Date(..)) | (V::Date(..), V::String(_)) | (V::Duration(_), V::Duration(_)) => {
             compare(a, b) == Some(0)
         }
         (V::List(x), V::List(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| equal(p, q)),
@@ -1408,13 +1411,7 @@ pub fn equal(a: &BaseValue, b: &BaseValue) -> bool {
 pub fn compare(a: &BaseValue, b: &BaseValue) -> Option<i32> {
     use BaseValue as V;
     let sign = |x: f64, y: f64| {
-        if x < y {
-            -1
-        } else if x > y {
-            1
-        } else {
-            0
-        }
+        if x < y { -1 } else { i32::from(x > y) }
     };
     match (a, b) {
         (V::Number(x), V::Number(y)) => Some(sign(*x, *y)),
@@ -1526,7 +1523,7 @@ pub fn humanize(seconds: f64) -> String {
     let s = seconds.abs();
     let (minutes, hours) = (s / 60.0, s / 3600.0);
     let days = hours / 24.0;
-    let count = |value: f64, unit: &str| format!("{} {unit}", whole(value.round()).map_or("many".to_string(), |w| w.to_string()));
+    let count = |value: f64, unit: &str| format!("{} {unit}", whole(value.round()).map_or_else(|| "many".to_string(), |w| w.to_string()));
     if s < 45.0 {
         "a few seconds".into()
     } else if s < 90.0 {
@@ -1668,7 +1665,7 @@ mod tests {
         let mut engine = BaseEngine::new(&index, now(), types(), |_| None);
         let expression = BaseParser::parse(source).unwrap_or_else(|e| panic!("{source}: {e}"));
         let value = engine.evaluate(&expression, path, &Locals::new());
-        engine.display(&value)
+        BaseEngine::display(&value)
     }
 
     fn evaluate(source: &str) -> String {
@@ -1928,7 +1925,7 @@ views:
     /// Runs every base of the vault in `DAFTAR_BASES_VAULT`, reading only, and
     /// prints what each view finds and the problems it reports.
     #[test]
-    #[ignore]
+    #[ignore = "reads the vault in DAFTAR_BASES_VAULT"]
     fn the_vaults_bases() {
         let Some(root) = std::env::var_os("DAFTAR_BASES_VAULT") else { return };
         let root = std::path::PathBuf::from(root);

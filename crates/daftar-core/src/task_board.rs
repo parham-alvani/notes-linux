@@ -152,12 +152,12 @@ impl TaskBoard {
                         TaskType::InProgress => doing.push(task.clone()),
                         TaskType::Done => {
                             if recent(&task.task.done) {
-                                done.push(task.clone())
+                                done.push(task.clone());
                             }
                         }
                         TaskType::Cancelled => {
                             if recent(&task.task.cancelled) {
-                                cancelled.push(task.clone())
+                                cancelled.push(task.clone());
                             }
                         }
                         TaskType::Todo => todo.push(task.clone()),
@@ -166,8 +166,8 @@ impl TaskBoard {
                 }
                 todo.sort_by(open);
                 doing.sort_by(open);
-                done.sort_by(|a, b| closed(&a.task.done, &b.task.done, a, b));
-                cancelled.sort_by(|a, b| closed(&a.task.cancelled, &b.task.cancelled, a, b));
+                done.sort_by(|a, b| closed(a.task.done.as_deref(), b.task.done.as_deref(), a, b));
+                cancelled.sort_by(|a, b| closed(a.task.cancelled.as_deref(), b.task.cancelled.as_deref(), a, b));
                 vec![
                     column("todo", "To Do", todo, Some(Drop::Status(' ', None))),
                     column("doing", "In Progress", doing, Some(Drop::Status('/', None))),
@@ -240,7 +240,7 @@ impl TaskBoard {
                 if fields.due == *day {
                     return None;
                 }
-                fields.due = day.clone();
+                fields.due.clone_from(day);
             }
             Drop::Postpone(amount) => fields = TaskLine::postponed(&fields, *amount, today)?,
         }
@@ -258,8 +258,8 @@ fn open(a: &VaultTask, b: &VaultTask) -> Ordering {
 }
 
 /// The last one closed first.
-fn closed(a: &Option<String>, b: &Option<String>, x: &VaultTask, y: &VaultTask) -> Ordering {
-    let (a, b) = (a.as_deref().unwrap_or(""), b.as_deref().unwrap_or(""));
+fn closed(a: Option<&str>, b: Option<&str>, x: &VaultTask, y: &VaultTask) -> Ordering {
+    let (a, b) = (a.unwrap_or(""), b.unwrap_or(""));
     b.cmp(a).then_with(|| (&x.path, x.task.line).cmp(&(&y.path, y.task.line)))
 }
 

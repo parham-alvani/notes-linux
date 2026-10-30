@@ -131,7 +131,7 @@ fn main_text(document: &Html) -> Ref<'_> {
             }
         }
     }
-    scores.into_values().max_by_key(|(score, _)| *score).map(|(_, n)| n).unwrap_or(body)
+    scores.into_values().max_by_key(|(score, _)| *score).map_or(body, |(_, n)| n)
 }
 
 fn escape(text: &str) -> String {
@@ -283,7 +283,7 @@ impl WebClip {
         let joined = if href.starts_with('/') {
             href.to_string()
         } else {
-            let folder = path.rfind('/').map(|at| &path[..=at]).unwrap_or("/");
+            let folder = path.rfind('/').map_or("/", |at| &path[..=at]);
             format!("{folder}{href}")
         };
         // `.` and `..` in the path, not in its query or fragment.
@@ -452,7 +452,7 @@ impl WebClip {
     ) -> Result<Saved, String> {
         let mut skipped = Vec::new();
         let title = clipping.title.trim();
-        let host = url.split_once("://").map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(rest)).unwrap_or(url);
+        let host = url.split_once("://").map_or(url, |(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(rest));
         let name = Self::note_name(if title.is_empty() { host } else { title });
         let mut files = Vault::scan(root);
         let attachments = Vault::attachment_folder(root);
@@ -546,7 +546,7 @@ mod tests {
             "Green tea wants water well below the boil, about eighty degrees.\n\nBlack tea takes boiling water and four minutes, sometimes five."
         );
         // A main element, when there is no article.
-        let main = r#"<html><body><nav><p>Menu</p></nav><main><h1>Title</h1><p>Body text.</p></main></body></html>"#;
+        let main = r"<html><body><nav><p>Menu</p></nav><main><h1>Title</h1><p>Body text.</p></main></body></html>";
         assert_eq!(WebClip::extract(main, "https://x.example/").markdown, "# Title\n\nBody text.");
         assert_eq!(WebClip::extract(main, "https://x.example/").title, "Title");
     }

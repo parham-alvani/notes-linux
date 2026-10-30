@@ -269,7 +269,7 @@ mod tests {
     fn recent_notes_are_opened_then_read_each_once() {
         let files = ["A.md", "B.md", "C.md", "D.md"];
         let exists = |path: &str| files.contains(&path);
-        let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let strings = |items: &[&str]| items.iter().map(ToString::to_string).collect::<Vec<_>>();
         let recent = recent(&strings(&["B.md", "Gone.md"]), &strings(&["A.md", "B.md", "C.md", "D.md"]), exists, 3);
         assert_eq!(recent, vec!["B.md", "A.md", "C.md"]);
         assert!(super::recent(&[], &[], exists, 8).is_empty());

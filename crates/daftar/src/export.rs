@@ -30,7 +30,7 @@ pub fn pdf(window: &gtk::Window, view: &webkit6::WebView, title: &str, notice: i
         operation.set_print_settings(&settings);
         operation.set_page_setup(&setup);
         let name = file.basename().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let (done, failed) = (notice.clone(), notice.clone());
+        let (done, failed) = (notice.clone(), notice);
         operation.connect_finished(move |_| done(&format!("Saved {name}.")));
         operation.connect_failed(move |_, error| failed(&format!("The PDF was not saved: {error}")));
         operation.print();

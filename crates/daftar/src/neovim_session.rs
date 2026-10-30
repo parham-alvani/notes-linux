@@ -79,7 +79,7 @@ pub struct NeovimSession {
 
 /// The autocommands that tell the view where the cursor is, what mode Neovim
 /// is in, and where its window starts. The Mac's `NeovimSession.setup`.
-const SETUP: &str = r#"
+const SETUP: &str = r"
 local chan = ...
 local group = vim.api.nvim_create_augroup('daftar', { clear = true })
 local function send()
@@ -98,16 +98,16 @@ vim.o.autoread = true
 local ui2 = package.loaded['vim._core.ui2']
 if ui2 then pcall(ui2.enable, { enable = false }) end
 send()
-"#;
+";
 
 /// Persian in Neovim: the keyboard's `langmap`, unless the person's config
 /// has one, and the half space (ZWNJ) inside a word, so `w` and `ciw` take
 /// `می‌خواهم` whole.
-const PERSIAN: &str = r#"
+const PERSIAN: &str = r"
 local map = ...
 if map ~= '' and vim.o.langmap == '' then vim.o.langmap = map end
 vim.opt_local.iskeyword:append('8204')
-"#;
+";
 
 /// The keyboard's layouts beside the Latin one as Neovim's `langmap`
 /// (`VimKeys::langmap`): each key's letter on another layout paired with
@@ -143,14 +143,14 @@ pub fn latin_key(key: gtk::gdk::Key, keycode: u32) -> Option<gtk::gdk::Key> {
 }
 
 /// Scrolls the window to start at the line given.
-const SCROLL_TO: &str = r#"
+const SCROLL_TO: &str = r"
 local by = ... - vim.fn.line('w0')
 if by > 0 then
   vim.cmd('normal! ' .. by .. '\5')
 elseif by < 0 then
   vim.cmd('normal! ' .. -by .. '\25')
 end
-"#;
+";
 
 impl NeovimSession {
     /// `nvim_config`: "user" is your init.lua, "clean" is none, and any other

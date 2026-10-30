@@ -99,7 +99,7 @@ impl TitleBar {
                 menu.append_section(None, &open);
             }
             let overview = gio::Menu::new();
-            overview.append_item(&item("Overview", "win.open-note", &format!("{}/", folder)));
+            overview.append_item(&item("Overview", "win.open-note", &format!("{folder}/")));
             menu.append_section(None, &overview);
             let entries = gio::Menu::new();
             for node in Vault::folder(&folder, &tree).unwrap_or(&[]) {

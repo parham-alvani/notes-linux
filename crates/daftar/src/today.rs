@@ -99,7 +99,7 @@ impl Today {
         let tomorrow = days.iter().find(|d| d.day == today.adding_days(1));
 
         let head = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(10).build();
-        let date = chrono::Local::now().format("%A %-d %B").to_string();
+        let date = Local::now().format("%A %-d %B").to_string();
         head.append(&gtk::Label::builder().label(&date).xalign(0.0).css_classes(["daftar-date"]).build());
         if let Some(persian) = crate::settings::persian_date(today) {
             head.append(&gtk::Label::builder().label(&persian).xalign(0.0).css_classes(["title-3", "daftar-muted"]).build());

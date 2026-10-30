@@ -193,7 +193,7 @@ mod tests {
     }
 
     fn rank(query: &str, recent: &[&str]) -> Vec<String> {
-        let recent: Vec<String> = recent.iter().map(|s| s.to_string()).collect();
+        let recent: Vec<String> = recent.iter().map(ToString::to_string).collect();
         QuickSwitcher::rank(query, &notes(), &recent, 50)
     }
 

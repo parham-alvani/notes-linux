@@ -45,10 +45,12 @@ impl BaseSpan {
         BaseSpan { months, milliseconds }
     }
 
+    #[must_use]
     pub fn plus(self, other: BaseSpan) -> BaseSpan {
         BaseSpan { months: self.months + other.months, milliseconds: self.milliseconds + other.milliseconds }
     }
 
+    #[must_use]
     pub fn negated(self) -> BaseSpan {
         BaseSpan { months: -self.months, milliseconds: -self.milliseconds }
     }

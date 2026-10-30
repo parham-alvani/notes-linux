@@ -186,7 +186,7 @@ fn state_dir() -> PathBuf {
 
 /// FNV-1a, for a short stable file name from the vault's path.
 fn fnv(text: &str) -> u64 {
-    text.bytes().fold(0xcbf29ce484222325, |hash, byte| (hash ^ byte as u64).wrapping_mul(0x100000001b3))
+    text.bytes().fold(0xcbf29ce484222325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3))
 }
 
 #[cfg(test)]

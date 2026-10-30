@@ -142,7 +142,7 @@ impl Board {
         for (grouping, label) in [(Grouping::Status, "Status"), (Grouping::Day, "Day"), (Grouping::File, "File")] {
             let button = gtk::ToggleButton::builder().label(label).active(grouping == Grouping::Status).build();
             button.set_group(first.as_ref());
-            first.get_or_insert(button.clone());
+            first.get_or_insert_with(|| button.clone());
             groupings.append(&button);
             buttons.push((grouping, button));
         }
@@ -723,12 +723,10 @@ pub fn tint(column: &Column) -> String {
 fn day_tint(text: &str, open: bool) -> &'static str {
     let Some(day) = Day::parse(text).filter(|_| open) else { return "t-muted" };
     let today = Day::today();
-    if day < today {
-        "t-red"
-    } else if day == today {
-        "t-accent"
-    } else {
-        "t-blue"
+    match day.cmp(&today) {
+        std::cmp::Ordering::Less => "t-red",
+        std::cmp::Ordering::Equal => "t-accent",
+        std::cmp::Ordering::Greater => "t-blue",
     }
 }
 

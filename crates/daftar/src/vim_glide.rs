@@ -33,7 +33,7 @@ pub enum Shape {
 impl Shape {
     pub fn of(mode: &str) -> Shape {
         match mode.chars().next() {
-            Some('i') | Some('t') => Shape::Bar,
+            Some('i' | 't') => Shape::Bar,
             Some('c') => Shape::Hidden,
             Some('R') => Shape::Underline,
             _ => Shape::Block,
@@ -136,7 +136,7 @@ impl Glide {
         }
         let Some(adjustment) = self.view.vadjustment() else { return };
         let [_, y, _, height] = self.target();
-        let top = self.scroll_to.get().unwrap_or(adjustment.value());
+        let top = self.scroll_to.get().unwrap_or_else(|| adjustment.value());
         let page = adjustment.page_size();
         let margin = MARGIN.min(page / 4.0);
         if y < top + margin {
@@ -152,7 +152,7 @@ impl Glide {
     pub fn scroll_to_line(self: &Rc<Self>, offset: usize) {
         let at = self.view.buffer().iter_at_offset(offset as i32);
         let (y, _) = self.view.line_yrange(&at);
-        self.scroll(y as f64);
+        self.scroll(f64::from(y));
     }
 
     fn scroll(self: &Rc<Self>, top: f64) {
@@ -167,7 +167,7 @@ impl Glide {
     pub fn cursor_point(&self) -> (f64, f64) {
         let [x, y, _, _] = self.target();
         let (x, y) = self.view.buffer_to_window_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
-        (x as f64, y as f64)
+        (f64::from(x), f64::from(y))
     }
 
     /// Where the cursor should be: the insert mark's character, as wide as
@@ -176,15 +176,15 @@ impl Glide {
         let buffer = self.view.buffer();
         let at = buffer.iter_at_mark(&buffer.get_insert());
         let place = self.view.iter_location(&at);
-        let (start, y, height) = (place.x() as f64, place.y() as f64, place.height().max(1) as f64);
+        let (start, y, height) = (f64::from(place.x()), f64::from(place.y()), f64::from(place.height().max(1)));
         // A right-to-left letter's box runs left from where it starts; a
         // bar stands where the letter starts, on its right.
-        let x = if place.width() < 0 { start + place.width() as f64 } else { start };
+        let x = if place.width() < 0 { start + f64::from(place.width()) } else { start };
         let wide = if place.width() != 0 && !at.ends_line() {
-            place.width().abs() as f64
+            f64::from(place.width().abs())
         } else {
             let metrics = self.view.pango_context().metrics(None, None);
-            (metrics.approximate_char_width() as f64 / gtk::pango::SCALE as f64).max(4.0)
+            (f64::from(metrics.approximate_char_width()) / f64::from(gtk::pango::SCALE)).max(4.0)
         };
         match self.shape.get() {
             Shape::Block => [x, y, wide, height],
@@ -281,7 +281,7 @@ impl Glide {
         let top = adjustment.value();
         let (at, line_top) = self.view.line_at_y(top as i32);
         // A line cut by the top of the page is not the first one shown.
-        let row = at.line() as usize + 1 + usize::from((line_top as f64) < top - 1.0);
+        let row = at.line() as usize + 1 + usize::from(f64::from(line_top) < top - 1.0);
         if let Some(heard) = self.on_wheel.borrow().as_ref() {
             heard(row);
         }

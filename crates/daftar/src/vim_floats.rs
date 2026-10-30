@@ -327,6 +327,7 @@ fn line(grid: &mut Grid, row: usize, column: usize, cells: &[MsgValue]) {
 }
 
 /// `grid_scroll`: rows [top, bottom) move up by [rows] (down when negative).
+#[expect(clippy::assigning_clones, reason = "each row comes from the same grid")]
 fn scroll(cells: &mut [Vec<(String, i64)>], top: usize, bottom: usize, rows: i64) {
     let bottom = bottom.min(cells.len());
     if top >= bottom {

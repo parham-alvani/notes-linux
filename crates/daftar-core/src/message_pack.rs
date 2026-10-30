@@ -132,12 +132,12 @@ fn write(value: &MsgValue, out: &mut Vec<u8>) {
                 write(&MsgValue::Uint(n as u64), out);
             } else if n >= -32 {
                 out.push(n as i8 as u8);
-            } else if n >= i8::MIN as i64 {
+            } else if n >= i64::from(i8::MIN) {
                 out.extend([0xD0, n as i8 as u8]);
-            } else if n >= i16::MIN as i64 {
+            } else if n >= i64::from(i16::MIN) {
                 out.push(0xD1);
                 out.extend((n as i16).to_be_bytes());
-            } else if n >= i32::MIN as i64 {
+            } else if n >= i64::from(i32::MIN) {
                 out.push(0xD2);
                 out.extend((n as i32).to_be_bytes());
             } else {
@@ -149,12 +149,12 @@ fn write(value: &MsgValue, out: &mut Vec<u8>) {
             let n = *number;
             if n < 0x80 {
                 out.push(n as u8);
-            } else if n <= u8::MAX as u64 {
+            } else if u8::try_from(n).is_ok() {
                 out.extend([0xCC, n as u8]);
-            } else if n <= u16::MAX as u64 {
+            } else if u16::try_from(n).is_ok() {
                 out.push(0xCD);
                 out.extend((n as u16).to_be_bytes());
-            } else if n <= u32::MAX as u64 {
+            } else if u32::try_from(n).is_ok() {
                 out.push(0xCE);
                 out.extend((n as u32).to_be_bytes());
             } else {
@@ -170,9 +170,9 @@ fn write(value: &MsgValue, out: &mut Vec<u8>) {
             let n = text.len();
             if n < 32 {
                 out.push(0xA0 | n as u8);
-            } else if n <= u8::MAX as usize {
+            } else if u8::try_from(n).is_ok() {
                 out.extend([0xD9, n as u8]);
-            } else if n <= u16::MAX as usize {
+            } else if u16::try_from(n).is_ok() {
                 out.push(0xDA);
                 out.extend((n as u16).to_be_bytes());
             } else {
@@ -183,9 +183,9 @@ fn write(value: &MsgValue, out: &mut Vec<u8>) {
         }
         MsgValue::Binary(data) => {
             let n = data.len();
-            if n <= u8::MAX as usize {
+            if u8::try_from(n).is_ok() {
                 out.extend([0xC4, n as u8]);
-            } else if n <= u16::MAX as usize {
+            } else if u16::try_from(n).is_ok() {
                 out.push(0xC5);
                 out.extend((n as u16).to_be_bytes());
             } else {
@@ -198,7 +198,7 @@ fn write(value: &MsgValue, out: &mut Vec<u8>) {
             let n = items.len();
             if n < 16 {
                 out.push(0x90 | n as u8);
-            } else if n <= u16::MAX as usize {
+            } else if u16::try_from(n).is_ok() {
                 out.push(0xDC);
                 out.extend((n as u16).to_be_bytes());
             } else {
@@ -213,7 +213,7 @@ fn write(value: &MsgValue, out: &mut Vec<u8>) {
             let n = entries.len();
             if n < 16 {
                 out.push(0x80 | n as u8);
-            } else if n <= u16::MAX as usize {
+            } else if u16::try_from(n).is_ok() {
                 out.push(0xDE);
                 out.extend((n as u16).to_be_bytes());
             } else {
@@ -232,8 +232,8 @@ fn write(value: &MsgValue, out: &mut Vec<u8>) {
                 4 => out.push(0xD6),
                 8 => out.push(0xD7),
                 16 => out.push(0xD8),
-                n if n <= u8::MAX as usize => out.extend([0xC7, n as u8]),
-                n if n <= u16::MAX as usize => {
+                n if u8::try_from(n).is_ok() => out.extend([0xC7, n as u8]),
+                n if u16::try_from(n).is_ok() => {
                     out.push(0xC8);
                     out.extend((n as u16).to_be_bytes());
                 }
@@ -293,7 +293,7 @@ impl Reader<'_> {
     }
 
     fn number(&mut self, size: usize) -> Result<u64, MsgFailure> {
-        Ok(self.take(size)?.iter().fold(0u64, |n, b| (n << 8) | *b as u64))
+        Ok(self.take(size)?.iter().fold(0u64, |n, b| (n << 8) | u64::from(*b)))
     }
 
     fn string(&mut self, count: usize) -> Result<MsgValue, MsgFailure> {
@@ -325,7 +325,7 @@ impl Reader<'_> {
     fn value(&mut self) -> Result<MsgValue, MsgFailure> {
         let head = self.byte()?;
         Ok(match head {
-            0x00..=0x7F => MsgValue::Uint(head as u64),
+            0x00..=0x7F => MsgValue::Uint(u64::from(head)),
             0x80..=0x8F => return self.map((head & 0x0F) as usize),
             0x90..=0x9F => return self.array((head & 0x0F) as usize),
             0xA0..=0xBF => return self.string((head & 0x1F) as usize),
@@ -340,12 +340,12 @@ impl Reader<'_> {
                 let size = self.number(1 << (head - 0xC7))? as usize;
                 return self.ext(size);
             }
-            0xCA => MsgValue::Double(f32::from_bits(self.number(4)? as u32) as f64),
+            0xCA => MsgValue::Double(f64::from(f32::from_bits(self.number(4)? as u32))),
             0xCB => MsgValue::Double(f64::from_bits(self.number(8)?)),
             0xCC..=0xCF => MsgValue::Uint(self.number(1 << (head - 0xCC))?),
-            0xD0 => MsgValue::Int(self.number(1)? as u8 as i8 as i64),
-            0xD1 => MsgValue::Int(self.number(2)? as u16 as i16 as i64),
-            0xD2 => MsgValue::Int(self.number(4)? as u32 as i32 as i64),
+            0xD0 => MsgValue::Int(i64::from(self.number(1)? as u8 as i8)),
+            0xD1 => MsgValue::Int(i64::from(self.number(2)? as u16 as i16)),
+            0xD2 => MsgValue::Int(i64::from(self.number(4)? as u32 as i32)),
             0xD3 => MsgValue::Int(self.number(8)? as i64),
             0xD4..=0xD8 => return self.ext(1 << (head - 0xD4)),
             0xD9..=0xDB => {
@@ -360,7 +360,7 @@ impl Reader<'_> {
                 let size = self.number(if head == 0xDE { 2 } else { 4 })? as usize;
                 return self.map(size);
             }
-            0xE0..=0xFF => MsgValue::Int(head as i8 as i64),
+            0xE0..=0xFF => MsgValue::Int(i64::from(head as i8)),
             _ => return Err(MsgFailure::UnknownType(head)),
         })
     }
@@ -386,7 +386,7 @@ mod tests {
             (-200i64).into(),
             (-40_000i64).into(),
             MsgValue::Int(-3_000_000_000),
-            MsgValue::Uint(u32::MAX as u64 + 5),
+            MsgValue::Uint(u64::from(u32::MAX) + 5),
             MsgValue::Double(1.5),
             "".into(),
             "short".into(),

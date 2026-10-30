@@ -171,7 +171,7 @@ fn base_name(path: &Path, notes: &[PathBuf]) -> String {
     {
         return name.to_string();
     }
-    notes.first().and_then(|n| n.file_stem()).map(|s| s.to_string_lossy().replace(' ', "")).unwrap_or_else(|| "optimized".into())
+    notes.first().and_then(|n| n.file_stem()).map_or_else(|| "optimized".into(), |s| s.to_string_lossy().replace(' ', ""))
 }
 
 fn is_hash(text: &str) -> bool {
@@ -209,8 +209,8 @@ fn on_white(image: &DynamicImage) -> RgbImage {
     let rgba = image.to_rgba8();
     RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
         let pixel = rgba.get_pixel(x, y).0;
-        let alpha = pixel[3] as u32;
-        let mix = |c: u8| ((c as u32 * alpha + 255 * (255 - alpha)) / 255) as u8;
+        let alpha = u32::from(pixel[3]);
+        let mix = |c: u8| ((u32::from(c) * alpha + 255 * (255 - alpha)) / 255) as u8;
         Rgb([mix(pixel[0]), mix(pixel[1]), mix(pixel[2])])
     })
 }
@@ -273,7 +273,7 @@ fn notes_in(root: &Path) -> Vec<PathBuf> {
         .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.') && e.file_name() != "node_modules")
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "md"))
-        .map(|e| e.into_path())
+        .map(walkdir::DirEntry::into_path)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()

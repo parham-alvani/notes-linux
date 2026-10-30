@@ -45,6 +45,7 @@ const RECENT: usize = 20;
 pub struct Window {
     /// The commands the palette ran in this window, the last first.
     recent_commands: Rc<RefCell<Vec<String>>>,
+    #[expect(clippy::struct_field_names, reason = "the GTK window this one is")]
     window: adw::ApplicationWindow,
     settings: Rc<RefCell<AppSettings>>,
     title: Rc<crumbs::TitleBar>,
@@ -211,7 +212,7 @@ impl Window {
             notifier: Notifier::new(),
             inspector,
             inspector_split: inspector_split.clone(),
-            store: store.clone(),
+            store,
             watcher: Rc::new(RefCell::new(None)),
             recent: Rc::new(RefCell::new(Vec::new())),
             periodic_nav: periodic_nav.clone(),
@@ -219,7 +220,7 @@ impl Window {
         };
         *opener.borrow_mut() = Some(this.clone());
         {
-            let opener = opener.clone();
+            let opener = opener;
             let clipper = opener.clone();
             this.sidebar.connect_link(move |url| {
                 let window = clipper.borrow().clone();
@@ -509,7 +510,7 @@ impl Window {
             let (this, weak) = (self.clone(), Rc::downgrade(&tab));
             tab.editor.connect_mode(move |mode| {
                 if let Some(tab) = weak.upgrade().filter(|tab| tab.editing()) {
-                    this.set_subtitle(&tab, &mode.map_or("Editing".to_string(), |mode| format!("Editing · {mode}")));
+                    this.set_subtitle(&tab, &mode.map_or_else(|| "Editing".to_string(), |mode| format!("Editing · {mode}")));
                 }
             });
         }
@@ -623,11 +624,8 @@ impl Window {
     /// the Mac's breadcrumb has them.
     fn reading_subtitle(&self, path: &str) -> String {
         let Some(store) = self.store.borrow().clone() else { return String::new() };
-        let words = Vault::is_note(path)
-            .then(|| std::fs::read_to_string(store.root.join(path)).ok())
-            .flatten()
-            .map(|text| words_of(&text))
-            .unwrap_or(0);
+        let words =
+            Vault::is_note(path).then(|| std::fs::read_to_string(store.root.join(path)).ok()).flatten().map_or(0, |text| words_of(&text));
         // A daily note's day, in the Solar Hijri calendar too when wanted.
         let persian = daftar_core::Day::parse(&Vault::title(path)).and_then(crate::settings::persian_date);
         let mut length =
@@ -1156,7 +1154,7 @@ impl Window {
     /// Ctrl+Shift+.: the hidden and the excluded files shown in the lists, or not.
     fn toggle_hidden(&self) {
         let show = !self.hidden_settings().1;
-        let result = self.settings.borrow_mut().set("files.show_hidden", daftar_core::Value::Bool(show));
+        let result = self.settings.borrow_mut().set("files.show_hidden", Value::Bool(show));
         if let Err(error) = result {
             self.toasts.add_toast(adw::Toast::new(&format!("The settings were not saved: {error}")));
         }
@@ -1410,7 +1408,7 @@ impl Window {
             .and_then(|t| t.as_array())
             .map(|t| t.iter().filter_map(|p| p.as_str().map(String::from)).collect())
             .unwrap_or_default();
-        let chosen = saved.get("chosen").and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+        let chosen = saved.get("chosen").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
         let at_index = |key: &str, at: usize| saved.get(key).and_then(|list| list.get(at)).cloned();
         for (at, path) in paths.iter().enumerate().take(20) {
             let tab = if at == 0 { self.tab() } else { self.new_tab() };
@@ -1524,7 +1522,7 @@ impl Window {
         let open_note = gio::SimpleAction::new("open-note", Some(glib::VariantTy::STRING));
         let this = self.clone();
         open_note.connect_activate(move |_, target| {
-            if let Some(path) = target.and_then(|t| t.get::<String>()) {
+            if let Some(path) = target.and_then(glib::Variant::get::<String>) {
                 this.open(&path, None);
             }
         });
@@ -1532,7 +1530,7 @@ impl Window {
         let open_tab = gio::SimpleAction::new("open-tab", Some(glib::VariantTy::STRING));
         let this = self.clone();
         open_tab.connect_activate(move |_, target| {
-            if let Some(path) = target.and_then(|t| t.get::<String>()) {
+            if let Some(path) = target.and_then(glib::Variant::get::<String>) {
                 this.open_in_new_tab(&path, None);
             }
         });

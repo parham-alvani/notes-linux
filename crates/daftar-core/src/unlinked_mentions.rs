@@ -185,7 +185,7 @@ mod tests {
     // Every fixture here is made up. The repository is public; the vault is not.
 
     fn find(names: &[&str], text: &str) -> Vec<Mention> {
-        UnlinkedMentions::find(&names.iter().map(|s| s.to_string()).collect::<Vec<_>>(), text)
+        UnlinkedMentions::find(&names.iter().map(ToString::to_string).collect::<Vec<_>>(), text)
     }
 
     fn excerpt_part(m: &Mention) -> String {

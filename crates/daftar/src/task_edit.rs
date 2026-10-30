@@ -205,7 +205,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
             .active(before.status == symbol || (before.status == 'X' && symbol == 'x'))
             .build();
         pill.set_group(group.as_ref());
-        group.get_or_insert(pill.clone());
+        group.get_or_insert_with(|| pill.clone());
         let (fields, refresh, reason, from) = (fields.clone(), refresh.clone(), reason.clone(), before.status);
         pill.connect_toggled(move |pill| {
             if pill.is_active() {
@@ -239,7 +239,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
             .active(before.priority.as_deref() == emoji)
             .build();
         pill.set_group(group.as_ref());
-        group.get_or_insert(pill.clone());
+        group.get_or_insert_with(|| pill.clone());
         let (fields, refresh) = (fields.clone(), refresh.clone());
         pill.connect_toggled(move |pill| {
             if pill.is_active() {
@@ -322,18 +322,15 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
     let saved: Rc<dyn Fn()> = Rc::new(saved);
     let (store_for_postpone, saved_for_postpone) = (store.clone(), saved.clone());
     {
-        let (dialog, path, error, saved) = (dialog.clone(), path.to_string(), error.clone(), saved.clone());
+        let (dialog, path, error, saved) = (dialog.clone(), path.to_string(), error, saved.clone());
         save.connect_clicked(move |_| {
             let now = fields.borrow().clone();
-            match store.edit_task(&path, line, &before, &now) {
-                Ok(()) => {
-                    dialog.close();
-                    saved();
-                }
-                Err(_) => {
-                    error.set_label("The note changed before the save. Nothing was written.");
-                    error.set_visible(true);
-                }
+            if store.edit_task(&path, line, &before, &now) == Ok(()) {
+                dialog.close();
+                saved();
+            } else {
+                error.set_label("The note changed before the save. Nothing was written.");
+                error.set_visible(true);
             }
         });
     }
@@ -427,7 +424,7 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
     row.append(&how_far);
     let changed = Rc::new(changed);
     let show = {
-        let (how_far, entry) = (how_far.clone(), entry.clone());
+        let (how_far, entry) = (how_far, entry.clone());
         move |on: bool| {
             let day = on.then(|| parse(&entry.text())).flatten();
             how_far.set_label(
@@ -459,7 +456,7 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
         });
     }
     {
-        let (entry, pick, changed) = (entry.clone(), pick.clone(), changed.clone());
+        let (entry, pick, changed) = (entry.clone(), pick, changed);
         switch.connect_active_notify(move |switch| {
             let on = switch.is_active();
             entry.set_sensitive(on);
@@ -476,7 +473,7 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
         });
     }
     {
-        let (entry, popover) = (entry.clone(), popover.clone());
+        let (entry, popover) = (entry, popover);
         calendar.connect_day_selected(move |calendar| {
             let date = calendar.date();
             if let Some(day) = Day::new(date.year(), date.month() as u32, date.day_of_month() as u32) {

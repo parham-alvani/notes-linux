@@ -262,7 +262,7 @@ impl Window {
         };
         let toasts = self.toasts.clone();
         crate::export::pdf(self.window.upcast_ref(), &tab.reader.view, &Vault::title(&shown.path), move |text| {
-            toasts.add_toast(adw::Toast::new(text))
+            toasts.add_toast(adw::Toast::new(text));
         });
     }
 }

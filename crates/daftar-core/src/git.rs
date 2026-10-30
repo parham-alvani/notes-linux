@@ -164,7 +164,7 @@ impl Git {
         }
         command.envs(environment.iter().copied());
         let failure = |status, output: String| GitFailure {
-            arguments: arguments.iter().map(|a| a.to_string()).collect(),
+            arguments: arguments.iter().map(ToString::to_string).collect(),
             status,
             output: output.trim().to_string(),
         };
@@ -305,7 +305,7 @@ impl Git {
                 let target = self.root.join(&file.path);
                 let mut temporary = target.clone().into_os_string();
                 temporary.push(".daftar-resolve");
-                std::fs::write(&temporary, text).and_then(|_| std::fs::rename(&temporary, &target)).map_err(|e| GitFailure {
+                std::fs::write(&temporary, text).and_then(|()| std::fs::rename(&temporary, &target)).map_err(|e| GitFailure {
                     arguments: vec!["add".into(), file.path.clone()],
                     status: None,
                     output: e.to_string(),

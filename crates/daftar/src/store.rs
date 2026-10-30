@@ -99,9 +99,10 @@ impl VaultStore {
             return Ok(path);
         }
         let template = &self.periodic.config.template;
-        let source = match template.is_empty() {
-            true => String::new(),
-            false => self.text(&if Vault::is_note(template) { template.clone() } else { format!("{template}.md") }).unwrap_or_default(),
+        let source = if template.is_empty() {
+            String::new()
+        } else {
+            self.text(&if Vault::is_note(template) { template.clone() } else { format!("{template}.md") }).unwrap_or_default()
         };
         let name = Vault::title(&path);
         let body = self.templates.fill(&source, &name, day, Clock::now());

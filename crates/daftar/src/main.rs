@@ -61,7 +61,7 @@ fn main() -> glib::ExitCode {
             capture::toggle(app);
             return;
         }
-        window::Window::present(app, open.clone())
+        window::Window::present(app, open.clone());
     });
     let capture_action = gtk::gio::SimpleAction::new("capture", None);
     let handle = app.clone();
@@ -132,7 +132,7 @@ fn main() -> glib::ExitCode {
     // A notification's actions: a meeting's web link, or the Today page.
     let open_url = gtk::gio::SimpleAction::new("open-url", Some(glib::VariantTy::STRING));
     open_url.connect_activate(|_, target| {
-        let Some(url) = target.and_then(|t| t.get::<String>()) else { return };
+        let Some(url) = target.and_then(glib::Variant::get::<String>) else { return };
         if url.starts_with("https://") || url.starts_with("http://") {
             let _ = gtk::gio::AppInfo::launch_default_for_uri(&url, gtk::gio::AppLaunchContext::NONE);
         }

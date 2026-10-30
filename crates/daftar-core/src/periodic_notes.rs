@@ -67,7 +67,7 @@ impl Weeks {
             }
             Weeks::Locale => {
                 // A week that holds the 1st of January is that year's first.
-                let sunday = day.adding_days(-(moment_weekday(day) as i64));
+                let sunday = day.adding_days(-i64::from(moment_weekday(day)));
                 let year = sunday.adding_days(6).year();
                 let first = locale_week_one(year);
                 (year, (first.days_to(sunday) / 7 + 1) as u32)
@@ -79,14 +79,14 @@ impl Weeks {
     fn start(self, year: i32, week: u32) -> Option<Day> {
         match self {
             Weeks::Iso => NaiveDate::from_isoywd_opt(year, week, Weekday::Mon).map(Day::from),
-            Weeks::Locale => Some(locale_week_one(year).adding_days(7 * (week as i64 - 1))),
+            Weeks::Locale => Some(locale_week_one(year).adding_days(7 * (i64::from(week) - 1))),
         }
     }
 }
 
 fn locale_week_one(year: i32) -> Day {
     let january = Day::new(year, 1, 1).expect("a year in range");
-    january.adding_days(-(moment_weekday(january) as i64))
+    january.adding_days(-i64::from(moment_weekday(january)))
 }
 
 /// 0 for Sunday, as moment counts.
@@ -134,26 +134,26 @@ fn ordinal(n: i64) -> String {
 fn token(token: &str, day: Day, clock: Clock) -> String {
     let pad = |n: i64, width: usize| format!("{n:0width$}");
     let weekday = moment_weekday(day) as usize;
-    let quarter = (day.month() as i64 - 1) / 3 + 1;
-    let hour12 = if clock.hour.is_multiple_of(12) { 12 } else { clock.hour % 12 } as i64;
+    let quarter = (i64::from(day.month()) - 1) / 3 + 1;
+    let hour12 = i64::from(if clock.hour.is_multiple_of(12) { 12 } else { clock.hour % 12 });
     let (week_year, week) = Weeks::Locale.week(day);
     let (iso_year, iso_week) = Weeks::Iso.week(day);
-    let day_of_year = day.date().ordinal() as i64;
+    let day_of_year = i64::from(day.date().ordinal());
     match token {
-        "YYYY" => pad(day.year() as i64, 4),
-        "YY" => pad((day.year() as i64 % 100 + 100) % 100, 2),
+        "YYYY" => pad(i64::from(day.year()), 4),
+        "YY" => pad((i64::from(day.year()) % 100 + 100) % 100, 2),
         "Q" => quarter.to_string(),
         "Qo" => ordinal(quarter),
         "MMMM" => MONTHS[day.month() as usize - 1].to_string(),
         "MMM" => MONTHS[day.month() as usize - 1][..3].to_string(),
-        "MM" => pad(day.month() as i64, 2),
+        "MM" => pad(i64::from(day.month()), 2),
         "M" => day.month().to_string(),
-        "Mo" => ordinal(day.month() as i64),
+        "Mo" => ordinal(i64::from(day.month())),
         "DDDD" => pad(day_of_year, 3),
         "DDD" => day_of_year.to_string(),
-        "DD" => pad(day.day() as i64, 2),
+        "DD" => pad(i64::from(day.day()), 2),
         "D" => day.day().to_string(),
-        "Do" => ordinal(day.day() as i64),
+        "Do" => ordinal(i64::from(day.day())),
         "dddd" => WEEKDAYS[weekday].to_string(),
         "ddd" => WEEKDAYS[weekday][..3].to_string(),
         "dd" => WEEKDAYS[weekday][..2].to_string(),
@@ -161,22 +161,22 @@ fn token(token: &str, day: Day, clock: Clock) -> String {
         "do" => ordinal(weekday as i64),
         "E" => (if weekday == 0 { 7 } else { weekday }).to_string(),
         "w" => week.to_string(),
-        "ww" => pad(week as i64, 2),
-        "wo" => ordinal(week as i64),
-        "gggg" => pad(week_year as i64, 4),
-        "gg" => pad(week_year as i64 % 100, 2),
+        "ww" => pad(i64::from(week), 2),
+        "wo" => ordinal(i64::from(week)),
+        "gggg" => pad(i64::from(week_year), 4),
+        "gg" => pad(i64::from(week_year) % 100, 2),
         "W" => iso_week.to_string(),
-        "WW" => pad(iso_week as i64, 2),
-        "Wo" => ordinal(iso_week as i64),
-        "GGGG" => pad(iso_year as i64, 4),
-        "GG" => pad(iso_year as i64 % 100, 2),
-        "HH" => pad(clock.hour as i64, 2),
+        "WW" => pad(i64::from(iso_week), 2),
+        "Wo" => ordinal(i64::from(iso_week)),
+        "GGGG" => pad(i64::from(iso_year), 4),
+        "GG" => pad(i64::from(iso_year) % 100, 2),
+        "HH" => pad(i64::from(clock.hour), 2),
         "H" => clock.hour.to_string(),
         "hh" => pad(hour12, 2),
         "h" => hour12.to_string(),
-        "mm" => pad(clock.minute as i64, 2),
+        "mm" => pad(i64::from(clock.minute), 2),
         "m" => clock.minute.to_string(),
-        "ss" => pad(clock.second as i64, 2),
+        "ss" => pad(i64::from(clock.second), 2),
         "s" => clock.second.to_string(),
         "A" => (if clock.hour < 12 { "AM" } else { "PM" }).to_string(),
         "a" => (if clock.hour < 12 { "am" } else { "pm" }).to_string(),
@@ -317,7 +317,7 @@ impl PeriodicNotes {
     pub fn start(&self, day: Day) -> Day {
         match self.period {
             Period::Day => day,
-            Period::Week => day.adding_days(-(((moment_weekday(day) + 7 - self.weeks.first_weekday()) % 7) as i64)),
+            Period::Week => day.adding_days(-i64::from((moment_weekday(day) + 7 - self.weeks.first_weekday()) % 7)),
             Period::Month => Day::new(day.year(), day.month(), 1).unwrap(),
             Period::Quarter => Day::new(day.year(), (day.month() - 1) / 3 * 3 + 1, 1).unwrap(),
             Period::Year => Day::new(day.year(), 1, 1).unwrap(),
@@ -327,8 +327,8 @@ impl PeriodicNotes {
     /// The start of the period [by] periods after the one starting on [start].
     pub fn shift(&self, start: Day, by: i32) -> Day {
         match self.period {
-            Period::Day => start.adding_days(by as i64),
-            Period::Week => start.adding_days(7 * by as i64),
+            Period::Day => start.adding_days(i64::from(by)),
+            Period::Week => start.adding_days(7 * i64::from(by)),
             Period::Month => start.adding_months(by),
             Period::Quarter => start.adding_months(3 * by),
             Period::Year => start.adding_months(12 * by),
@@ -424,7 +424,7 @@ impl PeriodicNotes {
 
     /// A day inside the period the fields describe, when they describe one.
     fn candidate(&self, fields: &BTreeMap<&str, &str>) -> Option<Day> {
-        let int = |keys: &[&str]| keys.iter().filter_map(|k| fields.get(k)).next().and_then(|t| number(t));
+        let int = |keys: &[&str]| keys.iter().find_map(|k| fields.get(k)).and_then(|t| number(t));
         let century = |yy: i64| yy + if yy > 68 { 1900 } else { 2000 };
         let year = int(&["YYYY"]).or_else(|| int(&["YY"]).map(century));
         let week_year = match self.weeks {
@@ -448,7 +448,7 @@ impl PeriodicNotes {
                 return None;
             }
             let day = valid(year, 1, 1)?.adding_days(ordinal - 1);
-            return (day.year() as i64 == year).then_some(day);
+            return (i64::from(day.year()) == year).then_some(day);
         }
         if let (Some(week_year), Some(week)) = (week_year, week) {
             if !(1..=53).contains(&week) {
@@ -456,7 +456,7 @@ impl PeriodicNotes {
             }
             let start = self.weeks.start(i32::try_from(week_year).ok()?, week as u32)?;
             if let Some(weekday) = weekday {
-                return Some(start.adding_days((weekday - moment_weekday(start) as i64 + 7) % 7));
+                return Some(start.adding_days((weekday - i64::from(moment_weekday(start)) + 7) % 7));
             }
             return (self.period != Period::Day).then_some(start);
         }
@@ -508,9 +508,9 @@ fn regex_for(token: &str) -> Option<String> {
         "Qo" | "do" => r"(\d(?:st|nd|rd|th))",
         "DDDD" => r"(\d{3})",
         "DDD" => r"(\d{1,3})",
-        "MMMM" => return Some(names(MONTHS.iter().map(|m| m.to_string()))),
+        "MMMM" => return Some(names(MONTHS.iter().map(ToString::to_string))),
         "MMM" => return Some(names(MONTHS.iter().map(|m| m[..3].to_string()))),
-        "dddd" => return Some(names(WEEKDAYS.iter().map(|d| d.to_string()))),
+        "dddd" => return Some(names(WEEKDAYS.iter().map(ToString::to_string))),
         "ddd" => return Some(names(WEEKDAYS.iter().map(|d| d[..3].to_string()))),
         "dd" => return Some(names(WEEKDAYS.iter().map(|d| d[..2].to_string()))),
         _ => return None,
@@ -534,6 +534,7 @@ mod tests {
         Day::new(y, m, d).unwrap()
     }
 
+    #[expect(clippy::unnecessary_wraps, reason = "the fields it fills are options")]
     fn s(text: &str) -> Option<String> {
         Some(text.to_string())
     }
@@ -673,7 +674,7 @@ mod tests {
 
     #[test]
     fn the_same_week_in_earlier_years() {
-        let set = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect::<BTreeSet<String>>();
+        let set = |paths: &[&str]| paths.iter().map(ToString::to_string).collect::<BTreeSet<String>>();
         let paths = set(&["2026-W39.md", "2025-W38.md", "2025-W39.md", "2024-W38.md", "2022-W39.md", "Plan.md"]);
         let found = weekly().years_ago(&paths, "2026-W39.md");
         assert_eq!(found.iter().map(|f| f.0).collect::<Vec<_>>(), [1, 2, 4]);

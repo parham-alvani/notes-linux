@@ -28,3 +28,6 @@ web = ["dep:ureq"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

@@ -108,7 +108,7 @@ impl LinkResolver {
         base.pop();
         for segment in target.split('/').filter(|s| !s.is_empty()) {
             match segment {
-                "." => continue,
+                "." => {}
                 ".." => {
                     base.pop()?;
                 }

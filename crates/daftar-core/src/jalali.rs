@@ -73,7 +73,7 @@ fn gregorian_year(jdn: i64) -> i64 {
 
 impl Jalali {
     pub fn from_day(day: Day) -> Jalali {
-        let jdn = julian(day.year() as i64, day.month() as i64, day.day() as i64);
+        let jdn = julian(i64::from(day.year()), i64::from(day.month()), i64::from(day.day()));
         let gregorian = gregorian_year(jdn);
         let mut year = gregorian - 621;
         let (_, _, march) = year_of(year).unwrap_or((false, gregorian, 20));
@@ -95,7 +95,7 @@ impl Jalali {
 
     /// The Gregorian day, or `None` for a day the calendar does not have.
     pub fn to_day(self) -> Option<Day> {
-        let (leap, gregorian, march) = year_of(self.year as i64)?;
+        let (leap, gregorian, march) = year_of(i64::from(self.year))?;
         let length = match self.month {
             1..=6 => 31,
             7..=11 => 30,
@@ -106,7 +106,7 @@ impl Jalali {
         if self.day == 0 || self.day > length {
             return None;
         }
-        let (month, day) = (self.month as i64, self.day as i64);
+        let (month, day) = (i64::from(self.month), i64::from(self.day));
         let first = julian(gregorian, 3, march);
         let jdn = first + (month - 1) * 31 - month / 7 * (month - 7) + day - 1;
         let date = Day::new(1970, 1, 1)?.date() + chrono::Duration::days(jdn - julian(1970, 1, 1));

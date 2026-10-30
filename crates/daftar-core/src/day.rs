@@ -50,10 +50,12 @@ impl Day {
         self.0
     }
 
+    #[must_use]
     pub fn adding_days(self, days: i64) -> Day {
         Day(self.0 + chrono::Duration::days(days))
     }
 
+    #[must_use]
     pub fn adding_months(self, months: i32) -> Day {
         let date = if months >= 0 {
             self.0.checked_add_months(Months::new(months as u32))

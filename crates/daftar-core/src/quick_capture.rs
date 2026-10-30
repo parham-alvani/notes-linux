@@ -54,17 +54,14 @@ impl QuickCapture {
             return lines.join("\n");
         }
         let headings = NoteParser::parse(text).headings;
-        match headings.iter().position(|h| fold(&h.text) == fold(&name)) {
-            Some(found) => {
-                let start = headings[found].line;
-                let end = headings[found + 1..].iter().find(|h| h.level <= headings[found].level).map_or(lines.len(), |h| h.line);
-                let at = last_filled(&lines, start + 1, end).unwrap_or(start) + 1;
-                insert(&[line.to_string()], at, &mut lines, eol);
-            }
-            None => {
-                let at = last_filled(&lines, 0, lines.len()).map_or(0, |l| l + 1);
-                insert(&[format!("{} {name}", "#".repeat(level)), line.to_string()], at, &mut lines, eol);
-            }
+        if let Some(found) = headings.iter().position(|h| fold(&h.text) == fold(&name)) {
+            let start = headings[found].line;
+            let end = headings[found + 1..].iter().find(|h| h.level <= headings[found].level).map_or(lines.len(), |h| h.line);
+            let at = last_filled(&lines, start + 1, end).unwrap_or(start) + 1;
+            insert(&[line.to_string()], at, &mut lines, eol);
+        } else {
+            let at = last_filled(&lines, 0, lines.len()).map_or(0, |l| l + 1);
+            insert(&[format!("{} {name}", "#".repeat(level)), line.to_string()], at, &mut lines, eol);
         }
         lines.join("\n")
     }
@@ -86,7 +83,7 @@ impl QuickCapture {
         if !files.contains(&path)
             && let Some(found) = files.iter().find(|file| file.to_lowercase() == path.to_lowercase())
         {
-            path = found.clone();
+            path.clone_from(found);
         }
         let file = root.join(&path);
         if !file.exists() {

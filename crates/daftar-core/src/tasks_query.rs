@@ -265,9 +265,10 @@ fn placeholders(line: &str, file: Option<&str>) -> Option<String> {
         ("query.file.filenameWithoutExtension", name.strip_suffix(".md").unwrap_or(name)),
     ]);
     let mut unknown = false;
-    let out = PLACEHOLDER.replace_all(line, |caps: &regex::Captures| match values.get(caps[1].trim()) {
-        Some(value) => value.to_string(),
-        None => {
+    let out = PLACEHOLDER.replace_all(line, |caps: &regex::Captures| {
+        if let Some(value) = values.get(caps[1].trim()) {
+            value.to_string()
+        } else {
             unknown = true;
             caps[0].to_string()
         }
@@ -335,7 +336,7 @@ fn filter(line: &str) -> Option<Filter> {
     if let Some(caps) = DATE.captures(text)
         && let Some(field) = date_field(&caps[1])
     {
-        let relation = caps.get(2).map_or("on".to_string(), |m| m.as_str().trim().to_lowercase());
+        let relation = caps.get(2).map_or_else(|| "on".to_string(), |m| m.as_str().trim().to_lowercase());
         let phrase = caps[3].trim().to_string();
         DateRange::new(&phrase, Day::new(2000, 1, 1).unwrap())?;
         // The range is made once for each day the query runs on, rather than
@@ -534,7 +535,7 @@ static BETWEEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d{4}-\d{2}-\d
 impl DateRange {
     pub fn new(phrase: &str, today: Day) -> Option<DateRange> {
         let text = phrase.trim().to_lowercase();
-        let monday = today.adding_days(-(today.date().weekday().num_days_from_monday() as i64));
+        let monday = today.adding_days(-i64::from(today.date().weekday().num_days_from_monday()));
         let first = Day::new(today.year(), today.month(), 1)?;
         let day = |d: Day| DateRange { start: d, end: d };
         let span = |start: Day, days: i64| DateRange { start, end: start.adding_days(days) };
@@ -603,11 +604,11 @@ mod tests {
     }
 
     fn run(source: &str) -> Vec<String> {
-        TasksQuery::parse(source, Some("Tasks/Tasks.md")).run(tasks(), today(), |t| t.clone()).into_iter().map(|t| t.text).collect()
+        TasksQuery::parse(source, Some("Tasks/Tasks.md")).run(tasks(), today(), Clone::clone).into_iter().map(|t| t.text).collect()
     }
 
     fn set(items: &[&str]) -> HashSet<String> {
-        items.iter().map(|s| s.to_string()).collect()
+        items.iter().map(ToString::to_string).collect()
     }
 
     #[test]
@@ -620,7 +621,7 @@ mod tests {
             short mode";
         let query = TasksQuery::parse(source, Some("Tasks/Tasks.md"));
         assert!(query.not_understood.is_empty(), "{:?}", query.not_understood);
-        let found = query.run(tasks(), today(), |t| t.clone());
+        let found = query.run(tasks(), today(), Clone::clone);
         assert_eq!(found.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["Half way"]);
         assert_eq!(query.groups(&found[0]), ["Work", "Beta"]);
     }
@@ -674,7 +675,7 @@ mod tests {
         let dropped = QueryTask { reason: Some("No budget".into()), ..QueryTask::new("Qdrant", TaskState::Cancelled, "Tasks/Work.md") };
         let all = || vec![review.clone(), dropped.clone(), QueryTask::new("Plain", TaskState::Todo, "Tasks/Work.md")];
         let run = |source: &str| {
-            TasksQuery::parse(source, None).run(all(), today(), |t| t.clone()).into_iter().map(|t| t.text).collect::<Vec<_>>()
+            TasksQuery::parse(source, None).run(all(), today(), Clone::clone).into_iter().map(|t| t.text).collect::<Vec<_>>()
         };
         assert_eq!(run("has reason\nsort by description"), ["Qdrant", "Ship"]);
         assert_eq!(run("no reason"), ["Plain"]);

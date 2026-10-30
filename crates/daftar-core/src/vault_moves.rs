@@ -100,6 +100,7 @@ impl VaultMoves {
                 (1..parts.len()).map(move |n| slugs::fold(&parts[..n].join("/")))
             })
             .collect();
+        #[expect(clippy::maybe_infinite_iter, reason = "some name is free")]
         (0..)
             .map(|number| {
                 let name = if number == 0 { base.to_string() } else { format!("{base} {number}") };
@@ -361,7 +362,7 @@ fn relink(
                     if url.contains("://") || url.starts_with("mailto:") || url.starts_with('#') {
                         return keep;
                     }
-                    let decoded = percent_decode_str(url).decode_utf8().map(|d| d.into_owned()).unwrap_or_else(|_| url.to_string());
+                    let decoded = percent_decode_str(url).decode_utf8().map_or_else(|_| url.to_string(), std::borrow::Cow::into_owned);
                     let (target, anchor) = match decoded.find('#') {
                         Some(hash) => (&decoded[..hash], &decoded[hash..]),
                         None => (decoded.as_str(), ""),
@@ -466,7 +467,7 @@ A [markdown link](Projects/Alpha/Alpha.md) and `[[Alpha]]` in code.
     }
 
     fn set(items: &[&str]) -> BTreeSet<String> {
-        items.iter().map(|s| s.to_string()).collect()
+        items.iter().map(ToString::to_string).collect()
     }
 
     fn map(items: &[(&str, &str)]) -> BTreeMap<String, String> {

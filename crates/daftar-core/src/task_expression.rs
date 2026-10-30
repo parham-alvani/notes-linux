@@ -72,7 +72,9 @@ impl TaskExpression {
             "isRecurring" => Box::new(|t| Value::Bool(t.recurring.is_some())),
             "file.path" => Box::new(|t| Value::String(t.path.clone())),
             "file.filename" => Box::new(|t| Value::String(t.filename().into())),
-            "file.filenameWithoutExtension" => Box::new(|t| Value::String(t.filename().strip_suffix(".md").unwrap_or(t.filename()).into())),
+            "file.filenameWithoutExtension" => {
+                Box::new(|t| Value::String(t.filename().strip_suffix(".md").unwrap_or_else(|| t.filename()).into()))
+            }
             "file.folder" => Box::new(|t| Value::String(t.folder().into())),
             _ => return None,
         };

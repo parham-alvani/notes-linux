@@ -125,7 +125,7 @@ impl NoteParser {
                 if SCHEME.is_match(url) || url.starts_with('#') {
                     continue;
                 }
-                let decoded = percent_decode_str(url).decode_utf8().map(|d| d.into_owned()).unwrap_or_else(|_| url.to_string());
+                let decoded = percent_decode_str(url).decode_utf8().map_or_else(|_| url.to_string(), Cow::into_owned);
                 let (target, anchor) = match decoded.split_once('#') {
                     Some((target, anchor)) => (target.to_string(), Some(anchor.to_string())),
                     None => (decoded, None),

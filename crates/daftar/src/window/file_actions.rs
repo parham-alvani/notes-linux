@@ -44,7 +44,7 @@ impl Window {
         let Some(store) = self.store.borrow().clone() else { return };
         let target = Some(target).filter(|t| !t.is_empty());
         let current = self.current();
-        let folder_of_current = current.as_deref().map(files::parent).unwrap_or("").to_string();
+        let folder_of_current = current.as_deref().map_or("", files::parent).to_string();
         let action = match name {
             "new-note" => Action::NewNote { folder: target.unwrap_or(folder_of_current) },
             "new-folder" => Action::NewFolder { parent: target.unwrap_or(folder_of_current) },
@@ -104,7 +104,7 @@ impl Window {
                 {
                     this.toasts.add_toast(adw::Toast::new("The note changed, so the link was not put in. The new note is made."));
                 }
-                this.files_changed(done.changed.clone());
+                this.files_changed(done.changed);
             },
             move |error| toasts.add_toast(adw::Toast::new(&error)),
         );
@@ -215,7 +215,7 @@ impl Window {
             let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
             let this = self.clone();
             action.connect_activate(move |action, target| {
-                let target = target.and_then(|t| t.get::<String>()).unwrap_or_default();
+                let target = target.and_then(glib::Variant::get::<String>).unwrap_or_default();
                 this.file_action(&action.name(), target);
             });
             self.window.add_action(&action);
@@ -228,7 +228,7 @@ impl Window {
         let reveal = gio::SimpleAction::new("reveal", Some(glib::VariantTy::STRING));
         let this = self.clone();
         reveal.connect_activate(move |_, target| {
-            let path = target.and_then(|t| t.get::<String>()).unwrap_or_default();
+            let path = target.and_then(glib::Variant::get::<String>).unwrap_or_default();
             let Some(store) = this.store.borrow().clone() else { return };
             let Some(file) = crate::store::file_in(&path, &store.root) else { return };
             gtk::FileLauncher::new(Some(&gio::File::for_path(file))).open_containing_folder(
@@ -240,7 +240,7 @@ impl Window {
         self.window.add_action(&reveal);
         let bookmark = gio::SimpleAction::new("bookmark", Some(glib::VariantTy::STRING));
         let this = self.clone();
-        bookmark.connect_activate(move |_, target| this.bookmark(target.and_then(|t| t.get::<String>()).unwrap_or_default()));
+        bookmark.connect_activate(move |_, target| this.bookmark(target.and_then(glib::Variant::get::<String>).unwrap_or_default()));
         self.window.add_action(&bookmark);
         let inspector = gio::SimpleAction::new_stateful("inspector", None, &false.to_variant());
         let this = self.clone();

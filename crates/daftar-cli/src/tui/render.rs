@@ -189,7 +189,7 @@ fn draw_home(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
             }
             lines.push(centered(Line::default()));
         } else {
-            let text = if half.is_empty() { time.clone() } else { format!("{time} {half}") };
+            let text = if half.is_empty() { time } else { format!("{time} {half}") };
             lines.push(centered(Line::from(Span::styled(text, accent.add_modifier(Modifier::BOLD)))));
         }
         lines.push(centered(Line::from(Span::styled(now.format("%A, %B %-d").to_string(), theme.muted()))));
@@ -300,45 +300,42 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         left.push(Span::styled(format!("{frame} {doing}…"), Style::new().fg(theme.accent)));
         left.push(Span::raw("  "));
     }
-    match &app.message {
-        Some((text, error)) => {
-            left.push(Span::styled(text.clone(), Style::new().fg(if *error { theme.red } else { theme.em })));
+    if let Some((text, error)) = &app.message {
+        left.push(Span::styled(text.clone(), Style::new().fg(if *error { theme.red } else { theme.em })));
+    } else {
+        let here = app.note.as_ref().and_then(|n| n.block());
+        let mut hints = vec![("^P", "open"), ("/", "search"), ("t", "tasks"), ("b", "links"), ("#", "tags")];
+        if app.focus == Focus::Note {
+            if here.is_some_and(|b| b.task.is_some()) {
+                hints.insert(0, ("space", "tick"));
+            }
+            if here.is_some_and(|b| !b.links.is_empty()) {
+                hints.insert(0, ("enter", "follow"));
+            }
         }
-        None => {
-            let here = app.note.as_ref().and_then(|n| n.block());
-            let mut hints = vec![("^P", "open"), ("/", "search"), ("t", "tasks"), ("b", "links"), ("#", "tags")];
-            if app.focus == Focus::Note {
-                if here.is_some_and(|b| b.task.is_some()) {
-                    hints.insert(0, ("space", "tick"));
-                }
-                if here.is_some_and(|b| !b.links.is_empty()) {
-                    hints.insert(0, ("enter", "follow"));
-                }
+        // Whole hints, as many as fit beside the git status; "? help" last.
+        let room = (area.width as usize).saturating_sub(right.width() + Line::from(left.clone()).width() + 1);
+        let cost = |first: bool, (key, what): (&str, &str)| if first { 0 } else { 3 } + key.len() + 1 + what.len();
+        let help = ("?", "help");
+        let mut shown = Vec::new();
+        let mut used = 0;
+        for hint in hints {
+            let width = cost(shown.is_empty(), hint);
+            if used + width + cost(false, help) > room {
+                break;
             }
-            // Whole hints, as many as fit beside the git status; "? help" last.
-            let room = (area.width as usize).saturating_sub(right.width() + Line::from(left.clone()).width() + 1);
-            let cost = |first: bool, (key, what): (&str, &str)| if first { 0 } else { 3 } + key.len() + 1 + what.len();
-            let help = ("?", "help");
-            let mut shown = Vec::new();
-            let mut used = 0;
-            for hint in hints {
-                let width = cost(shown.is_empty(), hint);
-                if used + width + cost(false, help) > room {
-                    break;
-                }
-                used += width;
-                shown.push(hint);
+            used += width;
+            shown.push(hint);
+        }
+        if used + cost(shown.is_empty(), help) <= room {
+            shown.push(help);
+        }
+        for (n, (key, what)) in shown.into_iter().enumerate() {
+            if n > 0 {
+                left.push(Span::styled(" · ", theme.faint()));
             }
-            if used + cost(shown.is_empty(), help) <= room {
-                shown.push(help);
-            }
-            for (n, (key, what)) in shown.into_iter().enumerate() {
-                if n > 0 {
-                    left.push(Span::styled(" · ", theme.faint()));
-                }
-                left.push(Span::styled(key, Style::new().fg(theme.accent)));
-                left.push(Span::styled(format!(" {what}"), theme.muted()));
-            }
+            left.push(Span::styled(key, Style::new().fg(theme.accent)));
+            left.push(Span::styled(format!(" {what}"), theme.muted()));
         }
     }
     let right_width = right.width() as u16;

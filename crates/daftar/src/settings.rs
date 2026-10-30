@@ -28,15 +28,14 @@ impl AppSettings {
     /// The person's file, made from the template on the first start.
     pub fn load() -> AppSettings {
         let path = ConfigFile::default_path();
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(_) => {
-                if let Some(folder) = path.parent() {
-                    let _ = fs::create_dir_all(folder);
-                }
-                let _ = fs::write(&path, ConfigFile::TEMPLATE);
-                ConfigFile::TEMPLATE.to_string()
+        let text = if let Ok(text) = fs::read_to_string(&path) {
+            text
+        } else {
+            if let Some(folder) = path.parent() {
+                let _ = fs::create_dir_all(folder);
             }
+            let _ = fs::write(&path, ConfigFile::TEMPLATE);
+            ConfigFile::TEMPLATE.to_string()
         };
         let settings = AppSettings { path, file: ConfigFile::new(text) };
         settings.publish();

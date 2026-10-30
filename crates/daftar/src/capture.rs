@@ -24,7 +24,7 @@ thread_local! {
 
 /// Opens the capture window, or closes it when it has the keys.
 pub fn toggle(app: &adw::Application) {
-    let open = OPEN.with(|open| open.borrow().as_ref().and_then(|weak| weak.upgrade()));
+    let open = OPEN.with(|open| open.borrow().as_ref().and_then(glib::WeakRef::upgrade));
     match open {
         Some(window) if window.is_active() => window.close(),
         Some(window) => window.present(),
@@ -75,8 +75,8 @@ fn present(app: &adw::Application) {
     window.set_content(Some(&content));
 
     let add = {
-        let (window, entry, task, error) = (window.clone(), entry.clone(), task.clone(), error.clone());
-        let (root, target, heading) = (root.clone(), target.clone(), heading.clone());
+        let (window, entry, task, error) = (window.clone(), entry.clone(), task, error);
+        let (root, target, heading) = (root, target, heading);
         move |as_task: bool| {
             let Some(line) = QuickCapture::line(&entry.text(), as_task || task.is_active()) else { return };
             let Some(root) = root.clone() else {
@@ -120,7 +120,7 @@ fn present(app: &adw::Application) {
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     {
-        let (window, add) = (window.clone(), add.clone());
+        let (window, add) = (window.clone(), add);
         keys.connect_key_pressed(move |_, key, _, modifiers| match key {
             gdk::Key::Escape => {
                 window.close();

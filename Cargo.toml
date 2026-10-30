@@ -6,3 +6,67 @@ members = ["crates/daftar-core", "crates/daftar", "crates/daftar-cli"]
 edition = "2024"
 license = "GPL-3.0-only"
 repository = "https://github.com/parham-alvani/notes-linux"
+
+# The lints every crate keeps: Rust's own beyond the defaults, and Clippy's
+# pedantic group with the few checks that fight this code's style allowed,
+# each with why. `cargo clippy --workspace --all-targets -- -D warnings`
+# (`just lint`) fails on any of them.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+redundant_lifetimes = "warn"
+unit_bindings = "warn"
+trivial_numeric_casts = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Restriction and nursery checks worth having.
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+needless_collect = "warn"
+or_fun_call = "warn"
+redundant_clone = "warn"
+branches_sharing_code = "warn"
+trait_duplication_in_bounds = "warn"
+equatable_if_let = "warn"
+# Pixel, line and byte counts are cast between widths everywhere, within range.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+# The doc comments name parameters as `[name]`, not in backticks.
+doc_markdown = "allow"
+# Errors are `String`s said to the user; panics are bugs.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+module_name_repetitions = "allow"
+# Parsers and renderers are long by nature, and name their parts alike.
+too_many_lines = "allow"
+similar_names = "allow"
+items_after_statements = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+# Dates, ids and colours are written as they are read.
+unreadable_literal = "allow"
+# Geometry and tests compare floats that were set, not computed.
+float_cmp = "allow"
+# Parsers and colour maths keep the names of the formulas they follow.
+many_single_char_names = "allow"
+# Arms kept apart, each with its own comment, read better than one merged.
+match_same_arms = "allow"
+# `push_str(&format!(…))` reads plainer than `write!` with an error to drop.
+format_push_string = "allow"
+format_collect = "allow"
+# The vault's file names carry the extensions Obsidian writes, in lower case;
+# and `.local` is a host, not a file.
+case_sensitive_file_extension_comparisons = "allow"
+# A value handed over is the callee's, as the callers are written for.
+needless_pass_by_value = "allow"
+# The formatter's printer keeps Prettier's methods, some with no state.
+unused_self = "allow"
+# `assert_eq!(x, [] as [T; 0])` says no more than `assert!(x.is_empty())`.
+assert_is_empty = "allow"

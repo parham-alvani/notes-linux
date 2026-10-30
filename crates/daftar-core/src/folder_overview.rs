@@ -36,7 +36,7 @@ impl FolderOverview {
         let order = |extra: &[&str]| -> String {
             std::iter::once("file.name".to_string())
                 .chain(columns.iter().cloned())
-                .chain(extra.iter().map(|s| s.to_string()))
+                .chain(extra.iter().map(ToString::to_string))
                 .map(|column| format!("      - {column}\n"))
                 .collect()
         };

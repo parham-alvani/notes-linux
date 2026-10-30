@@ -34,7 +34,7 @@ impl Window {
         let open_split = gio::SimpleAction::new("open-split", Some(glib::VariantTy::STRING));
         let this = self.clone();
         open_split.connect_activate(move |_, target| {
-            if let Some(path) = target.and_then(|t| t.get::<String>()) {
+            if let Some(path) = target.and_then(glib::Variant::get::<String>) {
                 this.open_in_other_pane(&this.tab(), &path, None);
             }
         });
@@ -69,20 +69,17 @@ impl Window {
         }
         let paned = &tab.group.paned;
         let spare = tab.group.spare.borrow_mut().take();
-        let pane = match spare {
-            // The pane a closed split hid, with no history.
-            Some(pane) => {
-                pane.back.borrow_mut().clear();
-                pane.forward.borrow_mut().clear();
-                pane.stack.set_visible(true);
-                self.tabs.borrow_mut().push(pane.clone());
-                pane
-            }
-            None => {
-                let pane = self.new_pane(&tab.group);
-                paned.set_end_child(Some(&pane.stack));
-                pane
-            }
+        // The pane a closed split hid, with no history; else a new one.
+        let pane = if let Some(pane) = spare {
+            pane.back.borrow_mut().clear();
+            pane.forward.borrow_mut().clear();
+            pane.stack.set_visible(true);
+            self.tabs.borrow_mut().push(pane.clone());
+            pane
+        } else {
+            let pane = self.new_pane(&tab.group);
+            paned.set_end_child(Some(&pane.stack));
+            pane
         };
         // Half and half, as the Mac draws its panes. A split put back at
         // launch has no width yet: halved at its first frame with one.

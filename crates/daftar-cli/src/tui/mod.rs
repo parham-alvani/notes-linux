@@ -653,7 +653,7 @@ mod tests {
     /// Draws every note of the vault in `$DAFTAR_TUI_VAULT`, and every list,
     /// reading only: `DAFTAR_TUI_VAULT=~/org cargo test -- --ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "reads the vault in DAFTAR_TUI_VAULT"]
     fn a_real_vault_draws() {
         let Some(root) = std::env::var_os("DAFTAR_TUI_VAULT") else { return };
         let mut app = App::new(root.into(), Theme::NAZ);

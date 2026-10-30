@@ -129,7 +129,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     git.add(&interval);
     page.add(&git);
     page.add(&files_group(&settings, write.clone(), hooks.clone()));
-    page.add(&notifications_group(&settings, write.clone(), hooks.clone()));
+    page.add(&notifications_group(&settings, write.clone(), hooks));
     page.add(&capture_group(&settings, write.clone()));
     page.add(&wakatime_group(&settings, write.clone()));
 
@@ -226,12 +226,11 @@ fn editor_group(
     let found = adw::ActionRow::builder().title("Runs").build();
     let show_found = {
         let found = found.clone();
-        move |configured: &str| match daftar_core::NeovimClient::locate(configured) {
-            Some(nvim) => {
+        move |configured: &str| {
+            if let Some(nvim) = daftar_core::NeovimClient::locate(configured) {
                 found.set_subtitle(&nvim.to_string_lossy());
                 found.remove_css_class("error");
-            }
-            None => {
+            } else {
                 found.set_subtitle("nvim is not found: pacman -S neovim");
                 found.add_css_class("error");
             }
@@ -399,7 +398,7 @@ fn home_group(
     row.add_suffix(&choose);
     row.add_suffix(&clear);
     let show = {
-        let (row, preview, clear, root) = (row.clone(), preview.clone(), clear.clone(), root.clone());
+        let (row, preview, clear, root) = (row.clone(), preview, clear.clone(), root.clone());
         Rc::new(move |setting: &str| {
             let path = daftar_core::home::picture_path(setting, root.as_deref(), &gtk::glib::home_dir());
             let missing = !setting.is_empty() && !path.as_deref().is_some_and(Path::is_file);

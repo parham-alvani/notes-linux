@@ -517,8 +517,8 @@ impl Recurrence {
         date
     }
 
-    fn step(&self, day: Day) -> Day {
-        let n = self.amount as i64;
+    fn step(self, day: Day) -> Day {
+        let n = i64::from(self.amount);
         match self.unit {
             Unit::Day => day.adding_days(n),
             Unit::Week => day.adding_days(7 * n),

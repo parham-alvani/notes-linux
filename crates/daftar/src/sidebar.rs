@@ -45,7 +45,7 @@ struct Shared {
     iconic: RefCell<Iconic>,
     bookmarked: RefCell<HashSet<String>>,
     /// The vault's folder, for the file a dragged row carries.
-    root: RefCell<Option<std::path::PathBuf>>,
+    root: RefCell<Option<PathBuf>>,
     /// What a click on a tag does: the window lists its notes.
     on_tag: RefCell<Option<TagHandler>>,
     /// What a drop on a folder does: the window moves the files into it.
@@ -101,7 +101,6 @@ fn logo(file: &Path) -> Option<gdk::Texture> {
         return texture;
     }
     // A drawing is drawn at the size it is shown at; a picture as it is.
-    #[allow(deprecated)]
     let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(file, LOGO_SIZE, LOGO_SIZE, true)
         .ok()
         .map(|pixbuf| gdk::Texture::for_pixbuf(&pixbuf))
@@ -125,20 +124,17 @@ fn draw_icon(image: &gtk::Image, emoji: &gtk::Label, icon: Option<&Icon>, fallba
         image.add_css_class("folder-logo");
         return;
     }
-    match icon.and_then(|i| i.name.as_deref()).filter(|_| icon.is_some_and(Icon::is_emoji)) {
-        Some(emoji_name) => {
-            emoji.set_label(emoji_name);
-            emoji.set_visible(true);
-            image.set_visible(false);
-        }
-        None => {
-            emoji.set_visible(false);
-            image.set_visible(true);
-            let name = icon.and_then(|i| i.name.as_deref()).and_then(lucide).unwrap_or(fallback);
-            image.set_icon_name(Some(name));
-            if let Some(class) = icon.and_then(|i| i.color.as_deref()).and_then(color_class) {
-                image.add_css_class(&class);
-            }
+    if let Some(emoji_name) = icon.and_then(|i| i.name.as_deref()).filter(|_| icon.is_some_and(Icon::is_emoji)) {
+        emoji.set_label(emoji_name);
+        emoji.set_visible(true);
+        image.set_visible(false);
+    } else {
+        emoji.set_visible(false);
+        image.set_visible(true);
+        let name = icon.and_then(|i| i.name.as_deref()).and_then(lucide).unwrap_or(fallback);
+        image.set_icon_name(Some(name));
+        if let Some(class) = icon.and_then(|i| i.color.as_deref()).and_then(color_class) {
+            image.add_css_class(&class);
         }
     }
 }
@@ -427,7 +423,7 @@ impl Sidebar {
     /// with when they changed, seconds since 1970; at most 12 show.
     pub fn set_updated(&self, notes: &[(String, i64)]) {
         self.updated.remove_all();
-        let now = glib::DateTime::now_local().map(|d| d.to_unix()).unwrap_or(0);
+        let now = glib::DateTime::now_local().map_or(0, |d| d.to_unix());
         for (path, modified) in notes.iter().take(12) {
             let row = gtk::Box::builder().spacing(8).build();
             row.append(&gtk::Image::builder().icon_name("starred-symbolic").css_classes(["accent"]).build());
@@ -464,7 +460,7 @@ impl Sidebar {
     pub fn set_tree(&self, tree: &[TreeNode]) {
         let open: HashSet<String> = (0..self.model.n_items())
             .filter_map(|at| self.model.row(at))
-            .filter(|row| row.is_expanded())
+            .filter(gtk::TreeListRow::is_expanded)
             .filter_map(|row| row.item().as_ref().and_then(node_of))
             .map(|node| node.path)
             .collect();
@@ -483,7 +479,7 @@ impl Sidebar {
     }
 
     /// The vault's folder, for dragging a row out.
-    pub fn set_root(&self, root: std::path::PathBuf) {
+    pub fn set_root(&self, root: PathBuf) {
         *self.shared.root.borrow_mut() = Some(root);
     }
 
@@ -493,7 +489,7 @@ impl Sidebar {
     }
 
     /// The bookmarks that still name something: files in [files], and folders.
-    pub fn set_bookmarks(&self, entries: &[BookmarkEntry], files: &std::collections::BTreeSet<String>) {
+    pub fn set_bookmarks(&self, entries: &[BookmarkEntry], files: &BTreeSet<String>) {
         self.marks.remove_all();
         let shown: Vec<&BookmarkEntry> = entries.iter().filter(|e| e.folder || files.contains(&e.path)).collect();
         *self.shared.bookmarked.borrow_mut() = entries.iter().filter(|e| !e.folder).map(|e| e.path.clone()).collect();
@@ -648,7 +644,7 @@ fn tag_section(shared: &Rc<Shared>) -> (gio::ListStore, gtk::Label, gtk::Box) {
     head_box.append(&arrow);
     let head = gtk::Button::builder().child(&head_box).css_classes(["flat"]).tooltip_text("Show or hide the tags").build();
     {
-        let (scroll, arrow) = (scroll.clone(), arrow.clone());
+        let (scroll, arrow) = (scroll.clone(), arrow);
         head.connect_clicked(move |_| {
             let open = !scroll.is_visible();
             scroll.set_visible(open);

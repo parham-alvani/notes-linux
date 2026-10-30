@@ -174,12 +174,11 @@ impl Parser {
                     self.expect(":")?;
                     members.push((key, self.value()?));
                     self.space();
-                    match self.peek() {
-                        Some(',') => self.at += 1,
-                        _ => {
-                            self.expect("}")?;
-                            return Ok(OrderedJson::Object(members));
-                        }
+                    if self.peek() == Some(',') {
+                        self.at += 1;
+                    } else {
+                        self.expect("}")?;
+                        return Ok(OrderedJson::Object(members));
                     }
                 }
             }
@@ -194,19 +193,18 @@ impl Parser {
                 loop {
                     items.push(self.value()?);
                     self.space();
-                    match self.peek() {
-                        Some(',') => self.at += 1,
-                        _ => {
-                            self.expect("]")?;
-                            return Ok(OrderedJson::Array(items));
-                        }
+                    if self.peek() == Some(',') {
+                        self.at += 1;
+                    } else {
+                        self.expect("]")?;
+                        return Ok(OrderedJson::Array(items));
                     }
                 }
             }
             '"' => Ok(OrderedJson::String(self.string()?)),
-            't' => self.expect("true").map(|_| OrderedJson::Bool(true)),
-            'f' => self.expect("false").map(|_| OrderedJson::Bool(false)),
-            'n' => self.expect("null").map(|_| OrderedJson::Null),
+            't' => self.expect("true").map(|()| OrderedJson::Bool(true)),
+            'f' => self.expect("false").map(|()| OrderedJson::Bool(false)),
+            'n' => self.expect("null").map(|()| OrderedJson::Null),
             _ => {
                 let start = self.at;
                 while self.peek().is_some_and(|c| "+-0123456789.eE".contains(c)) {

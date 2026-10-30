@@ -543,23 +543,20 @@ impl Reader {
 
     /// The page's other questions: an embedded note, a tasks query.
     fn answer(&self, name: &str, body: &Value) -> Value {
-        match name {
-            "tasks" => {
-                let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
-                let source = body.get("source").and_then(Value::as_str).unwrap_or("");
-                let path = body.get("path").and_then(Value::as_str);
-                run_query(&store, source, path)
+        if name == "tasks" {
+            let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
+            let source = body.get("source").and_then(Value::as_str).unwrap_or("");
+            let path = body.get("path").and_then(Value::as_str);
+            run_query(&store, source, path)
+        } else {
+            let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
+            let path = body.get("path").and_then(Value::as_str).unwrap_or("");
+            if !store.index().files.contains(path) {
+                return Value::Null;
             }
-            _ => {
-                let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
-                let path = body.get("path").and_then(Value::as_str).unwrap_or("");
-                if !store.index().files.contains(path) {
-                    return Value::Null;
-                }
-                let Some(text) = store.text(path) else { return Value::Null };
-                let parsed = NoteParser::parse(&text);
-                json!({ "text": text, "links": store.index().resolved_links_in(&parsed, path) })
-            }
+            let Some(text) = store.text(path) else { return Value::Null };
+            let parsed = NoteParser::parse(&text);
+            json!({ "text": text, "links": store.index().resolved_links_in(&parsed, path) })
         }
     }
 
@@ -636,16 +633,15 @@ fn respond(request: &URISchemeRequest, data: Vec<u8>, path: &str, from_vault: bo
     let size = data.len();
     let range = request.http_headers().and_then(|h| h.one("Range")).map(|r| r.to_string());
     let (status, body) = match range {
-        Some(range) => match bytes(&range, size) {
-            Some((start, end)) => {
+        Some(range) => {
+            if let Some((start, end)) = bytes(&range, size) {
                 headers.append("Content-Range", &format!("bytes {start}-{end}/{size}"));
                 (206, data[start..=end].to_vec())
-            }
-            None => {
+            } else {
                 headers.append("Content-Range", &format!("bytes */{size}"));
                 (416, Vec::new())
             }
-        },
+        }
         None => (200, data),
     };
     let length = body.len() as i64;

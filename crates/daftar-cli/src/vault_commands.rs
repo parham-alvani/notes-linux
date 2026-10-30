@@ -67,7 +67,7 @@ pub fn replace(
             lines.push(format!("{path}:{}\t{}\t→\t{}", m.line + 1, m.before(), m.after()));
         }
         if !dry_run {
-            let chosen: BTreeSet<usize> = matches.iter().map(|m| m.id()).collect();
+            let chosen: BTreeSet<usize> = matches.iter().map(daftar_core::ReplaceMatch::id).collect();
             let written = VaultEdits::apply(path, root, |now| {
                 VaultReplace::replace(now, &pattern, &matches, &chosen).map_err(|_| daftar_core::Failure::TextMoved)
             });
@@ -93,10 +93,10 @@ pub fn sort_tasks(root: &Path, path: &str, dry_run: bool) -> Result<bool, String
 /// The task on line [at] (from 0) of [path] postponed by [amount]; its new line.
 pub fn postpone(root: &Path, path: &str, at: usize, amount: &str, today: Day) -> Result<String, String> {
     let names: Vec<&str> = Postpone::ALL.iter().map(|p| p.name()).collect();
-    let amount = Postpone::from_name(amount).ok_or(format!("postpone by {}", names.join(", ")))?;
+    let amount = Postpone::from_name(amount).ok_or_else(|| format!("postpone by {}", names.join(", ")))?;
     let text = fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
-    let raw = text.split('\n').nth(at).ok_or(format!("{path} has no line {}", at + 1))?;
-    let task = TaskLine::parse(raw.trim_end_matches('\r'), at, "").ok_or(format!("{path}:{} is not a task", at + 1))?;
+    let raw = text.split('\n').nth(at).ok_or_else(|| format!("{path} has no line {}", at + 1))?;
+    let task = TaskLine::parse(raw.trim_end_matches('\r'), at, "").ok_or_else(|| format!("{path}:{} is not a task", at + 1))?;
     if !TaskLine::can_postpone(&task) {
         return Err(format!("{path}:{} is closed, or has no due, scheduled or start date", at + 1));
     }
@@ -117,8 +117,8 @@ pub fn set_status(root: &Path, path: &str, at: usize, symbol: &str, reason: Opti
         return Err(format!("a status is one character, as x, - or /, not “{symbol}”"));
     };
     let text = fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
-    let raw = text.split('\n').nth(at).ok_or(format!("{path} has no line {}", at + 1))?;
-    let task = TaskLine::parse(raw.trim_end_matches('\r'), at, "").ok_or(format!("{path}:{} is not a task", at + 1))?;
+    let raw = text.split('\n').nth(at).ok_or_else(|| format!("{path} has no line {}", at + 1))?;
+    let task = TaskLine::parse(raw.trim_end_matches('\r'), at, "").ok_or_else(|| format!("{path}:{} is not a task", at + 1))?;
     VaultEdits::apply(path, root, |now| VaultEdits::set_task_status(now, at, &task, status, reason, today)).map_err(|e| e.to_string())?;
     let after = fs::read_to_string(root.join(path)).unwrap_or_default();
     let line = if after.split('\n').count() > text.split('\n').count() { at + 1 } else { at };

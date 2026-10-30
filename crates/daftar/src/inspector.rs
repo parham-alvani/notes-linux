@@ -207,24 +207,21 @@ impl Inspector {
                 (Some(_), false) => "go-next-symbolic",
             };
             row.append(&gtk::Image::from_icon_name(icon));
-            let name = found.as_deref().map(Vault::title).unwrap_or_else(|| target.clone());
+            let name = found.as_deref().map_or_else(|| target.clone(), Vault::title);
             let label = gtk::Label::builder().label(&name).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).build();
             row.append(&label);
             let item = gtk::ListBoxRow::builder().child(&row).build();
-            match found {
-                Some(found) => {
-                    item.set_activatable(true);
-                    item.set_tooltip_text(Some(&found));
-                    let (this, found) = (self.clone(), found.clone());
-                    let click = gtk::GestureClick::new();
-                    click.connect_released(move |_, _, _, _| (this.open)(&found, 0));
-                    item.add_controller(click);
-                }
-                None => {
-                    item.set_activatable(false);
-                    item.set_tooltip_text(Some("Not in the vault yet"));
-                    row.add_css_class("error");
-                }
+            if let Some(found) = found {
+                item.set_activatable(true);
+                item.set_tooltip_text(Some(&found));
+                let (this, found) = (self.clone(), found.clone());
+                let click = gtk::GestureClick::new();
+                click.connect_released(move |_, _, _, _| (this.open)(&found, 0));
+                item.add_controller(click);
+            } else {
+                item.set_activatable(false);
+                item.set_tooltip_text(Some("Not in the vault yet"));
+                row.add_css_class("error");
             }
             list.append(&item);
         }

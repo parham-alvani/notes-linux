@@ -449,7 +449,7 @@ fn find_spans(content: &str, tree: &mdast::Node) -> Vec<Span> {
     let mut i = 0;
     while i + 1 < bytes.len() {
         let found = match (bytes[i], bytes[i + 1]) {
-            (b'[', b'[') if !escaped(i) && !(i > 0 && bytes[i - 1] == b'!' && !escaped(i - 1)) => wiki_link(content, i),
+            (b'[', b'[') if !(escaped(i) || i > 0 && bytes[i - 1] == b'!' && !escaped(i - 1)) => wiki_link(content, i),
             (b'{', b'{' | b'%') if !escaped(i) => liquid(content, i).map(|end| (end, None)),
             _ => None,
         };
@@ -481,7 +481,7 @@ fn collect_ranges(node: &mdast::Node, containers: &mut Vec<(usize, usize)>, shut
             let children = node.children().map_or(&[][..], Vec::as_slice);
             match children.last().and_then(|c| c.position()) {
                 Some(last) if children.first().and_then(|c| c.position()).is_some_and(|f| f.start.offset > s) => {
-                    shut.push((last.end.offset, e))
+                    shut.push((last.end.offset, e));
                 }
                 _ => shut.push((s, e)),
             }
@@ -769,7 +769,7 @@ fn list_is_aligned(list: &Node, ordered: bool, src: &str, tab_width: usize) -> b
     if ordered_item_info(first, src).1.len() > 1 {
         return true;
     }
-    let start = |item: &Node| item.children.first().map(|c| column(src, c.start) as i64).unwrap_or(-1);
+    let start = |item: &Node| item.children.first().map_or(-1, |c| column(src, c.start) as i64);
     let first_start = start(first);
     if first_start == -1 {
         return false;
@@ -1067,7 +1067,7 @@ impl Printer {
                 }
             }
             Doc::SoftGroup(d) => {
-                if flat_width(d).is_none_or(|w| self.pos + w > self.width) {
+                if self.pos + flat_width(d) > self.width {
                     self.newline(true);
                 }
                 self.doc(d);
@@ -1076,9 +1076,8 @@ impl Printer {
     }
 }
 
-/// The width of a doc up to its first line break; `None` when it cannot be
-/// measured flat.
-fn flat_width(doc: &Doc) -> Option<usize> {
+/// The width of a doc up to its first line break.
+fn flat_width(doc: &Doc) -> usize {
     fn walk(doc: &Doc, width: &mut usize) -> bool {
         match doc {
             Doc::Text(s) => {
@@ -1100,7 +1099,7 @@ fn flat_width(doc: &Doc) -> Option<usize> {
     }
     let mut width = 0;
     walk(doc, &mut width);
-    Some(width)
+    width
 }
 
 // ---------------------------------------------------------------- printing
@@ -1317,7 +1316,7 @@ impl Fmt<'_> {
                     let end = node.end;
                     let line_start = self.src[..end].rfind('\n').map_or(0, |i| i + 1);
                     let last = &self.src[line_start..end];
-                    let at = last.find('=').map(|i| i as i64).unwrap_or(-1).max(last.find('-').map(|i| i as i64).unwrap_or(-1));
+                    let at = last.find('=').map_or(-1, |i| i as i64).max(last.find('-').map_or(-1, |i| i as i64));
                     let underline = if at < 0 { last } else { &last[at as usize..] };
                     concat(vec![self.inline_children(node, &inner), Doc::Hard, text(underline)])
                 } else {
@@ -1513,11 +1512,11 @@ impl Fmt<'_> {
         self.children(list, &inner, false, |i, item| {
             let raw = if ordered {
                 let number = if i == 0 {
-                    start as u64
+                    u64::from(start)
                 } else if git_friendly {
                     1
                 } else {
-                    start as u64 + i as u64
+                    u64::from(start) + i as u64
                 };
                 format!("{number}{}", if nth.is_multiple_of(2) { ". " } else { ") " })
             } else if nth.is_multiple_of(2) {

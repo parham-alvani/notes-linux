@@ -39,21 +39,22 @@ impl Window {
         let rename_tag = gio::SimpleAction::new("rename-tag", Some(glib::VariantTy::STRING));
         let this = self.clone();
         rename_tag.connect_activate(move |_, target| {
-            let tag = target.and_then(|t| t.get::<String>()).unwrap_or_default();
+            let tag = target.and_then(glib::Variant::get::<String>).unwrap_or_default();
             this.rename_tag(&tag);
         });
         self.window.add_action(&rename_tag);
         let copy = gio::SimpleAction::new("copy-text", Some(glib::VariantTy::STRING));
         let this = self.clone();
         copy.connect_activate(move |_, target| {
-            let text = target.and_then(|t| t.get::<String>()).unwrap_or_default();
+            let text = target.and_then(glib::Variant::get::<String>).unwrap_or_default();
             this.window.clipboard().set_text(&text);
             this.toasts.add_toast(adw::Toast::new(&format!("Copied {text}")));
         });
         self.window.add_action(&copy);
         let in_folder = gio::SimpleAction::new("replace-in-folder", Some(glib::VariantTy::STRING));
         let this = self.clone();
-        in_folder.connect_activate(move |_, target| this.replace_in_vault(&target.and_then(|t| t.get::<String>()).unwrap_or_default()));
+        in_folder
+            .connect_activate(move |_, target| this.replace_in_vault(&target.and_then(glib::Variant::get::<String>).unwrap_or_default()));
         self.window.add_action(&in_folder);
         let replace = gio::SimpleAction::new("replace-in-vault", None);
         let this = self.clone();
@@ -76,7 +77,7 @@ impl Window {
         let postpone = gio::SimpleAction::new("postpone", Some(glib::VariantTy::STRING));
         let this = self.clone();
         postpone.connect_activate(move |_, target| {
-            let Some(target) = target.and_then(|t| t.get::<String>()) else { return };
+            let Some(target) = target.and_then(glib::Variant::get::<String>) else { return };
             let mut parts = target.split('\t');
             if let (Some(path), Some(Ok(line)), Some(Some(amount))) =
                 (parts.next(), parts.next().map(str::parse::<usize>), parts.next().map(Postpone::from_name))
@@ -89,7 +90,7 @@ impl Window {
         let mark_read = gio::SimpleAction::new("mark-read", Some(glib::VariantTy::STRING));
         let this = self.clone();
         mark_read.connect_activate(move |_, target| {
-            let path = target.and_then(|t| t.get::<String>()).unwrap_or_default();
+            let path = target.and_then(glib::Variant::get::<String>).unwrap_or_default();
             this.mark_read(&path);
         });
         self.window.add_action(&mark_read);

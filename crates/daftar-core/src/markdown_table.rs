@@ -96,7 +96,7 @@ impl MarkdownTable {
                     .map(|(column, cell)| {
                         if separators[row] {
                             let (left, right) = (cell.starts_with(':'), cell.ends_with(':'));
-                            let dashes = "-".repeat(widths[column] - left as usize - right as usize);
+                            let dashes = "-".repeat(widths[column] - usize::from(left) - usize::from(right));
                             format!("{}{dashes}{}", if left { ":" } else { "" }, if right { ":" } else { "" })
                         } else {
                             format!("{cell}{}", " ".repeat(widths[column] - Self::width(cell)))
@@ -238,7 +238,7 @@ mod tests {
     }
 
     fn lines(items: &[&str]) -> Vec<String> {
-        items.iter().map(|s| s.to_string()).collect()
+        items.iter().map(ToString::to_string).collect()
     }
 
     #[test]

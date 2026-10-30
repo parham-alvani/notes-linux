@@ -42,14 +42,13 @@ impl Arena {
         let mut out = Vec::new();
         for part in tag.split('/').filter(|p| !p.is_empty()) {
             let key = slugs::fold(part);
-            let next = match self.nodes[at].children.get(&key) {
-                Some(&next) => next,
-                None => {
-                    self.nodes.push(Node::default());
-                    let next = self.nodes.len() - 1;
-                    self.nodes[at].children.insert(key, next);
-                    next
-                }
+            let next = if let Some(&next) = self.nodes[at].children.get(&key) {
+                next
+            } else {
+                self.nodes.push(Node::default());
+                let next = self.nodes.len() - 1;
+                self.nodes[at].children.insert(key, next);
+                next
             };
             at = next;
             out.push((at, part.to_string()));

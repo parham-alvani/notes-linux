@@ -205,7 +205,7 @@ impl Editor {
         let block_tag = gtk::TextTag::builder().name("daftar:vim-block").build();
         buffer.tag_table().add(&block_tag);
         let font_css = gtk::CssProvider::new();
-        #[allow(deprecated)]
+        #[expect(deprecated, reason = "GTK has no other way to give one view its own font")]
         view.style_context().add_provider(&font_css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         let editor = Rc::new(Editor {
             widget,
@@ -216,7 +216,7 @@ impl Editor {
             floats: RefCell::new(Vec::new()),
             float_css: {
                 let provider = gtk::CssProvider::new();
-                if let Some(display) = gtk::gdk::Display::default() {
+                if let Some(display) = gdk::Display::default() {
                     gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
                 }
                 provider
@@ -453,6 +453,7 @@ impl Editor {
         }
     }
 
+    #[expect(clippy::iter_not_returning_iterator, reason = "a `TextIter`, as GTK names a place in the text")]
     fn iter(&self, offset: usize) -> gtk::TextIter {
         self.buffer.iter_at_offset(offset as i32)
     }
@@ -783,7 +784,7 @@ impl Editor {
         match EditorCommands::on_return(&text) {
             Some(Return::Insert(insert)) => {
                 let at = cursor.start + insert.chars().count();
-                self.replace(cursor.clone(), &insert, Some(at..at));
+                self.replace(cursor, &insert, Some(at..at));
                 true
             }
             Some(Return::EndList) => {
@@ -837,7 +838,7 @@ impl Editor {
     /// lines, and which of them holds the cursor.
     fn table_block(&self) -> Option<(Range<usize>, Vec<String>, usize)> {
         let line = self.current_line();
-        if !MarkdownTable::is_row(&self.slice(line.clone())) {
+        if !MarkdownTable::is_row(&self.slice(line)) {
             return None;
         }
         let at = self.buffer.iter_at_mark(&self.buffer.get_insert()).line();
@@ -1201,10 +1202,7 @@ impl Editor {
                 // A web page or a document pasted as rich text keeps its
                 // headings, links and lists as Markdown. Ctrl+Shift+V pastes
                 // the plain text.
-                let markdown = match html {
-                    true => read_html(&clipboard).await.and_then(|html| HtmlMarkdown::convert(&html)),
-                    false => None,
-                };
+                let markdown = if html { read_html(&clipboard).await.and_then(|html| HtmlMarkdown::convert(&html)) } else { None };
                 let Some(this) = this.upgrade() else { return };
                 let text = markdown.unwrap_or_else(|| pasted.to_string());
                 let at = selection.start + text.chars().count();
@@ -1250,7 +1248,7 @@ impl Editor {
         let base = name.trim_end_matches(".png");
         let path = VaultMoves::free_name(base, "png", &folder, &store.index().files);
         let Some(file) = file_in(&path, &store.root) else { return };
-        let written = file.parent().map_or(Ok(()), fs::create_dir_all).and_then(|_| fs::write(&file, texture.save_to_png_bytes()));
+        let written = file.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::write(&file, texture.save_to_png_bytes()));
         if let Err(error) = written {
             (self.notice)(&format!("The picture could not be saved: {error}"));
             return;
@@ -1307,7 +1305,7 @@ impl Editor {
             (self.notice)("Neovim was not found, so the note is edited without it. Set editor.nvim in the settings to its path.");
             return;
         };
-        session.set_persian(&crate::neovim_session::keyboard_langmap());
+        session.set_persian(&neovim_session::keyboard_langmap());
         *self.vim.borrow_mut() =
             Some(Vim { session, mirror: None, mode: "n".into(), start_line: line, save_soon: None, wheel_top: None, command: false });
         self.glide.set_on(true);
@@ -1367,29 +1365,28 @@ impl Editor {
         let origin = self
             .view
             .compute_point(&self.stage, &gtk::graphene::Point::new(0.0, 0.0))
-            .map(|p| (p.x() as f64, p.y() as f64))
-            .unwrap_or((0.0, 0.0));
+            .map_or((0.0, 0.0), |p| (f64::from(p.x()), f64::from(p.y())));
         let (cursor_x, cursor_y) = self.glide.cursor_point();
-        let (bound_w, bound_h) = (self.stage.width() as f64, self.stage.height() as f64);
+        let (bound_w, bound_h) = (f64::from(self.stage.width()), f64::from(self.stage.height()));
         for view in &floats.views {
             let markup = format!("<span font=\"{} {}px\">{}</span>", glib::markup_escape_text(&family), size, view.rows.join("\n"));
             let label = gtk::Label::builder().use_markup(true).label(&markup).xalign(0.0).yalign(0.0).build();
             let (width, height) = label.layout().pixel_size();
-            let (cell_w, cell_h) = (width as f64 / view.width.max(1) as f64, height as f64 / view.height.max(1) as f64);
+            let (cell_w, cell_h) = (f64::from(width) / view.width.max(1) as f64, f64::from(height) / view.height.max(1) as f64);
             let (mut x, mut y) = if view.on_editor {
-                (origin.0 + self.view.left_margin() as f64 + view.column * cell_w, origin.1 + view.row * cell_h)
+                (origin.0 + f64::from(self.view.left_margin()) + view.column * cell_w, origin.1 + view.row * cell_h)
             } else {
                 let (row, column) = floats.window_cursor.unwrap_or((0, 0));
                 (origin.0 + cursor_x + (view.column - column as f64) * cell_w, origin.1 + cursor_y + (view.row - row as f64) * cell_h)
             };
             if view.corner.ends_with('E') {
-                x -= width as f64;
+                x -= f64::from(width);
             }
             if view.corner.starts_with('S') {
-                y -= height as f64;
+                y -= f64::from(height);
             }
-            let x = x.clamp(0.0, (bound_w - width as f64).max(0.0));
-            let y = y.clamp(0.0, (bound_h - height as f64).max(0.0));
+            let x = x.clamp(0.0, (bound_w - f64::from(width)).max(0.0));
+            let y = y.clamp(0.0, (bound_h - f64::from(height)).max(0.0));
             let frame = gtk::Box::builder()
                 .halign(gtk::Align::Start)
                 .valign(gtk::Align::Start)
@@ -1408,10 +1405,10 @@ impl Editor {
     /// what is on screen.
     fn screen_size(&self) -> (i64, i64) {
         let metrics = self.view.pango_context().metrics(None, None);
-        let scale = gtk::pango::SCALE as f64;
-        let line = (metrics.ascent() + metrics.descent()) as f64 / scale + self.view.pixels_below_lines() as f64;
-        let width = metrics.approximate_char_width() as f64 / scale;
-        let (height, across) = (self.view.height() as f64, self.view.width() as f64 - 64.0);
+        let scale = f64::from(gtk::pango::SCALE);
+        let line = f64::from(metrics.ascent() + metrics.descent()) / scale + f64::from(self.view.pixels_below_lines());
+        let width = f64::from(metrics.approximate_char_width()) / scale;
+        let (height, across) = (f64::from(self.view.height()), f64::from(self.view.width()) - 64.0);
         if height < 1.0 || line < 1.0 || width < 1.0 {
             return (40, 100);
         }
@@ -1558,7 +1555,7 @@ impl Editor {
         self.buffer.remove_tag(&self.block_tag, &self.buffer.start_iter(), &self.buffer.end_iter());
         match ranges.as_slice() {
             [one] if !mode.starts_with('\u{16}') => {
-                self.buffer.select_range(&self.iter(cursor), &self.iter(if cursor == one.start { one.end } else { one.start }))
+                self.buffer.select_range(&self.iter(cursor), &self.iter(if cursor == one.start { one.end } else { one.start }));
             }
             [] => self.buffer.place_cursor(&self.iter(cursor)),
             many => {

@@ -303,7 +303,7 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
     }
     let mut body = 0;
     if let Ok(Some(found)) = QUOTE.find(line) {
-        push(Kind::Quote, whole.clone());
+        push(Kind::Quote, whole);
         push(Kind::Markup, l.at(found.range()));
         body = found.end();
         if let Ok(Some(callout)) = CALLOUT.captures(&line[body..]) {
@@ -414,7 +414,7 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
             if matches!(kind, Kind::Bold | Kind::Italic) && [&open, &close].iter().any(|end| triples.iter().any(|t| overlaps(t, end))) {
                 return;
             }
-            push(kind, l.at(all.clone()));
+            push(kind, l.at(all));
             push(Kind::Markup, l.at(open));
             push(Kind::Markup, l.at(close));
         });

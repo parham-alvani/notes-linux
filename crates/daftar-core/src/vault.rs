@@ -103,7 +103,7 @@ impl VaultIndex {
     }
 
     pub fn backlinks(&self, path: &str) -> &[Backlink] {
-        self.backlinks.get(path).map(Vec::as_slice).unwrap_or(&[])
+        self.backlinks.get(path).map_or(&[], Vec::as_slice)
     }
 
     pub fn tree(&self) -> &[TreeNode] {
@@ -674,7 +674,7 @@ mod tests {
     }
 
     fn set(items: &[&str]) -> BTreeSet<String> {
-        items.iter().map(|s| s.to_string()).collect()
+        items.iter().map(ToString::to_string).collect()
     }
 
     fn names(nodes: &[TreeNode]) -> Vec<&str> {

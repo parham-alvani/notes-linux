@@ -103,7 +103,7 @@ impl Bookmarks {
                         }
                     }
                     Some("group") => {
-                        let inner = item.get("items").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+                        let inner = item.get("items").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
                         walk(inner, text("title").or(group), out);
                     }
                     _ => {}
@@ -124,7 +124,7 @@ impl Bookmarks {
         if self.contains(path) {
             self.remove(path);
         } else {
-            let ctime = now.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+            let ctime = now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
             self.items.push(json!({ "type": "file", "ctime": ctime, "path": path }));
         }
     }

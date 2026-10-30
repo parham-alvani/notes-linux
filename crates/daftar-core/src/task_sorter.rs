@@ -35,15 +35,12 @@ impl TaskSorter {
 }
 
 fn append<'a>(section: &[&'a str], result: &mut Vec<&'a str>) -> bool {
-    match sort_section(section) {
-        Some(sorted) => {
-            result.extend(sorted);
-            true
-        }
-        None => {
-            result.extend_from_slice(section);
-            false
-        }
+    if let Some(sorted) = sort_section(section) {
+        result.extend(sorted);
+        true
+    } else {
+        result.extend_from_slice(section);
+        false
     }
 }
 

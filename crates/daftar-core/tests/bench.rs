@@ -154,7 +154,7 @@ fn time<T>(label: &str, work: impl FnOnce() -> T) -> T {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a benchmark: run with --ignored --nocapture"]
 fn twenty_thousand_notes() {
     let dir = tempfile::tempdir().unwrap();
     let notes = time("write the vault", || write_vault(dir.path(), 20_000));
@@ -172,7 +172,7 @@ fn twenty_thousand_notes() {
     let found = time("tasks query", || query.run(index.tasks(), Day::today(), |t| QueryTask::from(t)));
     println!("  {} tasks", found.len());
     let hub = notes[0].clone();
-    let moves = BTreeMap::from([(hub.clone(), "Inbox/Hub renamed.md".to_string())]);
+    let moves = BTreeMap::from([(hub, "Inbox/Hub renamed.md".to_string())]);
     let root = dir.path().to_path_buf();
     let changed = time("relink the hub", || VaultMoves::relinked(&index, &moves, |p| fs::read_to_string(root.join(p)).ok()));
     println!("  {} notes relinked", changed.len());

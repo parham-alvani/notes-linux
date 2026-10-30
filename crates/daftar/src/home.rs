@@ -227,7 +227,7 @@ impl HomePage {
         head.append(&gtk::Label::new(Some(title)));
         card.append(&head);
         for path in paths {
-            let folder = path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("");
+            let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
             let row = gtk::Box::builder().spacing(8).build();
             row.append(&gtk::Image::from_icon_name(if Vault::is_note(path) {
                 "text-x-generic-symbolic"
@@ -271,7 +271,7 @@ impl HomePage {
     }
 
     fn show_picture(self: &Rc<Self>, path: Option<PathBuf>) {
-        *self.shown.borrow_mut() = path.clone();
+        (*self.shown.borrow_mut()).clone_from(&path);
         let Some(path) = path else {
             self.picture.set_paintable(None::<&gdk::Paintable>);
             self.scrim.set_visible(false);
@@ -290,16 +290,13 @@ impl HomePage {
             if page.shown.borrow().as_deref() != Some(path.as_path()) {
                 return;
             }
-            match decoded {
-                Some(texture) => {
-                    keep(&path, &texture);
-                    page.picture.set_paintable(Some(&texture));
-                    page.scrim.set_visible(true);
-                }
-                None => {
-                    page.picture.set_paintable(None::<&gdk::Paintable>);
-                    page.scrim.set_visible(false);
-                }
+            if let Some(texture) = decoded {
+                keep(&path, &texture);
+                page.picture.set_paintable(Some(&texture));
+                page.scrim.set_visible(true);
+            } else {
+                page.picture.set_paintable(None::<&gdk::Paintable>);
+                page.scrim.set_visible(false);
             }
         });
     }

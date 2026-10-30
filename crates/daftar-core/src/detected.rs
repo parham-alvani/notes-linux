@@ -92,7 +92,7 @@ impl Detected {
             for found_at in PHONE.find_iter(line) {
                 let (start, end) = (found_at.start(), found_at.end());
                 // Digits run on: part of a longer number, or of a word.
-                let touches = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric());
+                let touches = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
                 if touches(line[..start].chars().last()) || touches(line[end..].chars().next()) {
                     continue;
                 }

@@ -61,7 +61,7 @@ impl NeovimClient {
         let mut candidates: Vec<PathBuf> = Vec::new();
         if !configured.is_empty() {
             let expanded = match configured.strip_prefix("~/") {
-                Some(rest) => std::env::var_os("HOME").map(|h| PathBuf::from(h).join(rest)).unwrap_or_else(|| configured.into()),
+                Some(rest) => std::env::var_os("HOME").map_or_else(|| configured.into(), |h| PathBuf::from(h).join(rest)),
                 None => configured.into(),
             };
             candidates.push(expanded);
@@ -95,7 +95,7 @@ impl NeovimClient {
             let (pending, input) = (pending.clone(), input.clone());
             std::thread::spawn(move || {
                 let mut stream = MsgStream::new();
-                let mut buffer = [0u8; 64 * 1024];
+                let mut buffer = vec![0u8; 64 * 1024];
                 while let Ok(count) = output.read(&mut buffer) {
                     if count == 0 {
                         break;
@@ -166,7 +166,7 @@ fn is_executable(path: &Path) -> bool {
 
 fn send(input: &Mutex<ChildStdin>, message: &MsgValue) -> Result<(), NeovimFailure> {
     let mut input = input.lock().unwrap();
-    input.write_all(&MessagePack::encode(message)).and_then(|_| input.flush()).map_err(|e| failure(format!("Neovim is gone: {e}")))
+    input.write_all(&MessagePack::encode(message)).and_then(|()| input.flush()).map_err(|e| failure(format!("Neovim is gone: {e}")))
 }
 
 fn received(message: MsgValue, pending: &Waiters, input: &Mutex<ChildStdin>, notify: &Sender<NeovimNotification>) {
@@ -175,11 +175,11 @@ fn received(message: MsgValue, pending: &Waiters, input: &Mutex<ChildStdin>, not
         (Some(1), 4) => {
             let Some(id) = parts[1].as_int() else { return };
             let Some(waiter) = pending.lock().unwrap().remove(&(id as u64)) else { return };
-            let result = if parts[2] != MsgValue::Nil {
+            let result = if parts[2] == MsgValue::Nil {
+                Ok(parts[3].clone())
+            } else {
                 let text = parts[2].as_array().and_then(|e| e.last()).and_then(MsgValue::as_str).map(String::from);
                 Err(failure(text.unwrap_or_else(|| format!("{:?}", parts[2]))))
-            } else {
-                Ok(parts[3].clone())
             };
             let _ = waiter.send(result);
         }
@@ -438,7 +438,7 @@ mod tests {
     }
 
     fn strings(items: &[&str]) -> Vec<String> {
-        items.iter().map(|s| s.to_string()).collect()
+        items.iter().map(ToString::to_string).collect()
     }
 
     // BufferMirrorTests

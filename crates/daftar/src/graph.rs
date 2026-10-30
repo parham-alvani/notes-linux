@@ -43,7 +43,7 @@ pub fn color_index(group: &str) -> usize {
 
 fn rgb(pair: (u32, u32), dark: bool) -> (f64, f64, f64) {
     let value = if dark { pair.0 } else { pair.1 };
-    (((value >> 16) & 0xFF) as f64 / 255.0, ((value >> 8) & 0xFF) as f64 / 255.0, (value & 0xFF) as f64 / 255.0)
+    (f64::from((value >> 16) & 0xFF) / 255.0, f64::from((value >> 8) & 0xFF) / 255.0, f64::from(value & 0xFF) / 255.0)
 }
 
 fn group_color(group: &str) -> (u32, u32) {
@@ -75,7 +75,7 @@ fn transform(layout: &GraphLayout, zoom: f64, pan: (f64, f64), width: f64, heigh
     }
     let fit = ((width - 80.0) / (max_x - min_x).max(1.0)).min((height - 80.0) / (max_y - min_y).max(1.0)).min(2.2);
     let scale = fit * zoom;
-    (scale, width / 2.0 - (min_x + max_x) / 2.0 * scale + pan.0, height / 2.0 - (min_y + max_y) / 2.0 * scale + pan.1)
+    (scale, width / 2.0 - f64::midpoint(min_x, max_x) * scale + pan.0, height / 2.0 - f64::midpoint(min_y, max_y) * scale + pan.1)
 }
 
 pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, center: Option<String>, on_open: impl Fn(&str) + 'static) {
@@ -124,14 +124,13 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, center: Op
 
     {
         let state = state.clone();
-        area.set_draw_func(move |area, cr, width, height| draw(&state.borrow(), area, cr, width as f64, height as f64));
+        area.set_draw_func(move |area, cr, width, height| draw(&state.borrow(), area, cr, f64::from(width), f64::from(height)));
     }
 
     // Builds the graph for the scope, and lays it out away from the window.
     let build = {
         let (state, area, spinner, title, legend, store, whole, depth) =
-            (state.clone(), area.clone(), spinner.clone(), title.clone(), legend.clone(), store.clone(), whole.clone(), depth.clone());
-        let center = center.clone();
+            (state.clone(), area.clone(), spinner, title, legend, store, whole.clone(), depth.clone());
         Rc::new(move || {
             let graph = {
                 let index = store.index();
@@ -181,7 +180,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, center: Op
     build();
 
     {
-        let (whole, build) = (whole.clone(), build.clone());
+        let (whole, build) = (whole, build.clone());
         vault.connect_toggled(move |button| {
             if whole.get() != button.is_active() {
                 whole.set(button.is_active());
@@ -190,7 +189,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, center: Op
         });
     }
     {
-        let (depth, build) = (depth.clone(), build.clone());
+        let (depth, build) = (depth, build);
         steps.connect_value_changed(move |spin| {
             depth.set(spin.value() as usize);
             build();
@@ -253,7 +252,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, center: Op
 
     let click = gtk::GestureClick::new();
     {
-        let (state, area, dialog) = (state.clone(), area.clone(), dialog.clone());
+        let (state, area, dialog) = (state, area.clone(), dialog.clone());
         let chosen: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         {
             let chosen = chosen.clone();
@@ -296,7 +295,7 @@ fn fill_legend(legend: &gtk::Box, graph: &NoteGraph) {
         let dot = gtk::DrawingArea::builder().content_width(9).content_height(9).valign(gtk::Align::Center).build();
         dot.set_draw_func(move |_, cr, w, h| {
             cr.set_source_rgb(r, g, b);
-            cr.arc(w as f64 / 2.0, h as f64 / 2.0, 4.5, 0.0, TAU);
+            cr.arc(f64::from(w) / 2.0, f64::from(h) / 2.0, 4.5, 0.0, TAU);
             let _ = cr.fill();
         });
         let item = gtk::Box::builder().spacing(5).build();
@@ -309,7 +308,7 @@ fn fill_legend(legend: &gtk::Box, graph: &NoteGraph) {
 
 fn nearest(state: &State, area: &gtk::DrawingArea, x: f64, y: f64) -> Option<usize> {
     let layout = state.layout.as_ref()?;
-    let (scale, dx, dy) = transform(layout, state.zoom, state.pan, area.width() as f64, area.height() as f64);
+    let (scale, dx, dy) = transform(layout, state.zoom, state.pan, f64::from(area.width()), f64::from(area.height()));
     let mut best: Option<(usize, f64)> = None;
     for (i, node) in state.graph.nodes.iter().enumerate() {
         let (px, py) = (layout.x[i] * scale + dx - x, layout.y[i] * scale + dy - y);
@@ -394,7 +393,7 @@ fn draw(state: &State, area: &gtk::DrawingArea, cr: &gtk::cairo::Context, width:
             let text = gtk::pango::Layout::new(&pango);
             text.set_text(&node.title);
             let mut font = gtk::pango::FontDescription::new();
-            font.set_size(((if center { 13.0 } else { 10.5 }) * gtk::pango::SCALE as f64) as i32);
+            font.set_size(((if center { 13.0 } else { 10.5 }) * f64::from(gtk::pango::SCALE)) as i32);
             if center || state.hovered == Some(i) {
                 font.set_weight(gtk::pango::Weight::Semibold);
             }
@@ -411,7 +410,7 @@ fn draw(state: &State, area: &gtk::DrawingArea, cr: &gtk::cairo::Context, width:
                 dark,
             );
             cr.set_source_rgba(tr, tg, tb, if dim { 0.4 } else { 0.85 });
-            cr.move_to(x - w as f64 / 2.0, y + r + 6.0);
+            cr.move_to(x - f64::from(w) / 2.0, y + r + 6.0);
             pangocairo::functions::show_layout(cr, &text);
         }
     }
@@ -429,7 +428,7 @@ fn draw(state: &State, area: &gtk::DrawingArea, cr: &gtk::cairo::Context, width:
         let (w, h) = text.pixel_size();
         let (tr, tg, tb) = rgb(TEXT, dark);
         cr.set_source_rgba(tr, tg, tb, 0.9);
-        cr.move_to(width - w as f64 - 16.0, height - h as f64 - 12.0);
+        cr.move_to(width - f64::from(w) - 16.0, height - f64::from(h) - 12.0);
         pangocairo::functions::show_layout(cr, &text);
     }
 }

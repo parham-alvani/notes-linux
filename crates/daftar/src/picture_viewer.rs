@@ -125,7 +125,7 @@ pub fn show(parent: &impl IsA<gtk::Widget>, files: Vec<PathBuf>, at: usize) {
         let pointer = wheel.current_event().and_then(|e| e.position()).and_then(|(x, y)| {
             let root = v.scroller.root()?;
             let point = root.compute_point(&v.scroller, &gtk::graphene::Point::new(x as f32, y as f32))?;
-            Some((point.x() as f64, point.y() as f64))
+            Some((f64::from(point.x()), f64::from(point.y())))
         });
         v.zoom_to(v.scale.get() * 1.15f64.powf(-dy), pointer);
         glib::Propagation::Stop
@@ -218,25 +218,22 @@ impl Viewer {
         self.title.set_title(&name);
         let count = if self.files.len() > 1 { format!("{} / {}", self.at.get() + 1, self.files.len()) } else { String::new() };
         let loaded = Loaded::load(file);
-        match &loaded {
-            Some(loaded) => {
-                self.title.set_subtitle(
-                    &[format!("{} × {}", loaded.width, loaded.height), count]
-                        .iter()
-                        .filter(|s| !s.is_empty())
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(" · "),
-                );
-                self.picture.set_paintable(Some(&loaded.texture));
-                if let Some(animation) = &loaded.animation {
-                    self.tick.replace(Some(play(&self.picture, animation)));
-                }
+        if let Some(loaded) = &loaded {
+            self.title.set_subtitle(
+                &[format!("{} × {}", loaded.width, loaded.height), count]
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+            );
+            self.picture.set_paintable(Some(&loaded.texture));
+            if let Some(animation) = &loaded.animation {
+                self.tick.replace(Some(play(&self.picture, animation)));
             }
-            None => {
-                self.title.set_subtitle("Not a picture Daftar can show");
-                self.picture.set_paintable(gdk::Paintable::NONE);
-            }
+        } else {
+            self.title.set_subtitle("Not a picture Daftar can show");
+            self.picture.set_paintable(gdk::Paintable::NONE);
         }
         self.loaded.replace(loaded);
         self.fit.set(0.0);
@@ -250,8 +247,8 @@ impl Viewer {
     /// The zoom that fits the window: a drawing fills it, a photo is never
     /// blown up past its pixels.
     fn refit(self: &Rc<Self>) {
-        let Some((width, height)) = self.loaded.borrow().as_ref().map(|l| (l.width as f64, l.height as f64)) else { return };
-        let (room_w, room_h) = (self.scroller.width() as f64, self.scroller.height() as f64);
+        let Some((width, height)) = self.loaded.borrow().as_ref().map(|l| (f64::from(l.width), f64::from(l.height))) else { return };
+        let (room_w, room_h) = (f64::from(self.scroller.width()), f64::from(self.scroller.height()));
         if width <= 0.0 || height <= 0.0 || room_w <= 1.0 {
             return;
         }
@@ -267,10 +264,10 @@ impl Viewer {
     /// Zooms to [scale], keeping the point under [pointer] (in the scroller)
     /// where it is; with none, the middle of the window.
     fn zoom_to(self: &Rc<Self>, scale: f64, pointer: Option<(f64, f64)>) {
-        let Some((width, height)) = self.loaded.borrow().as_ref().map(|l| (l.width as f64, l.height as f64)) else { return };
+        let Some((width, height)) = self.loaded.borrow().as_ref().map(|l| (f64::from(l.width), f64::from(l.height))) else { return };
         let scale = scale.clamp(self.fit.get(), 32f64.max(self.fit.get()));
         let (h, v) = (self.scroller.hadjustment(), self.scroller.vadjustment());
-        let (px, py) = pointer.unwrap_or((h.page_size() / 2.0, v.page_size() / 2.0));
+        let (px, py) = pointer.unwrap_or_else(|| (h.page_size() / 2.0, v.page_size() / 2.0));
         let share = |adjustment: &gtk::Adjustment, at: f64| {
             let span = adjustment.upper() - adjustment.lower();
             if span > 0.0 { (adjustment.value() + at) / span } else { 0.5 }
@@ -300,8 +297,8 @@ impl Viewer {
         let this = self.clone();
         let source = glib::timeout_add_local_once(Duration::from_millis(150), move || {
             this.redraw.replace(None);
-            let Some((width, height)) = this.loaded.borrow().as_ref().map(|l| (l.width as f64, l.height as f64)) else { return };
-            let factor = this.picture.scale_factor() as f64;
+            let Some((width, height)) = this.loaded.borrow().as_ref().map(|l| (f64::from(l.width), f64::from(l.height))) else { return };
+            let factor = f64::from(this.picture.scale_factor());
             let scale = (this.scale.get() * factor).min(SHARPEST / width.max(height));
             let file = &this.files[this.at.get()];
             if let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(file, (width * scale) as i32, (height * scale) as i32, true) {

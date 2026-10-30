@@ -23,7 +23,7 @@ impl PlaceBook {
     /// The places of the vault at [root].
     pub fn load(root: &Path) -> std::rc::Rc<PlaceBook> {
         let file = state_file(root, "places");
-        let places = fs::read_to_string(&file).map(|data| ReadingPlaces::from_data(&data)).unwrap_or_else(|_| ReadingPlaces::new());
+        let places = fs::read_to_string(&file).map_or_else(|_| ReadingPlaces::new(), |data| ReadingPlaces::from_data(&data));
         std::rc::Rc::new(PlaceBook { places: RefCell::new(places), file, pending: RefCell::new(None) })
     }
 
@@ -43,7 +43,7 @@ impl PlaceBook {
 
     /// The note at [path] read now: a change on disk before this is not news.
     pub fn mark_read(self: &std::rc::Rc<Self>, path: &str) {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
         if self.last_read(path) == Some(now) {
             return;
         }

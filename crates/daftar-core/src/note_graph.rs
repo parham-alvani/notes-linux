@@ -62,7 +62,7 @@ impl NoteGraph {
     /// Notes this one links to, and notes that link to it.
     fn neighbours(path: &str, index: &VaultIndex) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for link in index.notes.get(path).map(|n| n.parsed.links.as_slice()).unwrap_or(&[]) {
+        for link in index.notes.get(path).map_or(&[][..], |n| n.parsed.links.as_slice()) {
             if let Some(target) = index.resolve(&link.target, path)
                 && Vault::is_note(&target)
                 && target != path
@@ -96,7 +96,7 @@ impl NoteGraph {
         let mut seen = HashSet::new();
         for path in paths {
             let from = position[path.as_str()];
-            for link in index.notes.get(path).map(|n| n.parsed.links.as_slice()).unwrap_or(&[]) {
+            for link in index.notes.get(path).map_or(&[][..], |n| n.parsed.links.as_slice()) {
                 let Some(to) = index.resolve(&link.target, path).and_then(|t| position.get(t.as_str()).copied()) else { continue };
                 if to == from {
                     continue;
@@ -162,7 +162,7 @@ impl GraphLayout {
             let (cx, cy) = key(i);
             for ox in -1..=1 {
                 for oy in -1..=1 {
-                    for &j in grid.get(&(cx + ox, cy + oy)).map(Vec::as_slice).unwrap_or(&[]) {
+                    for &j in grid.get(&(cx + ox, cy + oy)).map_or(&[][..], Vec::as_slice) {
                         if j == i {
                             continue;
                         }
@@ -225,7 +225,7 @@ mod tests {
                 .notes
                 .insert(path.clone(), NoteEntry { path: path.clone(), modified: SystemTime::now(), parsed: NoteParser::parse(text) });
         }
-        index.files = notes.iter().map(|(p, _)| p.clone()).chain(others.iter().map(|s| s.to_string())).collect::<BTreeSet<_>>();
+        index.files = notes.iter().map(|(p, _)| p.clone()).chain(others.iter().map(ToString::to_string)).collect::<BTreeSet<_>>();
         index.derive();
         index
     }

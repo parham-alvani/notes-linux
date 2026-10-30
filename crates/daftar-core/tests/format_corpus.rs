@@ -11,7 +11,7 @@ use daftar_core::{FormatConfig, MarkdownFormat};
 use walkdir::WalkDir;
 
 #[test]
-#[ignore]
+#[ignore = "needs the Prettier corpus in ~/.cache/daftar-fmt"]
 fn formats_as_prettier_does() {
     let Ok(dir) = std::env::var("DAFTAR_FMT_CORPUS") else { return };
     let dir = Path::new(&dir);

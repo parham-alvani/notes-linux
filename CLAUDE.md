@@ -12,7 +12,7 @@ The repository is **public**; the vault it reads is private. Every test fixture 
 
 ```bash
 just test     # cargo test + node --test for the renderer
-just lint     # cargo fmt --check + clippy -D warnings, as CI runs them
+just lint     # cargo fmt --check + clippy -D warnings, as CI runs them, with the lints of [workspace.lints]
 just run      # build and start; `just run Notes/Inbox.md` opens that note
 just cli …    # the command line on the configured vault: `just cli tasks --due today`
 just app      # the release binary
@@ -40,7 +40,7 @@ Keep logic in `daftar-core`: its tests run in a second and need no display. Each
 
 1. If more than one app will have it, write the spec first in `docs/specs/` (Markdown format, reading, writing, what changes it, how it is shown, queries, and the test cases every app must have) and add it to the table in `docs/specs/README.md`. Build each app against that text, not against another app's code.
 2. Put the rule in `daftar-core` with its tests, by the same names as the Mac's (`notes-mac/Sources/DaftarCore`), then the CLI command, then the GTK app. A new setting gets a line in `ConfigFile::TEMPLATE` here and in the Mac's template.
-3. Run `just lint` and `just test` before a commit. The GTK app needs a display: on a machine without one, build and run it under Xvfb (in a container with GTK 4, libadwaita and WebKitGTK 6.0), on a synthetic vault.
+3. Run `just lint` and `just test` before a commit. The lints are `[workspace.lints]` in `Cargo.toml`, which every crate takes: rustc's extras and Clippy's pedantic group on the latest stable Rust, each lint left out there with why. In code, a lint is let off only with `#[expect(..., reason = "…")]`, never a bare `allow`, so one that stops firing says so. The GTK app needs a display: on a machine without one, build and run it under Xvfb (in a container with GTK 4, libadwaita and WebKitGTK 6.0), on a synthetic vault.
 4. One branch and one pull request per repository, named the same in all three (`task-reasons`). Release each app once its pull request is merged: here `just release X.Y.Z`, then `just aur` once the release's binaries are up.
 5. A change to `web/src` is made in `notes-mac/web` and copied here (see below).
 

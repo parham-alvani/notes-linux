@@ -23,7 +23,7 @@ fn the_lint_finds_what_markdownlint_finds() {
     }
     let mut failures = Vec::new();
     let mut files: Vec<_> =
-        fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "md")).collect();
+        fs::read_dir(&dir).unwrap().filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "md")).collect();
     files.sort();
     for path in files {
         let name = path.file_name().unwrap().to_string_lossy().to_string();

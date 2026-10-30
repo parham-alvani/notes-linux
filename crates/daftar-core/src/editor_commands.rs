@@ -355,7 +355,7 @@ pub struct Snippet {
 
 impl Snippet {
     /// [cursor] is given in UTF-16 units, as the Mac writes it, and kept in characters.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "a snippet is all of these, as the Mac writes them")]
     fn new(id: &str, title: &str, group: &str, symbol: &str, color: &str, text: &str, cursor: Option<usize>, block: bool) -> Snippet {
         let cursor = match cursor {
             None => text.chars().count(),

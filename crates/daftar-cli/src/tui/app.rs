@@ -283,7 +283,7 @@ impl App {
     }
 
     pub fn vault_name(&self) -> String {
-        self.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.root.display().to_string())
+        self.root.file_name().map_or_else(|| self.root.display().to_string(), |n| n.to_string_lossy().into_owned())
     }
 
     pub fn refresh_git(&mut self) {
@@ -395,7 +395,7 @@ impl App {
                 .rows
                 .iter()
                 .position(|r| note.blocks[r.block].source.is_some_and(|s| s >= line))
-                .unwrap_or(note.rows.len().saturating_sub(1));
+                .unwrap_or_else(|| note.rows.len().saturating_sub(1));
             note.scroll = note.cursor.saturating_sub(height / 3);
         }
         note.cursor = note.cursor.min(note.rows.len().saturating_sub(1));
@@ -467,7 +467,7 @@ impl App {
     /// first, then those the app read last, while they are in the vault.
     pub fn refresh_home(&mut self) {
         let settings = Beautitab::read(&self.root);
-        let selected = self.home.notes().get(self.home.selected).map(|p| p.to_string());
+        let selected = self.home.notes().get(self.home.selected).map(|p| (*p).clone());
         let files = &self.index.files;
         let mut lists = Vec::new();
         if settings.show_recent_files {
@@ -493,7 +493,7 @@ impl App {
         }
         // One quote for each visit, kept while it is still one of them.
         let quote = self.home.quote.take().filter(|q| settings.show_quote && settings.quotes.contains(q)).or_else(|| {
-            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() as usize).unwrap_or(0);
+            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos() as usize);
             settings.show_quote.then(|| settings.quotes.get(at % settings.quotes.len().max(1)).cloned()).flatten()
         });
         self.home = Home { settings, lists, selected: 0, quote };
@@ -508,7 +508,7 @@ impl App {
 
     /// Enter on the home page: the note chosen opens.
     pub fn home_activate(&mut self) {
-        if let Some(path) = self.home.notes().get(self.home.selected).map(|p| p.to_string()) {
+        if let Some(path) = self.home.notes().get(self.home.selected).map(|p| (*p).clone()) {
             self.open(&path, None, true);
         }
     }

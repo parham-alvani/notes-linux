@@ -74,18 +74,15 @@ impl ConflictText {
         let lines = Self::lines(text);
         let mut index = 0;
         while index < lines.len() {
-            match is_mark(lines[index], '<').then(|| conflict(&lines, index)).flatten() {
-                Some((found, next)) => {
-                    if !plain.is_empty() {
-                        parts.push(Part::Plain(std::mem::take(&mut plain)));
-                    }
-                    parts.push(Part::Conflict(found));
-                    index = next;
+            if let Some((found, next)) = is_mark(lines[index], '<').then(|| conflict(&lines, index)).flatten() {
+                if !plain.is_empty() {
+                    parts.push(Part::Plain(std::mem::take(&mut plain)));
                 }
-                None => {
-                    plain.push_str(lines[index]);
-                    index += 1;
-                }
+                parts.push(Part::Conflict(found));
+                index = next;
+            } else {
+                plain.push_str(lines[index]);
+                index += 1;
             }
         }
         if !plain.is_empty() {

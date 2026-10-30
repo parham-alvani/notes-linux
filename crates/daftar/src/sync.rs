@@ -272,7 +272,7 @@ impl GitSync {
                 let git = Git::new(folder);
                 let done = match kind {
                     Run::Sync => git.sync(&Git::message(chrono::Local::now(), &Git::host())).map(Some),
-                    Run::Pull => git.pull().map(|_| None),
+                    Run::Pull => git.pull().map(|()| None),
                 };
                 (done, git.status().ok())
             })

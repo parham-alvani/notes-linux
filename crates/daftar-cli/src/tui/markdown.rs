@@ -90,7 +90,7 @@ pub fn blocks(text: &str, properties: &[(String, Vec<String>)], theme: &Theme, t
         if depth == 0 {
             callout = None;
         }
-        if !table.is_empty() && !(body.trim_start().starts_with('|') && fence.is_none()) {
+        if !(table.is_empty() || body.trim_start().starts_with('|') && fence.is_none()) {
             out.extend(table_blocks(&std::mem::take(&mut table), callout.as_deref(), theme));
         }
         let quote = quote_prefix(depth, callout.as_deref(), theme);
@@ -218,7 +218,7 @@ fn line_block(body: &str, depth: usize, callout: &mut Option<String>, quote: Vec
         let (mut spans, links) = inline(&title, Style::new().fg(color).add_modifier(Modifier::BOLD), theme);
         spans.insert(0, Span::styled(format!("{} ", Theme::callout_icon(&kind)), Style::new().fg(color)));
         block.prefix = quote_prefix(depth, Some(&kind), theme);
-        block.hang = block.prefix.clone();
+        block.hang.clone_from(&block.prefix);
         block.rtl = direction::starts_rtl(&title);
         block.spans = spans;
         block.links = links;

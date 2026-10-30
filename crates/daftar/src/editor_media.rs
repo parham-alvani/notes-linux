@@ -125,8 +125,8 @@ pub fn fit(width: i32, height: i32, room: i32) -> (i32, i32) {
     if width <= 0 || height <= 0 {
         return (0, 0);
     }
-    let scale = (room.max(1) as f64 / width as f64).min(TALLEST as f64 / height as f64).min(1.0);
-    (((width as f64 * scale).round() as i32).max(1), ((height as f64 * scale).round() as i32).max(1))
+    let scale = (f64::from(room.max(1)) / f64::from(width)).min(f64::from(TALLEST) / f64::from(height)).min(1.0);
+    (((f64::from(width) * scale).round() as i32).max(1), ((f64::from(height) * scale).round() as i32).max(1))
 }
 
 /// The size a picture is drawn at with the size its embed asks for: the
@@ -137,9 +137,9 @@ pub fn fit_hinted(width: i32, height: i32, room: i32, hint: Hint) -> (i32, i32) 
     if width <= 0 || height <= 0 {
         return (0, 0);
     }
-    let tall = tall.filter(|h| *h > 0).unwrap_or_else(|| (wanted as f64 * height as f64 / width as f64).round() as i32);
-    let scale = (room.max(1) as f64 / wanted as f64).min(1.0);
-    (((wanted as f64 * scale).round() as i32).max(1), ((tall as f64 * scale).round() as i32).max(1))
+    let tall = tall.filter(|h| *h > 0).unwrap_or_else(|| (f64::from(wanted) * f64::from(height) / f64::from(width)).round() as i32);
+    let scale = (f64::from(room.max(1)) / f64::from(wanted)).min(1.0);
+    (((f64::from(wanted) * scale).round() as i32).max(1), ((f64::from(tall) * scale).round() as i32).max(1))
 }
 
 /// The vault path of [file] when it is in the vault at [root].
@@ -191,7 +191,7 @@ impl Editor {
         let mut files = store.index().files.clone();
         let mut paths = Vec::new();
         let mut imported = false;
-        for file in dropped.iter().filter_map(|f| f.path()) {
+        for file in dropped.iter().filter_map(FileExt::path) {
             if let Some(path) = vault_path(&store.root, &file).filter(|p| file_in(p, &store.root).is_some()) {
                 paths.push(path);
                 continue;

@@ -297,7 +297,7 @@ pub fn string_width(text: &str) -> usize {
             i += 1;
             loop {
                 match chars.get(i) {
-                    Some('\u{FE0F}') | Some('\u{1F3FB}'..='\u{1F3FF}') => i += 1,
+                    Some('\u{FE0F}' | '\u{1F3FB}'..='\u{1F3FF}') => i += 1,
                     Some('\u{200D}') if chars.get(i + 1).is_some_and(|&n| is_emoji_start(n, chars.get(i + 2).copied())) => i += 2,
                     _ => break,
                 }
