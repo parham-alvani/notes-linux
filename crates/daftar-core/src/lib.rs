@@ -37,6 +37,7 @@ pub mod note_graph;
 pub mod note_parser;
 pub mod ordered_json;
 pub mod periodic_notes;
+pub mod properties;
 pub mod quick_capture;
 pub mod quick_switcher;
 pub mod reading_places;
