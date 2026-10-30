@@ -6,7 +6,10 @@
 //! whose name more than one note has, a fence in a fence, a picture no note
 //! shows, a block id written twice, and with `--urls` a web address that is
 //! gone. Prints `path:line`, a tab, `error` or `warning`, a tab, the kind
-//! and what it found; in GitHub Actions, an annotation for each.
+//! and what it found; in GitHub Actions, an annotation for each. With
+//! `--fix` it mends what has one answer: a bare link whose name more than
+//! one note has gets the shortest path that names the note it goes to now,
+//! and keeps the text it showed.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -14,9 +17,9 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use chrono::NaiveDate;
-use daftar_core::Vault;
 use daftar_core::vault::LOGO_NAMES;
 use daftar_core::web_fetch::Answer;
+use daftar_core::{Vault, VaultEdits};
 use percent_encoding::percent_decode_str;
 use regex::Regex;
 
@@ -42,9 +45,14 @@ pub struct Options {
     pub skip_urls: Vec<String>,
     /// Prints GitHub Actions annotations.
     pub github: bool,
+    /// Mends what has one answer, and prints each change instead.
+    pub fix: bool,
+    /// With [fix], prints the changes and writes nothing.
+    pub dry_run: bool,
 }
 
 pub struct Outcome {
+    pub fixed: usize,
     pub errors: usize,
     pub warnings: usize,
     pub notes: usize,
@@ -292,6 +300,54 @@ fn shows_markdown(path: &str) -> bool {
     name == "CLAUDE.md" || name.starts_with("_TEMPLATE") || path.starts_with(".claude/")
 }
 
+/// The shortest path, from the end of [to], that names [to] alone and that
+/// [source] resolves to it: `Folder/Note` for `Folder/Note.md`.
+fn unique_target(index: &daftar_core::VaultIndex, to: &str, source: &str) -> Option<String> {
+    let bare = to.strip_suffix(".md").unwrap_or(to);
+    let segments: Vec<&str> = bare.split('/').collect();
+    (2..=segments.len()).map(|k| segments[segments.len() - k..].join("/")).find(|target| {
+        let names = |p: &String| {
+            let p = p.strip_suffix(".md").unwrap_or(p).to_lowercase();
+            let t = target.to_lowercase();
+            p == t || p.ends_with(&format!("/{t}"))
+        };
+        index.notes.keys().filter(|p| names(p)).count() == 1 && index.resolve(target, source).as_deref() == Some(to)
+    })
+}
+
+/// [line] with each wikilink to [target] made one to [new], showing what it
+/// showed: `[[Plan]]` is `[[Work/Plan|Plan]]`, `[[Plan#Goals]]` is
+/// `[[Work/Plan#Goals|Plan > Goals]]`, an alias stays, an embed gets none.
+/// In a table row the `|` is escaped, as Obsidian writes it there.
+fn retarget(line: &str, target: &str, new: &str) -> String {
+    let bar = if line.trim_start().starts_with('|') { "\\|" } else { "|" };
+    let open = format!("[[{target}");
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(at) = rest.find(&open) {
+        let after = &rest[at + open.len()..];
+        let Some(end) = after.find("]]") else { break };
+        let tail = &after[..end];
+        if !tail.is_empty() && !tail.starts_with(['#', '|', '\\']) {
+            out.push_str(&rest[..at + open.len()]);
+            rest = after;
+            continue;
+        }
+        let embed = rest[..at].ends_with('!');
+        out.push_str(&rest[..at]);
+        let aliased = tail.contains('|');
+        let shown = match tail.strip_prefix('#') {
+            _ if embed || aliased => String::new(),
+            Some(anchor) => format!("{bar}{target} > {anchor}"),
+            None => format!("{bar}{target}"),
+        };
+        out.push_str(&format!("[[{new}{tail}{shown}]]"));
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn stem(path: &str) -> &str {
     let name = path.rsplit('/').next().unwrap_or(path);
     name.strip_suffix(".md").unwrap_or(name)
@@ -310,6 +366,7 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
     let mut texts: Vec<String> = Vec::new();
     let mut blocks_of: HashMap<String, String> = HashMap::new();
     let mut web: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+    let mut fixes: BTreeSet<(String, usize, String, String)> = BTreeSet::new();
     let mut paths: Vec<&String> = index.notes.keys().filter(|p| !hidden(p)).collect();
     paths.sort();
     for path in &paths {
@@ -342,13 +399,19 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
                     }
                     if !link.target.contains('/') && by_name.get(link.target.trim_end_matches(".md")).is_some_and(|&n| n > 1) {
                         let n = by_name[link.target.trim_end_matches(".md")];
-                        found.insert((
-                            (*path).clone(),
-                            line,
-                            false,
-                            "ambiguous-link",
-                            format!("[[{}]] names {n} notes; give its folder", link.target),
-                        ));
+                        if options.fix
+                            && let Some(new) = unique_target(&index, &to, path)
+                        {
+                            fixes.insert(((*path).clone(), link.line, link.target.clone(), new));
+                        } else {
+                            found.insert((
+                                (*path).clone(),
+                                line,
+                                false,
+                                "ambiguous-link",
+                                format!("[[{}]] names {n} notes; give its folder", link.target),
+                            ));
+                        }
                     }
                     used.insert(to);
                 }
@@ -565,6 +628,7 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
             }
         }
     }
+    let fixed = mend(root, &fixes, options.dry_run, &mut print);
     let (mut errors, mut warnings) = (0, 0);
     for (path, line, error, kind, detail) in &found {
         if *error {
@@ -580,7 +644,43 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
             print(format!("{at}\t{level}\t{kind}\t{detail}"));
         }
     }
-    Outcome { errors, warnings, notes: paths.len() }
+    Outcome { fixed, errors, warnings, notes: paths.len() }
+}
+
+/// Each of [fixes], `(path, line, target, new)`, made in its note through
+/// `VaultEdits`, which reads the file again, and printed. The number made.
+fn mend(root: &Path, fixes: &BTreeSet<(String, usize, String, String)>, dry_run: bool, print: &mut impl FnMut(String)) -> usize {
+    let mut made = 0;
+    let mut by_note: HashMap<&str, Vec<(usize, &str, &str)>> = HashMap::new();
+    for (path, line, target, new) in fixes {
+        by_note.entry(path).or_default().push((*line, target, new));
+    }
+    let mut notes: Vec<_> = by_note.into_iter().collect();
+    notes.sort();
+    for (path, fixes) in notes {
+        let mut changes = Vec::new();
+        let edit = VaultEdits::apply(path, root, |text| {
+            let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+            for (line, target, new) in &fixes {
+                let Some(old) = lines.get(*line) else { continue };
+                let mended = retarget(old, target, new);
+                if mended != *old {
+                    changes.push((*line, old.trim().to_string(), mended.trim().to_string()));
+                    lines[*line] = mended;
+                }
+            }
+            Ok(if dry_run { text.to_string() } else { lines.join("\n") })
+        });
+        if let Err(error) = edit {
+            eprintln!("daftar-cli: {path}: {error}");
+            continue;
+        }
+        for (line, old, new) in changes {
+            made += 1;
+            print(format!("{path}:{}\tfixed\tambiguous-link\t{old} → {new}", line + 1));
+        }
+    }
+    made
 }
 
 #[cfg(test)]
@@ -613,6 +713,8 @@ mod tests {
             github_token: None,
             skip_urls: Vec::new(),
             github: false,
+            fix: false,
+            dry_run: false,
         }
     }
 
@@ -648,6 +750,27 @@ mod tests {
         );
         assert!(lines[0].starts_with("A.md:1\twarning\t"));
         assert!(lines.last().unwrap().starts_with("uploads/lost.png\twarning"));
+    }
+
+    #[test]
+    fn fix_gives_an_ambiguous_link_its_folder() {
+        let note = "[[Plan]] and [[Plan#Goals]] and [[Plan|the plan]] and ![[Plan]] and [[Planner]]\n| a | [[Plan]] |\n";
+        let dir = vault(&[("Work/Plan.md", "## Goals\n"), ("Home/Plan.md", ""), ("Work/Note.md", note), ("Planner.md", "")]);
+        let mut options = options();
+        options.fix = true;
+        options.dry_run = true;
+        let lines = findings(dir.path(), &options);
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        assert_eq!(fs::read_to_string(dir.path().join("Work/Note.md")).unwrap(), note);
+        options.dry_run = false;
+        assert_eq!(findings(dir.path(), &options).len(), 2);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("Work/Note.md")).unwrap(),
+            "[[Work/Plan|Plan]] and [[Work/Plan#Goals|Plan > Goals]] and [[Work/Plan|the plan]] and ![[Work/Plan]] and [[Planner]]\n\
+             | a | [[Work/Plan\\|Plan]] |\n"
+        );
+        // Nothing is ambiguous any more.
+        assert!(findings(dir.path(), &options).is_empty());
     }
 
     #[test]

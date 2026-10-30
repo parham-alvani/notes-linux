@@ -297,6 +297,14 @@ enum Command {
         /// does not ask.
         #[arg(long = "skip-url")]
         skip_url: Vec<String>,
+        /// Mends what has one answer: a bare link whose name more than one
+        /// note has gets the shortest path to the note it goes to now, and
+        /// shows the text it showed. Prints each change.
+        #[arg(long)]
+        fix: bool,
+        /// With --fix, prints the changes and writes nothing.
+        #[arg(long, requires = "fix")]
+        dry_run: bool,
     },
     /// Removes pictures no note names, makes the others JPEGs under 1 MB and
     /// renames them in the notes, as notes-cli does.
@@ -620,7 +628,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{} of {} notes are not formatted; run daftar-cli fmt", outcome.changed, outcome.checked));
             }
         }
-        Command::Check { strict, no_h1, callout, urls, unreachable, skip_url } => {
+        Command::Check { strict, no_h1, callout, urls, unreachable, skip_url, fix, dry_run } => {
             let github_token = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).ok();
             let options = check::Options {
                 strict,
@@ -631,8 +639,14 @@ fn run(cli: Cli) -> Result<(), String> {
                 github_token,
                 skip_urls: skip_url,
                 github: report::github(),
+                fix,
+                dry_run,
             };
             let outcome = check::run(&root, |path| hidden.contains(path), &options, |line| out!("{line}"));
+            if fix {
+                let verb = if dry_run { "would fix" } else { "fixed" };
+                eprintln!("daftar-cli: {verb} {} links", outcome.fixed);
+            }
             eprintln!("daftar-cli: {} errors, {} warnings in {} notes", outcome.errors, outcome.warnings, outcome.notes);
             if outcome.errors > 0 || (options.strict && outcome.warnings > 0) {
                 return Err("check failed".to_string());
