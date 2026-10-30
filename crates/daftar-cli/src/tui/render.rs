@@ -415,11 +415,12 @@ fn draw_picker(frame: &mut Frame, theme: &Theme, picker: &mut Picker, area: Rect
     (rect, list, items)
 }
 
-pub const KEYS: [(&str, &str); 27] = [
+pub const KEYS: [(&str, &str); 28] = [
     ("Ctrl+P  p", "open a note by name"),
     ("/  Ctrl+F", "search the text of every note"),
     ("t", "tasks: the note's queries, else every open task"),
     ("b", "notes that link to this one"),
+    ("o", "outline: Enter goes, Space closes or opens, s sorts under"),
     ("#", "tags, then the notes with one"),
     ("Tab", "the tree or the note"),
     ("j k  ↓ ↑", "move"),

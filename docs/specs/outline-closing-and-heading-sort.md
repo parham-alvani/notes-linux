@@ -21,7 +21,7 @@ Shared by Daftar for macOS (`notes-mac`, commit `723e125`), Android (`notes-droi
 - Every line of the note is still there once after a sort; a second sort changes nothing.
 - Nothing changes when the heading has fewer than two children, or they are in order already; the app says so: "“X” has fewer than two headings right under it.", "The headings under “X” are in order already."
 - With no heading given, it acts on the heading of the section the cursor (or, with no editor, the reading place) is in; with none there it says "Put the cursor in a section to sort the headings under it." (Android: "Scroll into a section…").
-- It is in the outline heading's menu (disabled with fewer than two children) and with the note's commands; on Linux also `daftar-cli sort-headings NOTE HEADING`, where HEADING is the heading's text or a line in its section. The editor's text is saved first, and the sorted text is written as any other edit of the app; on Linux, in the editor it is one step to undo.
+- It is in the outline heading's menu (disabled with fewer than two children) and with the note's commands; on Linux also `daftar-cli sort-headings NOTE HEADING`, where HEADING is the heading's text or a line in its section, and `s` in the TUI's outline (`o`), whose closed headings start from the app's and are kept for the session. The editor's text is saved first, and the sorted text is written as any other edit of the app; on Linux, in the editor it is one step to undo.
 
 ## 3. Tests every app has
 

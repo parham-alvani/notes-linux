@@ -2,7 +2,7 @@
 //! tree, the open note, the lists over it, and the edits. Every rule is
 //! `daftar-core`'s; this file only keeps the state.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -15,7 +15,8 @@ use ratatui::text::{Line, Span};
 
 use daftar_core::{
     Beautitab, Bookmarks, Candidate, Day, ExcludedFiles, Git, GitStatus, NoteParser, QueryTask, QuickSwitcher, Quote, ReadingPlaces,
-    SearchIndex, SyncFailure, TagNode, TaskLine, TasksQuery, TreeNode, Vault, VaultEdits, VaultIndex, VaultTask, home, reading_places,
+    SearchIndex, Sections, SyncFailure, TagNode, TaskLine, TasksQuery, TreeNode, Vault, VaultEdits, VaultIndex, VaultTask, home,
+    reading_places,
 };
 
 use super::markdown::{self, Block, Row};
@@ -68,6 +69,7 @@ pub enum PickerKind {
     Tags,
     TagNotes,
     Links,
+    Outline,
 }
 
 /// A row of a list. One with no path, task or tag is a heading.
@@ -82,6 +84,8 @@ pub struct Item {
     pub task: Option<char>,
     pub tag: Option<String>,
     pub link: Option<String>,
+    /// In the outline, the heading's place among the note's headings.
+    pub heading: Option<usize>,
 }
 
 impl Item {
@@ -181,6 +185,9 @@ pub struct App {
     /// A line for the status bar, and whether it is an error.
     pub message: Option<(String, bool)>,
     pub job: Option<Job>,
+    /// The headings closed in each note's outline, as `level:text`: the
+    /// app's, read from its reading places, and this session's changes.
+    closed: HashMap<String, Vec<String>>,
     /// What a worker thread does now, and since when, for the spinner.
     pub busy: Option<(String, Instant)>,
     worker: Option<Receiver<Loaded>>,
@@ -237,6 +244,7 @@ impl App {
             overlay: None,
             message: None,
             job: None,
+            closed: HashMap::new(),
             busy: None,
             worker: None,
             touched: BTreeSet::new(),
@@ -979,6 +987,110 @@ impl App {
             items.push(Item { line: Line::from(Span::styled("No note links here.", theme.muted())), ..Item::default() });
         }
         self.show_picker(PickerKind::Backlinks, &format!("Links to {}", Vault::title(&path)), None, items);
+    }
+
+    /// The note's outline: its headings, those under a closed one left out.
+    /// Enter goes to one, Space closes or opens it, `s` sorts the headings
+    /// right under it.
+    pub fn open_outline(&mut self) {
+        self.show_outline(None);
+    }
+
+    /// The outline with heading [keep] selected, when it is shown.
+    fn show_outline(&mut self, keep: Option<usize>) {
+        let Some((path, text)) = self.note.as_ref().map(|n| (n.path.clone(), n.text.clone())) else {
+            self.message = Some(("Open a note to see its outline".into(), false));
+            return;
+        };
+        let theme = self.theme;
+        let headings = Sections::headings(&text);
+        let closed = self.closed_in(&path);
+        let mut items: Vec<Item> = Vec::new();
+        for index in Sections::visible(&headings, &closed) {
+            let heading = &headings[index];
+            let arrow = match (Sections::has_children(index, &headings), closed.contains(&Sections::key(heading))) {
+                (false, _) => "  ",
+                (true, false) => "▾ ",
+                (true, true) => "▸ ",
+            };
+            items.push(Item {
+                line: Line::from(vec![
+                    Span::raw("  ".repeat(heading.level.saturating_sub(1))),
+                    Span::styled(arrow, theme.faint()),
+                    Span::styled(heading.text.clone(), theme.heading(heading.level)),
+                ]),
+                path: Some(path.clone()),
+                at: Some(heading.line),
+                heading: Some(index),
+                ..Item::default()
+            });
+        }
+        if items.is_empty() {
+            items.push(Item { line: Line::from(Span::styled("No headings.", theme.muted())), ..Item::default() });
+        }
+        let selected = keep.and_then(|keep| items.iter().position(|i| i.heading == Some(keep)));
+        self.show_picker(PickerKind::Outline, &format!("Outline of {}", Vault::title(&path)), None, items);
+        if let (Some(selected), Some(picker)) = (selected, self.picker()) {
+            picker.selected = selected;
+        }
+    }
+
+    /// The headings closed in [path]'s outline: this session's, else the app's.
+    fn closed_in(&mut self, path: &str) -> Vec<String> {
+        if let Some(closed) = self.closed.get(path) {
+            return closed.clone();
+        }
+        let places = fs::read_to_string(reading_places::state_file(&self.root, "places")).map(|data| ReadingPlaces::from_data(&data));
+        let closed = places.map(|p| p.closed(path)).unwrap_or_default();
+        self.closed.insert(path.to_string(), closed.clone());
+        closed
+    }
+
+    /// The selected heading of the outline: the note and its place.
+    fn outline_selected(&self) -> Option<(String, usize)> {
+        let Some(Overlay::Picker(picker)) = &self.overlay else { return None };
+        let item = picker.items.get(picker.selected)?;
+        Some((item.path.clone()?, item.heading?))
+    }
+
+    /// Space in the outline: the heading closed if open, opened if closed.
+    pub fn outline_toggle(&mut self) {
+        let Some((path, index)) = self.outline_selected() else { return };
+        let headings = self.note.as_ref().map(|n| Sections::headings(&n.text)).unwrap_or_default();
+        if !Sections::has_children(index, &headings) {
+            return;
+        }
+        let key = Sections::key(&headings[index]);
+        let mut closed = self.closed_in(&path);
+        if closed.contains(&key) {
+            closed.retain(|k| *k != key);
+        } else {
+            closed.push(key);
+        }
+        self.closed.insert(path, closed);
+        self.show_outline(Some(index));
+    }
+
+    /// `s` in the outline: the headings right under the selected one in the
+    /// order of their names, each with its section, in the file.
+    pub fn outline_sort(&mut self) {
+        let Some((path, index)) = self.outline_selected() else { return };
+        let mut why = None;
+        let result = VaultEdits::apply(&path, &self.root, |text| {
+            Ok(Sections::sort_headings(text, Some(index), 0).unwrap_or_else(|reason| {
+                why = Some(reason);
+                text.to_string()
+            }))
+        });
+        match (result, why) {
+            (Err(error), _) => self.message = Some((format!("Not changed: {error}"), true)),
+            (Ok(()), Some(why)) => self.message = Some((why, false)),
+            (Ok(()), None) => {
+                self.changed(std::slice::from_ref(&path));
+                self.message = Some(("Headings sorted by name".into(), false));
+            }
+        }
+        self.show_outline(Some(index));
     }
 
     pub fn open_tags(&mut self) {

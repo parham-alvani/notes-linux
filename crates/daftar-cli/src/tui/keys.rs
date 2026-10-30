@@ -19,8 +19,8 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         }
         Some(Overlay::Picker(picker)) => {
             let typing = picker.query.is_some();
-            let tasks = picker.kind == PickerKind::Tasks;
-            picker_key(app, key, ctrl, typing, tasks);
+            let kind = picker.kind;
+            picker_key(app, key, ctrl, typing, kind);
             return;
         }
         None => {}
@@ -35,6 +35,7 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         KeyCode::Char('/') => app.open_search(),
         KeyCode::Char('t') => app.open_tasks(),
         KeyCode::Char('b') => app.open_backlinks(),
+        KeyCode::Char('o') => app.open_outline(),
         KeyCode::Char('#') => app.open_tags(),
         KeyCode::Char('?') => app.overlay = Some(Overlay::Help),
         KeyCode::Char('e') => app.edit(),
@@ -106,7 +107,7 @@ fn home_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn picker_key(app: &mut App, key: KeyEvent, ctrl: bool, typing: bool, tasks: bool) {
+fn picker_key(app: &mut App, key: KeyEvent, ctrl: bool, typing: bool, kind: PickerKind) {
     match key.code {
         KeyCode::Esc => app.overlay = None,
         KeyCode::Enter => app.picker_activate(),
@@ -134,7 +135,9 @@ fn picker_key(app: &mut App, key: KeyEvent, ctrl: bool, typing: bool, tasks: boo
             }
             app.refilter();
         }
-        KeyCode::Char(' ') if tasks => app.picker_toggle(),
+        KeyCode::Char(' ') if kind == PickerKind::Tasks => app.picker_toggle(),
+        KeyCode::Char(' ') if kind == PickerKind::Outline => app.outline_toggle(),
+        KeyCode::Char('s') if kind == PickerKind::Outline => app.outline_sort(),
         KeyCode::Char('j') => app.picker_move(1),
         KeyCode::Char('k') => app.picker_move(-1),
         KeyCode::Char('q') | KeyCode::Backspace => app.overlay = None,

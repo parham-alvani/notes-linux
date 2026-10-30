@@ -364,6 +364,36 @@ mod tests {
         assert_eq!(picker.items.iter().filter_map(|i| i.path.as_deref()).collect::<Vec<_>>(), ["Home.md"]);
     }
 
+    #[test]
+    fn the_outline_closes_headings_and_sorts_the_ones_under_one() {
+        let dir = vault();
+        fs::write(dir.path().join("Plants.md"), "# Plants\n\n## Tomato\n\n### Cherry\n\n## apple\n\n## Bean 10\n\n## Bean 9\n").unwrap();
+        let mut app = app(&dir);
+        app.open("Plants.md", None, true);
+        press(&mut app, KeyCode::Char('o'));
+        let headings = |app: &App| {
+            let Some(Overlay::Picker(picker)) = &app.overlay else { panic!("no outline") };
+            picker.items.iter().filter_map(|i| i.heading).collect::<Vec<_>>()
+        };
+        assert_eq!(headings(&app), [0, 1, 2, 3, 4, 5]);
+        assert!(screen(&mut app).contains("Outline of Plants"));
+        // Tomato closed hides Cherry; again opens it.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(headings(&app), [0, 1, 3, 4, 5]);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(headings(&app), [0, 1, 2, 3, 4, 5]);
+        // A heading with nothing under it has nothing to sort.
+        press(&mut app, KeyCode::Char('s'));
+        assert!(app.message.as_ref().is_some_and(|(m, _)| m.contains("fewer than two")), "{:?}", app.message);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char('s'));
+        let text = fs::read_to_string(dir.path().join("Plants.md")).unwrap();
+        let order: Vec<&str> = text.lines().filter(|l| l.starts_with('#')).collect();
+        assert_eq!(order, ["# Plants", "## apple", "## Bean 9", "## Bean 10", "## Tomato", "### Cherry"]);
+        assert_eq!(headings(&app), [0, 1, 2, 3, 4, 5]);
+    }
+
     /// The synthetic vault with files the lists leave out: one for an AI
     /// agent, and a folder Obsidian's excluded files name.
     fn vault_with_hidden() -> tempfile::TempDir {
