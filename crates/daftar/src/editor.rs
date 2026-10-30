@@ -3,8 +3,9 @@
 //! on its keys: Return continues a list, Tab and Shift+Tab indent an item or
 //! go to the next cell of a table, Ctrl+B, Ctrl+I and Ctrl+Shift+H mark the
 //! selection, Ctrl+K links it, Ctrl+Return ticks the task on the line,
-//! Alt+Up and Alt+Down move lines, `[[` offers notes and `/` snippets, and a
-//! pasted picture is saved in the vault's attachment folder. The pictures a
+//! Alt+Up and Alt+Down move lines and Ctrl+Alt+Up and Down the section, `[[`
+//! offers notes and `/` snippets, and a pasted picture is saved in the
+//! vault's attachment folder. The pictures a
 //! line embeds are drawn under it, and a dropped file becomes a link
 //! (`editor_media.rs`); Ctrl+Alt+X extracts the selection to a new note.
 //!
@@ -386,6 +387,13 @@ impl Editor {
         saved
     }
 
+    /// True in Neovim mode, where the buffer takes Neovim's edits only: a
+    /// command that edits the note saves, writes the file and has Neovim
+    /// read it again.
+    pub fn is_neovim(&self) -> bool {
+        self.vim.borrow().is_some()
+    }
+
     /// Saves, then lets go of the note.
     pub fn close(&self) -> Saved {
         let saved = self.save();
@@ -688,6 +696,10 @@ impl Editor {
                 self.move_lines(key == gdk::Key::Up);
                 glib::Propagation::Stop
             }
+            gdk::Key::Up | gdk::Key::Down if alt && control && !shift => {
+                self.move_section(key == gdk::Key::Up);
+                glib::Propagation::Stop
+            }
             gdk::Key::BackSpace if plain => stop(self.on_backspace()),
             gdk::Key::v | gdk::Key::V if control && !alt && !shift => stop(self.paste()),
             // The clipboard's plain text, never converted.
@@ -883,6 +895,38 @@ impl Editor {
             Some(edit) => self.replace(edit.range, &edit.text, Some(edit.selection)),
             None => self.view.error_bell(),
         }
+    }
+
+    /// Ctrl+Alt+Up and Down, the Mac's ⌥⌘↑ and ⌥⌘↓: the section the cursor
+    /// is in goes above the previous heading of its level or below the next,
+    /// as one step to undo, the cursor with it. Above the first heading the
+    /// lines move as Alt+Up and Down move them.
+    fn move_section(&self, up: bool) {
+        let text = self.text();
+        let cursor = self.cursor();
+        let line = text.chars().take(cursor).filter(|c| *c == '\n').count();
+        let headings = Sections::headings(&text);
+        let Some(index) = Sections::heading_at(line, &headings) else { return self.move_lines(up) };
+        let siblings = Sections::siblings(index, &headings);
+        let at = siblings.iter().position(|s| *s == index).unwrap_or(0);
+        let place = if up { at.checked_sub(1) } else { Some(at + 1) };
+        let Some(moved) = place.and_then(|place| Sections::move_section(&text, index, place)) else {
+            return self.view.error_bell();
+        };
+        let start = |text: &str, line: usize| text.split('\n').take(line).map(|l| l.chars().count() + 1).sum::<usize>();
+        let shifted = (cursor + start(&moved.text, moved.to)).saturating_sub(start(&text, moved.from)).min(moved.text.chars().count());
+        self.replace(0..self.buffer.char_count().max(0) as usize, &moved.text, Some(shifted..shifted));
+    }
+
+    /// The section of heading [index] at place [position] among the
+    /// headings of its level, from the outline, as one step to undo; false
+    /// when it is there already.
+    pub fn move_section_to(&self, index: usize, position: usize) -> bool {
+        let text = self.text();
+        let Some(moved) = Sections::move_section(&text, index, position) else { return false };
+        let cursor = self.cursor().min(moved.text.chars().count());
+        self.replace(0..self.buffer.char_count().max(0) as usize, &moved.text, Some(cursor..cursor));
+        true
     }
 
     /// Ctrl+Return: tick, open, or make a task of the line.

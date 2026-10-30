@@ -188,6 +188,7 @@ impl NeovimSession {
         let (events, received) = async_channel::unbounded();
         let (commands, inbox) = mpsc::channel::<Command>();
         let (root, path) = (root.to_path_buf(), path.to_string());
+        let reattach = commands.clone();
         std::thread::spawn(move || {
             let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
             let mut client = match NeovimClient::start(&executable, &arguments, Some(&root), &[]) {
@@ -204,6 +205,14 @@ impl NeovimSession {
                 std::thread::spawn(move || {
                     let mut floats = crate::vim_floats::FloatState::default();
                     for note in notifications {
+                        // Neovim lets go of a buffer it reads again (`:checktime`,
+                        // `:edit`): attach anew, with the whole buffer as the
+                        // first lines event, which the view takes in place of its own.
+                        if note.method == "nvim_buf_detach_event" {
+                            let attach = vec![MsgValue::Int(0), true.into(), MsgValue::Map(vec![])];
+                            let _ = reattach.send(Command::Notify("nvim_buf_attach".into(), attach));
+                            continue;
+                        }
                         for event in translate(&note) {
                             if events.send_blocking(event).is_err() {
                                 return;
@@ -295,9 +304,12 @@ impl NeovimSession {
     }
 
     /// The file changed on disk: Neovim reads it again when it has nothing of
-    /// its own unsaved, and says so when it has.
+    /// its own unsaved, and says so when it has. `checktime` reads it only
+    /// with `autoread`, which a person's config may leave off, so it is on
+    /// for the check and back as it was after.
     pub fn check_disk(&self) {
-        self.notify("nvim_command", vec!["silent! checktime".into()]);
+        let check = "let g:daftar_autoread = &l:autoread | setlocal autoread | silent! checktime | let &l:autoread = g:daftar_autoread";
+        self.notify("nvim_command", vec![check.into()]);
     }
 
     /// Writes the buffer and waits for Neovim to have done it, up to [limit],

@@ -203,6 +203,22 @@ impl VaultStore {
         Ok(why)
     }
 
+    /// The section of heading [index] of [path] at place [position] among
+    /// the headings of its level, in the file. False when it did not move.
+    pub fn move_section(&self, path: &str, index: usize, position: usize) -> Result<bool, Failure> {
+        let mut moved = false;
+        self.write(path, |text| {
+            Ok(match Sections::move_section(text, index, position) {
+                Some(result) => {
+                    moved = true;
+                    result.text
+                }
+                None => text.to_string(),
+            })
+        })?;
+        Ok(moved)
+    }
+
     /// The notes that have the tag [tag] or one under it.
     pub fn notes_tagged(&self, tag: &str) -> Vec<String> {
         let mut paths: Vec<String> =

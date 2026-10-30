@@ -44,6 +44,16 @@ impl Window {
             this.sort_headings(index);
         });
         self.window.add_action(&sort);
+        // A heading dropped in the outline: "index:position" among its level.
+        let move_section = gio::SimpleAction::new("move-section", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        move_section.connect_activate(move |_, target| {
+            let target = target.and_then(glib::Variant::get::<String>).unwrap_or_default();
+            if let Some((index, position)) = target.split_once(':').and_then(|(i, p)| Some((i.parse().ok()?, p.parse().ok()?))) {
+                this.move_section(index, position);
+            }
+        });
+        self.window.add_action(&move_section);
         let rename_tag = gio::SimpleAction::new("rename-tag", Some(glib::VariantTy::STRING));
         let this = self.clone();
         rename_tag.connect_activate(move |_, target| {
@@ -179,15 +189,15 @@ impl Window {
     fn sort_tasks(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
         let tab = self.tab();
-        if tab.editing() {
+        if tab.editing() && !tab.editor.is_neovim() {
             if !tab.editor.sort_tasks() {
                 self.toasts.add_toast(adw::Toast::new("The tasks are in order already."));
             }
             return;
         }
-        let Some(path) = tab.current().filter(|p| Vault::is_note(p)) else { return };
+        let Some(path) = self.note_to_write(&tab) else { return };
         match store.sort_tasks(&path) {
-            Ok(true) => tab.reader.reload(),
+            Ok(true) => self.written(&tab),
             Ok(false) => self.toasts.add_toast(adw::Toast::new("The tasks are in order already.")),
             Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The tasks could not be sorted: {error}."))),
         }
@@ -200,18 +210,52 @@ impl Window {
     fn sort_headings(&self, index: Option<usize>) {
         let Some(store) = self.store.borrow().clone() else { return };
         let tab = self.tab();
-        if tab.editing() {
+        if tab.editing() && !tab.editor.is_neovim() {
             if let Err(why) = tab.editor.sort_headings(index) {
                 self.toasts.add_toast(adw::Toast::new(&why));
             }
             return;
         }
-        let Some(path) = tab.current().filter(|p| Vault::is_note(p)) else { return };
-        let line = store.places.get(&path).unwrap_or(0);
+        let Some(path) = self.note_to_write(&tab) else { return };
+        let line = if tab.editing() { tab.editor.line() } else { store.places.get(&path).unwrap_or(0) };
         match store.sort_headings(&path, index, line) {
-            Ok(None) => tab.reader.reload(),
+            Ok(None) => self.written(&tab),
             Ok(Some(why)) => self.toasts.add_toast(adw::Toast::new(&why)),
             Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The headings could not be sorted: {error}."))),
+        }
+    }
+
+    /// The section of heading [index] at place [position] among the
+    /// headings of its level: in the editor as a step to undo, else in the file.
+    fn move_section(&self, index: usize, position: usize) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let tab = self.tab();
+        if tab.editing() && !tab.editor.is_neovim() {
+            tab.editor.move_section_to(index, position);
+            return;
+        }
+        let Some(path) = self.note_to_write(&tab) else { return };
+        match store.move_section(&path, index, position) {
+            Ok(true) => self.written(&tab),
+            Ok(false) => {}
+            Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The section could not be moved: {error}."))),
+        }
+    }
+
+    /// The note a command writes in its file: Neovim's text saved first.
+    fn note_to_write(&self, tab: &super::tab::Tab) -> Option<String> {
+        if tab.editing() {
+            tab.editor.save();
+        }
+        tab.current().filter(|p| Vault::is_note(p))
+    }
+
+    /// The note on screen shows what a command wrote in its file.
+    fn written(&self, tab: &super::tab::Tab) {
+        if tab.editing() {
+            tab.editor.changed_on_disk();
+        } else {
+            tab.reader.reload();
         }
     }
 

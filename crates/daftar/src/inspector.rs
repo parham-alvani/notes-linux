@@ -1,6 +1,7 @@
 //! The inspector (Ctrl+Alt+I), as on the Mac: the note's outline with the
 //! section on screen marked, where a heading with headings under it closes
-//! and opens and a right click sorts the headings under one, the notes that link to it, the unlinked
+//! and opens, a right click sorts the headings under one and a heading
+//! dropped on another of its level takes its place, the notes that link to it, the unlinked
 //! mentions -- where other notes write its name or an alias without a link,
 //! each with a button that makes it a link -- the links it makes (those to
 //! no note yet in red), the places it names and its tags.
@@ -216,6 +217,25 @@ impl Inspector {
                 menu.connect_pressed(move |_, _, x, y| this.menu(&item, (x, y), &place, &store, &path, &headings, index));
             }
             item.add_controller(menu);
+            // A heading dropped on another of its level takes that one's place.
+            let drag = gtk::DragSource::builder().actions(gtk::gdk::DragAction::MOVE).build();
+            drag.set_content(Some(&gtk::gdk::ContentProvider::for_value(&format!("daftar-heading:{index}").to_value())));
+            item.add_controller(drag);
+            let drop = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+            {
+                let (widget, headings) = (self.widget.clone(), headings.clone());
+                drop.connect_drop(move |_, value, _, _| {
+                    let Some(from) = value.get::<String>().ok().and_then(|v| v.strip_prefix("daftar-heading:")?.parse::<usize>().ok())
+                    else {
+                        return false;
+                    };
+                    let siblings = Sections::siblings(from, &headings);
+                    let Some(position) = siblings.iter().position(|s| *s == index).filter(|_| from != index) else { return false };
+                    let _ = widget.activate_action("win.move-section", Some(&format!("{from}:{position}").to_variant()));
+                    true
+                });
+            }
+            item.add_controller(drop);
             list.append(&item);
         }
         {
