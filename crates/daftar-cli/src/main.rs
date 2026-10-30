@@ -17,6 +17,7 @@ mod images;
 mod lint;
 mod mcp;
 mod report;
+mod review;
 mod tui;
 mod vault_commands;
 
@@ -310,6 +311,21 @@ enum Command {
         /// With --fix, prints the changes and writes nothing.
         #[arg(long, requires = "fix")]
         dry_run: bool,
+    },
+    /// The week before a day as a note: tasks done and cancelled, overdue,
+    /// due in the week ahead and in progress, the meetings of the week
+    /// notes, the notes git saw change, and the tasks to mend. Prints it,
+    /// or with --write makes it in `Reviews/` (never over a note).
+    Review {
+        /// The day it is written (YYYY-MM-DD); it covers the seven days before. Today at first.
+        #[arg(long)]
+        day: Option<String>,
+        /// Makes the note and prints its path.
+        #[arg(long)]
+        write: bool,
+        /// The folder of the vault the note goes in.
+        #[arg(long, default_value = "Reviews")]
+        folder: String,
     },
     /// The vault as an MCP server on stdin and stdout, for Claude Code and
     /// other agents: search, notes, links, tags, tasks and their queries,
@@ -670,6 +686,24 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Command::Clip { url, folder, title } => {
             out!("{}", clip::run(&root, &url, &folder, title.as_deref())?);
+        }
+        Command::Review { day, write, folder } => {
+            let day = match day {
+                Some(text) => Day::parse(&text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,
+                None => Day::today(),
+            };
+            let index = Vault::index(&root, None);
+            let week = review::Week::before(day);
+            let text = review::markdown(&root, &index, |path| hidden.contains(path), week, day);
+            if write {
+                let path = week.path(&folder);
+                review::write(&root, &path, &text)?;
+                // As `fmt` would write it, so the vault's checks pass.
+                fmt::run(&root, &[root.join(&path)], &[], &fmt::Options { check: false, diff: false, github: false }, |_| {})?;
+                out!("{path}");
+            } else {
+                print!("{text}");
+            }
         }
         Command::Mcp { read_only } => mcp::run(root, cli.hidden, read_only)?,
         Command::Images { folder, dry_run, keep_originals } => {

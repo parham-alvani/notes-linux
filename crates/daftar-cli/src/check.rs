@@ -403,7 +403,7 @@ fn retarget(line: &str, target: &str, new: &str) -> String {
 /// to repeat from, dates in an order no plan has. A task done before its
 /// ➕ day is not one: it was written down after it was done. A date that is not a day
 /// is `task-date`'s, and is not compared here.
-fn task_problems(task: &ParsedTask, statuses: &TaskStatuses, today: &str) -> Vec<(&'static str, String)> {
+pub(crate) fn task_problems(task: &ParsedTask, statuses: &TaskStatuses, today: &str) -> Vec<(&'static str, String)> {
     fn day(d: Option<&String>) -> Option<&str> {
         d.map(String::as_str).filter(|d| d.len() == 10 && NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok())
     }
