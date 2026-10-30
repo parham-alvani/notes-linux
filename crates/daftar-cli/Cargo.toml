@@ -1,6 +1,6 @@
 [package]
 name = "daftar-cli"
-version = "0.7.2"
+version = "0.7.3"
 edition.workspace = true
 license.workspace = true
 description = "Daftar on the command line: search, tasks, links and the picture cleanup of an Obsidian vault."
@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive", "env"] }
-daftar-core = { version = "0.7.2", path = "../daftar-core", features = ["web"] }
+daftar-core = { version = "0.7.3", path = "../daftar-core", features = ["web"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "webp", "tiff"] }
 md-5 = "0.11.0"
 notify = "8.2.1"
