@@ -4,6 +4,7 @@
 //! moment, so a `git pull` of a hundred files is one report.
 
 use std::collections::BTreeSet;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -41,8 +42,10 @@ impl FileWatcher {
                         changed.insert(relative);
                     }
                 }
-                if !changed.is_empty() {
-                    handler(changed);
+                // A panic in the handler would end this loop, and with it every
+                // later report: the vault would stop changing in the app.
+                if !changed.is_empty() && std::panic::catch_unwind(AssertUnwindSafe(|| handler(changed))).is_err() {
+                    glib::g_warning!("daftar", "Handling a change on disk failed; changes are still followed");
                 }
             }
         });

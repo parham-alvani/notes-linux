@@ -4,6 +4,7 @@
 //! page that is not a note (home, Today, the board) has a plain title.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -102,8 +103,9 @@ impl TitleBar {
             overview.append_item(&item("Overview", "win.open-note", &format!("{folder}/")));
             menu.append_section(None, &overview);
             let entries = gio::Menu::new();
+            let mut submenus = Submenus::default();
             for node in Vault::folder(&folder, &tree).unwrap_or(&[]) {
-                entry(&entries, node);
+                entry(&entries, node, &mut submenus);
             }
             menu.append_section(None, &entries);
             button.set_menu_model(Some(&menu));
@@ -112,8 +114,29 @@ impl TitleBar {
     }
 }
 
+/// The labels of a menu's submenus. GtkPopoverMenu names a submenu's page
+/// by its label, and its own first page `main`: two folders of one name
+/// (a `NATS` in two places) made one page, so the second opened the first.
+/// A label seen before gets zero-width spaces, which no one sees.
+struct Submenus(HashMap<String, usize>);
+
+impl Default for Submenus {
+    fn default() -> Self {
+        Submenus(HashMap::from([("main".to_string(), 1)]))
+    }
+}
+
+impl Submenus {
+    fn label(&mut self, name: &str) -> String {
+        let seen = self.0.entry(name.to_string()).or_insert(0);
+        let label = format!("{name}{}", "\u{200B}".repeat(*seen));
+        *seen += 1;
+        label
+    }
+}
+
 /// One row of a folder's menu: a note opens, a folder is a submenu.
-fn entry(menu: &gio::Menu, node: &TreeNode) {
+fn entry(menu: &gio::Menu, node: &TreeNode, submenus: &mut Submenus) {
     if node.is_folder() {
         let inner = gio::Menu::new();
         if let Some(note) = &node.folder_note {
@@ -123,10 +146,10 @@ fn entry(menu: &gio::Menu, node: &TreeNode) {
         }
         let rest = gio::Menu::new();
         for child in node.children.as_deref().unwrap_or(&[]) {
-            entry(&rest, child);
+            entry(&rest, child, submenus);
         }
         inner.append_section(None, &rest);
-        menu.append_submenu(Some(&node.name), &inner);
+        menu.append_submenu(Some(&submenus.label(&node.name)), &inner);
     } else {
         menu.append_item(&item(&node.name, "win.open-note", &node.path));
     }
@@ -166,4 +189,19 @@ fn item(label: &str, action: &str, target: &str) -> gio::MenuItem {
     let item = gio::MenuItem::new(Some(label), None);
     item.set_action_and_target_value(Some(action), Some(&target.to_variant()));
     item
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn submenus_of_one_name_get_labels_of_their_own() {
+        let mut submenus = Submenus::default();
+        assert_eq!(submenus.label("NATS"), "NATS");
+        assert_eq!(submenus.label("Raft"), "Raft");
+        assert_eq!(submenus.label("NATS"), "NATS\u{200B}");
+        assert_eq!(submenus.label("NATS"), "NATS\u{200B}\u{200B}");
+        assert_eq!(submenus.label("main"), "main\u{200B}");
+    }
 }
