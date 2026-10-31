@@ -82,10 +82,11 @@ pub fn plan(meetings: &[Meeting], groups: impl Fn(Day) -> TaskGroups, now: DateT
     out
 }
 
-/// The timers of the alerts planned last.
+/// The timers of the alerts planned last. A timer that rang empties its
+/// slot: glib has dropped its source, and removing it again panics.
 #[derive(Default)]
 pub struct Notifier {
-    timers: RefCell<Vec<glib::SourceId>>,
+    timers: RefCell<Vec<Rc<RefCell<Option<glib::SourceId>>>>>,
 }
 
 impl Notifier {
@@ -95,8 +96,10 @@ impl Notifier {
 
     /// Replaces every timer with the ones the vault calls for now.
     pub fn plan(&self, store: &VaultStore, wanted: &Wanted) {
-        for id in self.timers.borrow_mut().drain(..) {
-            id.remove();
+        for slot in self.timers.borrow_mut().drain(..) {
+            if let Some(id) = slot.take() {
+                id.remove();
+            }
         }
         let meetings: Vec<Meeting> = store.calendar_days(Day::today(), 3).into_iter().flat_map(|day| day.meetings).collect();
         let tasks = store.index().tasks();
@@ -107,8 +110,14 @@ impl Notifier {
             if wait > std::time::Duration::from_hours(36) {
                 continue;
             }
-            let id = glib::timeout_add_local_once(wait, move || send(&alert));
-            self.timers.borrow_mut().push(id);
+            let slot = Rc::new(RefCell::new(None));
+            let rang = slot.clone();
+            let id = glib::timeout_add_local_once(wait, move || {
+                rang.take();
+                send(&alert);
+            });
+            slot.replace(Some(id));
+            self.timers.borrow_mut().push(slot);
         }
     }
 }
