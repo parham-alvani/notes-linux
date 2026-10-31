@@ -253,15 +253,24 @@ impl Window {
         crate::read_aloud::toggle(&path, &tab.reader.view, text, move |text| toasts.add_toast(adw::Toast::new(text)));
     }
 
-    /// Ctrl+Shift+E: the note on screen as an A4 PDF.
+    /// Ctrl+Shift+E: the note on screen as an A4 PDF, by `daftar-cli export`.
     fn export_pdf(&self) {
         let tab = self.tab();
-        let Some(shown) = tab.reader.shown().filter(|_| tab.showing().as_deref() == Some("reader")) else {
-            self.notice("Open a note in the reader first: Export as PDF prints the page.");
+        let path = match tab.showing().as_deref() {
+            Some("reader") => tab.reader.shown().map(|shown| shown.path),
+            Some("editor") => {
+                // The command reads the file: what was typed goes there first.
+                tab.editor.save();
+                tab.editor.path()
+            }
+            _ => None,
+        };
+        let (Some(path), Some(store)) = (path.filter(|p| Vault::is_note(p)), self.store.borrow().clone()) else {
+            self.notice("Open a note first: Export as PDF makes a PDF of it.");
             return;
         };
         let toasts = self.toasts.clone();
-        crate::export::pdf(self.window.upcast_ref(), &tab.reader.view, &Vault::title(&shown.path), move |text| {
+        crate::export::pdf(self.window.upcast_ref(), &store.root, &path, move |text| {
             toasts.add_toast(adw::Toast::new(text));
         });
     }

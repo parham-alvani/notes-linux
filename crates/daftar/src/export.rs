@@ -1,38 +1,58 @@
-//! Export as PDF (Ctrl+Shift+E), as the Mac's: the reader's page printed to
-//! an A4 PDF where the person chooses. The page's print styles (shared with
-//! the Mac in `web/src/reader.css`) give the margins, the Daylight colors,
-//! every section open and none of the page's controls.
+//! Export as PDF (Ctrl+Shift+E): `daftar-cli export` on the note, to where
+//! the person chooses. The command line makes the PDF, with the logos of
+//! `export.logo` and of the note's folder, so the app and a script make the
+//! same file.
+
+use std::path::{Path, PathBuf};
 
 use adw::prelude::*;
-use gtk::gio;
+use gtk::{gio, glib};
 
-pub fn pdf(window: &gtk::Window, view: &webkit6::WebView, title: &str, notice: impl Fn(&str) + Clone + 'static) {
+pub fn pdf(window: &gtk::Window, root: &Path, path: &str, notice: impl Fn(&str) + 'static) {
+    let Some(cli) = cli() else {
+        notice("Export as PDF runs daftar-cli, which is neither beside Daftar nor on $PATH.");
+        return;
+    };
+    let title = daftar_core::Vault::title(path);
     let dialog = gtk::FileDialog::builder().title("Export as PDF").modal(true).initial_name(format!("{title}.pdf")).build();
-    let view = view.clone();
+    let (root, path) = (root.to_path_buf(), path.to_string());
     dialog.save(Some(window), gio::Cancellable::NONE, move |result| {
         let Ok(file) = result else { return };
-        let settings = gtk::PrintSettings::new();
-        settings.set_printer("Print to File");
-        settings.set(gtk::PRINT_SETTINGS_OUTPUT_FILE_FORMAT, Some("pdf"));
-        settings.set(gtk::PRINT_SETTINGS_OUTPUT_URI, Some(&file.uri()));
-        let setup = gtk::PageSetup::new();
-        setup.set_paper_size(&gtk::PaperSize::new(Some(gtk::PAPER_NAME_A4)));
-        // The page's `@page` rule has the margins, as on the Mac.
-        for set in [
-            gtk::PageSetup::set_top_margin,
-            gtk::PageSetup::set_bottom_margin,
-            gtk::PageSetup::set_left_margin,
-            gtk::PageSetup::set_right_margin,
-        ] {
-            set(&setup, 0.0, gtk::Unit::Mm);
-        }
-        let operation = webkit6::PrintOperation::new(&view);
-        operation.set_print_settings(&settings);
-        operation.set_page_setup(&setup);
-        let name = file.basename().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let (done, failed) = (notice.clone(), notice);
-        operation.connect_finished(move |_| done(&format!("Saved {name}.")));
-        operation.connect_failed(move |_, error| failed(&format!("The PDF was not saved: {error}")));
-        operation.print();
+        let Some(output) = file.path() else {
+            notice("Export as PDF writes to a folder on this computer.");
+            return;
+        };
+        let arguments =
+            [cli.as_os_str(), "--vault".as_ref(), root.as_os_str(), "export".as_ref(), path.as_ref(), "-o".as_ref(), output.as_os_str()];
+        let process = match gio::Subprocess::newv(&arguments, gio::SubprocessFlags::STDOUT_SILENCE | gio::SubprocessFlags::STDERR_PIPE) {
+            Ok(process) => process,
+            Err(error) => {
+                notice(&format!("The PDF was not made: {error}"));
+                return;
+            }
+        };
+        let name = output.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        glib::spawn_future_local(async move {
+            let said = process.communicate_utf8_future(None).await;
+            match said {
+                Ok(_) if process.is_successful() => notice(&format!("Saved {name}.")),
+                Ok((_, errors)) => {
+                    let errors = errors.map(|e| e.to_string()).unwrap_or_default();
+                    let last = errors.lines().rfind(|line| !line.trim().is_empty()).unwrap_or("daftar-cli failed");
+                    notice(last.trim_start_matches("daftar-cli: "));
+                }
+                Err(error) => notice(&format!("The PDF was not made: {error}")),
+            }
+        });
     });
+}
+
+/// The `daftar-cli` beside this binary (both packages install the two
+/// together), else the one on $PATH.
+fn cli() -> Option<PathBuf> {
+    let beside = std::env::current_exe().ok()?.with_file_name("daftar-cli");
+    if beside.is_file() {
+        return Some(beside);
+    }
+    glib::find_program_in_path("daftar-cli")
 }

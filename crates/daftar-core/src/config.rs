@@ -109,7 +109,13 @@ impl ConfigFile {
 
     /// The vault's folder, with `~` for the home folder.
     pub fn vault(&self) -> Option<PathBuf> {
-        let text = self.string("vault")?;
+        self.path("vault")
+    }
+
+    /// A file or folder [path] names, with `~` for the home folder; `None`
+    /// when it is missing or empty.
+    pub fn path(&self, path: &str) -> Option<PathBuf> {
+        let text = self.string(path)?;
         let text = text.trim();
         if text.is_empty() {
             return None;
@@ -269,6 +275,14 @@ show_hidden = false
 enabled = false
 # Empty finds wakatime-cli in ~/.wakatime or on $PATH.
 cli = ""
+
+[export]
+# `daftar-cli export`, which the app's Export as PDF runs: an SVG or PNG at
+# the head of every PDF. A note in a folder that holds a logo.svg or
+# logo.png (a company's) has that logo too, on the other side.
+logo = ""
+# The words at the foot of every page, beside the page count.
+footer = ""
 "#;
 }
 

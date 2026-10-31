@@ -12,6 +12,7 @@ macro_rules! out {
 
 mod check;
 mod clip;
+mod export;
 mod fmt;
 mod images;
 mod lint;
@@ -226,6 +227,22 @@ enum Command {
         /// Prints the path and makes nothing.
         #[arg(long)]
         no_create: bool,
+    },
+    /// A note as a PDF on A4: export.logo at its head, and the logo of the
+    /// folder it is in (a company's logo.svg or logo.png) on the other side;
+    /// its pictures drawn, its wiki links as their text. Prints the PDF's path.
+    Export {
+        /// The note: its path in the vault, or its name.
+        note: String,
+        /// Where the PDF goes; else the note's name with .pdf, here.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// The logo at the head, in place of export.logo.
+        #[arg(long)]
+        logo: Option<PathBuf>,
+        /// Leaves the folder's logo out.
+        #[arg(long)]
+        no_folder_logo: bool,
     },
     /// A web page as a new note: its main text as Markdown, its pictures in
     /// the attachment folder, and `source` and `clipped` in its front matter.
@@ -683,6 +700,18 @@ fn run(cli: Cli) -> Result<(), String> {
             if outcome.errors > 0 || (options.strict && outcome.warnings > 0) {
                 return Err("check failed".to_string());
             }
+        }
+        Command::Export { note, output, logo, no_folder_logo } => {
+            let index = Vault::index(&root, None);
+            let path = note_path(&index, &note)?;
+            let mut look = export::Look::from_config(&config());
+            if logo.is_some() {
+                look.logo = logo;
+            }
+            look.folder_logo = !no_folder_logo;
+            let output = output.unwrap_or_else(|| PathBuf::from(format!("{}.pdf", Vault::title(&path))));
+            export::run(&root, &index, &path, &output, &look)?;
+            out!("{}", output.display());
         }
         Command::Clip { url, folder, title } => {
             out!("{}", clip::run(&root, &url, &folder, title.as_deref())?);

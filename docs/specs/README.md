@@ -9,3 +9,4 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [Task reasons and custom statuses](task-reasons-and-statuses.md) | Linux 0.6.0, macOS 0.7.0, Android 0.57.0 |
 | [Outline: closing headings and sorting the headings under one](outline-closing-and-heading-sort.md) | macOS (`723e125`), Android (`ebb7aef`), Linux 0.7.3 |
 | [Properties: the front matter as a form](properties.md) | macOS (`4c26615`), Linux 0.8.1; not Android yet |
+| [Export: a note as a PDF, by `daftar-cli export`](export.md) | Linux 0.9.0; not macOS yet |
