@@ -422,7 +422,16 @@ fn home_group(
                 setting.to_string()
             };
             row.set_subtitle(&gtk::glib::markup_escape_text(&text));
-            preview.set_filename(path.filter(|p| p.is_file()).as_deref());
+            preview.set_paintable(None::<&gtk::gdk::Paintable>);
+            if let Some(path) = path.filter(|p| p.is_file()) {
+                let preview = preview.downgrade();
+                gtk::glib::spawn_future_local(async move {
+                    let texture = crate::home::texture(path).await;
+                    if let Some(preview) = preview.upgrade() {
+                        preview.set_paintable(texture.as_ref());
+                    }
+                });
+            }
             clear.set_sensitive(!setting.is_empty());
         })
     };

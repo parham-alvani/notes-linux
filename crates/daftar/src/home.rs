@@ -284,22 +284,28 @@ impl HomePage {
         }
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let file = path.clone();
-            let decoded = gio::spawn_blocking(move || gdk::Texture::from_filename(&file).ok()).await.ok().flatten();
+            let decoded = texture(path.clone()).await;
             let Some(page) = weak.upgrade() else { return };
             if page.shown.borrow().as_deref() != Some(path.as_path()) {
                 return;
             }
-            if let Some(texture) = decoded {
-                keep(&path, &texture);
-                page.picture.set_paintable(Some(&texture));
-                page.scrim.set_visible(true);
-            } else {
-                page.picture.set_paintable(None::<&gdk::Paintable>);
-                page.scrim.set_visible(false);
-            }
+            page.picture.set_paintable(decoded.as_ref());
+            page.scrim.set_visible(decoded.is_some());
         });
     }
+}
+
+/// The picture at [path], decoded off the main thread through glycin, which
+/// reads WebP where `gtk::Picture::set_filename` does not; kept for the next
+/// time. The home page and its preview in Settings both use it.
+pub async fn texture(path: PathBuf) -> Option<gdk::Texture> {
+    if let Some(texture) = cached(&path) {
+        return Some(texture);
+    }
+    let file = path.clone();
+    let decoded = gio::spawn_blocking(move || gdk::Texture::from_filename(&file).ok()).await.ok().flatten()?;
+    keep(&path, &decoded);
+    Some(decoded)
 }
 
 /// The hour as Beautitab's setting asks: `14:05`, or `2:05 PM`.
