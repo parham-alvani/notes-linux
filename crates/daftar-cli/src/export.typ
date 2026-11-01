@@ -4,6 +4,9 @@
 // The colors are the reader's Daylight (web/src/reader.css). The body is
 // `TypstNote`'s markup, which calls the functions below.
 
+#import "/extras.typ": formulas, diagrams
+#import "/mitex/specs/mod.typ": mitex-scope
+
 #let ink = rgb("#2a2a28")
 #let muted = rgb("#6a6a62")
 #let rule = rgb("#d8d5cc")
@@ -36,6 +39,23 @@
   let wide = measure(drawn).width > size.width
   block(above: 0.8em, below: 0.8em, if wide { image(path, width: size.width) } else { drawn })
 })
+
+// The [n]th formula of the note: MiTeX's Typst math, or its TeX as code
+// when MiTeX or Typst could not read it.
+#let formula(n, block: false) = {
+  let it = formulas.at(n)
+  if it.code != none {
+    math.equation(block: block, eval("$" + it.code + "$", scope: mitex-scope))
+  } else {
+    raw(block: block, lang: "latex", it.tex)
+  }
+}
+
+// The [n]th Mermaid diagram, drawn, or its text as code when it did not parse.
+#let diagram(n) = {
+  let it = diagrams.at(n)
+  if it.svg != none { align(center, picture(it.svg)) } else { raw(block: true, lang: "mermaid", it.source) }
+}
 
 // A task: its status in a box, done and cancelled ones greyed.
 #let task(mark, body) = {
@@ -121,6 +141,7 @@
   set list(marker: text(fill: accent)[•], indent: 0.4em, spacing: 0.65em)
   set enum(indent: 0.4em, spacing: 0.65em)
   set highlight(fill: gold.lighten(75%))
+  show math.equation: set text(font: "New Computer Modern Math", dir: ltr)
   // Vazirmatn has no italic: emphasis is the reader's color for it.
   show emph: it => text(fill: green, it.body)
   show strong: it => text(weight: "bold", fill: accent, it.body)

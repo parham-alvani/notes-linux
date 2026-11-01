@@ -15,6 +15,8 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 daftar-core = { version = "0.10.0", path = "../daftar-core", features = ["web"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "webp", "tiff"] }
 md-5 = "0.11.0"
+mermaid-rs-renderer = { version = "0.3.1", default-features = false }
+mitex = "0.2.4"
 notify = "8.2.1"
 percent-encoding = "2.3.2"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }

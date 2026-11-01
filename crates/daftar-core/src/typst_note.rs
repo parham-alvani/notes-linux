@@ -6,7 +6,10 @@
 //! first strong letter is Persian or Arabic is set right to left.
 //!
 //! The pictures are named `/pictures/<n>.<ext>` in the markup, in the order
-//! of [`TypstNote::pictures`], which holds their vault paths.
+//! of [`TypstNote::pictures`], which holds their vault paths. Math is
+//! `#formula(n)` and a Mermaid block `#diagram(n)`, by their place in
+//! [`TypstNote::formulas`] (the TeX) and [`TypstNote::diagrams`] (the
+//! Mermaid): the CLI turns those into Typst math and SVG.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -49,6 +52,10 @@ pub struct TypstNote {
     pub markup: String,
     /// The vault paths of the pictures the markup draws, by number.
     pub pictures: Vec<String>,
+    /// The TeX of each `$…$` and `$$…$$`, by number.
+    pub formulas: Vec<String>,
+    /// The text of each ` ```mermaid ` block, by number.
+    pub diagrams: Vec<String>,
 }
 
 impl TypstNote {
@@ -62,14 +69,15 @@ impl TypstNote {
         constructs.math_text = true;
         let options =
             ParseOptions { constructs, gfm_strikethrough_single_tilde: true, math_text_single_dollar: true, ..ParseOptions::default() };
-        let mut writer = Writer { path, resolve: &resolve, pictures: Vec::new(), footnotes: HashMap::new() };
+        let mut writer =
+            Writer { path, resolve: &resolve, pictures: Vec::new(), formulas: Vec::new(), diagrams: Vec::new(), footnotes: HashMap::new() };
         let mut markup = String::new();
         // markdown-rs has no syntax that fails: a note is always a tree.
         if let Ok(root) = markdown::to_mdast(&text, &options) {
             writer.collect_footnotes(&root);
             writer.blocks(root.children().map_or(&[][..], Vec::as_slice), &mut markup);
         }
-        TypstNote { markup, pictures: writer.pictures }
+        TypstNote { markup, pictures: writer.pictures, formulas: writer.formulas, diagrams: writer.diagrams }
     }
 
     /// The folder nearest [path] that holds a `logo.svg` or `logo.png`
@@ -112,6 +120,8 @@ struct Writer<'a, F: Fn(&str, &str) -> Option<String>> {
     path: &'a str,
     resolve: &'a F,
     pictures: Vec<String>,
+    formulas: Vec<String>,
+    diagrams: Vec<String>,
     footnotes: HashMap<String, Vec<Node>>,
 }
 
@@ -148,12 +158,17 @@ impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
                 directed(&plain(&heading.children), &body, out);
                 out.push_str("\n\n");
             }
+            Node::Code(code) if code.lang.as_deref().is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid")) => {
+                self.diagrams.push(code.value.clone());
+                let _ = writeln!(out, "#diagram({})\n", self.diagrams.len() - 1);
+            }
             Node::Code(code) => {
                 let lang = code.lang.as_deref().map_or_else(|| "none".to_string(), TypstNote::string);
                 let _ = writeln!(out, "#raw(block: true, lang: {lang}, {})\n", TypstNote::string(&code.value));
             }
             Node::Math(math) => {
-                let _ = writeln!(out, "#raw(block: true, lang: \"latex\", {})\n", TypstNote::string(&math.value));
+                self.formulas.push(math.value.clone());
+                let _ = writeln!(out, "#formula({}, block: true)\n", self.formulas.len() - 1);
             }
             Node::ThematicBreak(_) => out.push_str("#line(length: 100%, stroke: 0.5pt + rule)\n\n"),
             Node::Blockquote(quote) => self.quote(&quote.children, out),
@@ -344,7 +359,8 @@ impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
                 let _ = write!(out, "#raw({})", TypstNote::string(&code.value));
             }
             Node::InlineMath(math) => {
-                let _ = write!(out, "#raw({})", TypstNote::string(&math.value));
+                self.formulas.push(math.value.clone());
+                let _ = write!(out, "#formula({})", self.formulas.len() - 1);
             }
             Node::Break(_) => out.push_str("#linebreak()"),
             Node::Link(link) => {
@@ -585,6 +601,14 @@ mod tests {
             "uploads/sky blue.webp" => Some("uploads/sky blue.webp".to_string()),
             _ => None,
         })
+    }
+
+    #[test]
+    fn math_and_mermaid_are_numbered_for_the_cli() {
+        let note = typst("Euler: $e^{i\\pi} = -1$.\n\n$$\n\\frac{a}{b}\n$$\n\n```mermaid\ngraph TD\n  A --> B\n```\n");
+        assert_eq!(note.formulas, ["e^{i\\pi} = -1", "\\frac{a}{b}"]);
+        assert_eq!(note.diagrams, ["graph TD\n  A --> B"]);
+        assert_eq!(note.markup, "#\"Euler: \"#formula(0)#\".\"\n\n#formula(1, block: true)\n\n#diagram(0)\n\n");
     }
 
     #[test]

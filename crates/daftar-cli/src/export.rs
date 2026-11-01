@@ -1,8 +1,12 @@
 //! `daftar-cli export`: a note as a PDF, set by Typst inside this binary
 //! (`TypstNote` is the note as Typst, `export.typ` the page). Its fonts are
-//! built in, Vazirmatn for the text and DejaVu Sans Mono for code and the
-//! symbols Vazirmatn lacks (`fonts/`, each with its license), so the file is
-//! the same on every computer. The app's Export as PDF runs this.
+//! built in, Vazirmatn for the text, DejaVu Sans Mono for code and the
+//! symbols Vazirmatn lacks and New Computer Modern Math for math (`fonts/`,
+//! each with its license), so the file is the same on every computer. Math
+//! is TeX turned into Typst by MiTeX, with its Typst scope (`mitex/`, its
+//! `specs`); a Mermaid block is drawn to SVG by mermaid-rs-renderer. Math
+//! Typst cannot read and a diagram that does not parse stay their text. The
+//! app's Export as PDF runs this.
 
 use std::collections::HashMap;
 use std::fs;
@@ -19,12 +23,23 @@ use typst::{Library, LibraryExt, World, WorldExt};
 use typst_layout::PagedDocument;
 
 const TEMPLATE: &str = include_str!("export.typ");
-const FONTS: [&[u8]; 4] = [
+const FONTS: [&[u8]; 5] = [
     include_bytes!("../fonts/Vazirmatn-Regular.ttf"),
     include_bytes!("../fonts/Vazirmatn-Bold.ttf"),
     include_bytes!("../fonts/DejaVuSansMono.ttf"),
     include_bytes!("../fonts/DejaVuSansMono-Bold.ttf"),
+    include_bytes!("../fonts/NewCMMath-Regular.otf"),
 ];
+/// MiTeX's Typst scope, which the math it writes calls.
+const MITEX: [(&str, &str); 3] = [
+    ("/mitex/specs/mod.typ", include_str!("../mitex/specs/mod.typ")),
+    ("/mitex/specs/prelude.typ", include_str!("../mitex/specs/prelude.typ")),
+    ("/mitex/specs/latex/standard.typ", include_str!("../mitex/specs/latex/standard.typ")),
+];
+/// The family a diagram is measured in: no computer has it, so the renderer
+/// sizes its labels by its own table, the same everywhere; the SVG then
+/// names Vazirmatn, which Typst has.
+const DIAGRAM_FONT: &str = "Daftar Diagram";
 
 /// What the head and the foot of the page show.
 pub struct Look {
@@ -83,11 +98,70 @@ pub fn run(root: &Path, index: &VaultIndex, path: &str, output: &Path, look: &Lo
         right_to_left(&title),
         body,
     );
-    let world = Export::new(main, files);
-    let warned = typst::compile::<PagedDocument>(&world);
+    let mut formulas: Vec<Option<String>> = note.formulas.iter().map(|tex| mitex::convert_math(tex, None).ok()).collect();
+    let mut drawings = HashMap::new();
+    let diagrams: Vec<Option<String>> = note
+        .diagrams
+        .iter()
+        .enumerate()
+        .map(|(number, source)| {
+            let name = format!("/diagrams/{number}.svg");
+            drawings.insert(name.clone(), Bytes::from_string(diagram(source)?));
+            Some(name)
+        })
+        .collect();
+    let world = Export::new(main.clone(), files.clone(), extras(&note, &formulas, &diagrams), drawings.clone());
+    let mut warned = typst::compile::<PagedDocument>(&world);
+    if warned.output.is_err() && formulas.iter().any(Option::is_some) {
+        // Math MiTeX wrote but Typst cannot read stays its TeX.
+        for formula in &mut formulas {
+            if formula.as_deref().is_some_and(|code| !readable(code)) {
+                *formula = None;
+            }
+        }
+        let again = Export::new(main, files, extras(&note, &formulas, &diagrams), drawings);
+        warned = typst::compile::<PagedDocument>(&again);
+    }
     let document = warned.output.map_err(|errors| problems(&world, &errors))?;
     let pdf = typst_pdf::pdf(&document, &typst_pdf::PdfOptions::default()).map_err(|errors| problems(&world, &errors))?;
     write(output, &pdf)
+}
+
+/// [source] as an SVG in the page's colors, or None when it does not parse.
+fn diagram(source: &str) -> Option<String> {
+    let mut options = mermaid_rs_renderer::RenderOptions::default();
+    options.theme.font_family = DIAGRAM_FONT.to_string();
+    let svg = mermaid_rs_renderer::render_with_options(source, options).ok()?;
+    Some(svg.replace(DIAGRAM_FONT, "Vazirmatn"))
+}
+
+/// `/extras.typ`: each formula's Typst math (none when MiTeX could not
+/// read it) and TeX, and each diagram's SVG (none when it did not parse)
+/// and text, which `export.typ` imports.
+fn extras(note: &TypstNote, formulas: &[Option<String>], diagrams: &[Option<String>]) -> String {
+    let or_none = |value: &Option<String>| value.as_deref().map_or_else(|| "none".to_string(), TypstNote::string);
+    let formulas: String = note
+        .formulas
+        .iter()
+        .zip(formulas)
+        .map(|(tex, code)| format!("(code: {}, tex: {}),", or_none(code), TypstNote::string(tex)))
+        .collect();
+    let diagrams: String = note
+        .diagrams
+        .iter()
+        .zip(diagrams)
+        .map(|(source, svg)| format!("(svg: {}, source: {}),", or_none(svg), TypstNote::string(source)))
+        .collect();
+    format!("#let formulas = ({formulas})\n#let diagrams = ({diagrams})\n")
+}
+
+/// Whether Typst reads [code], MiTeX's math, on its own.
+fn readable(code: &str) -> bool {
+    let main = format!(
+        "#import \"/mitex/specs/mod.typ\": mitex-scope\n#math.equation(eval(\"$\" + {} + \"$\", scope: mitex-scope))",
+        TypstNote::string(code)
+    );
+    typst::compile::<PagedDocument>(&Export::new(main, HashMap::new(), String::new(), HashMap::new())).output.is_ok()
 }
 
 /// The day the note last changed: its last commit, else its file's time.
@@ -133,7 +207,8 @@ fn problems(world: &Export, errors: &[typst::diag::SourceDiagnostic]) -> String 
     format!("the PDF was not made: {}", lines.join("; "))
 }
 
-/// What Typst reads: the page, the template, the pictures and the fonts.
+/// What Typst reads: the page, the template, MiTeX's scope, the pictures,
+/// the diagrams and the fonts.
 struct Export {
     library: LazyHash<Library>,
     book: LazyHash<FontBook>,
@@ -141,14 +216,19 @@ struct Export {
     main: FileId,
     sources: HashMap<FileId, Source>,
     files: HashMap<String, PathBuf>,
+    drawings: HashMap<String, Bytes>,
 }
 
 impl Export {
-    fn new(main: String, files: HashMap<String, PathBuf>) -> Export {
+    fn new(main: String, files: HashMap<String, PathBuf>, extras: String, drawings: HashMap<String, Bytes>) -> Export {
         let fonts: Vec<Font> = FONTS.into_iter().flat_map(|data| Font::iter(Bytes::new(data))).collect();
         let id = |path: &str| FileId::new(RootedPath::new(VirtualRoot::Project, VirtualPath::new(path).expect("a path of ours")));
-        let (main_id, template_id) = (id("/main.typ"), id("/export.typ"));
-        let sources = HashMap::from([(main_id, Source::new(main_id, main)), (template_id, Source::new(template_id, TEMPLATE.to_string()))]);
+        let main_id = id("/main.typ");
+        let sources = [("/main.typ", main), ("/export.typ", TEMPLATE.to_string()), ("/extras.typ", extras)]
+            .into_iter()
+            .chain(MITEX.map(|(path, text)| (path, text.to_string())))
+            .map(|(path, text)| (id(path), Source::new(id(path), text)))
+            .collect();
         Export {
             library: LazyHash::new(Library::default()),
             book: LazyHash::new(FontBook::from_fonts(&fonts)),
@@ -156,6 +236,7 @@ impl Export {
             main: main_id,
             sources,
             files,
+            drawings,
         }
     }
 }
@@ -182,6 +263,9 @@ impl World for Export {
             return Ok(Bytes::from_string(source.clone()));
         }
         let name = id.vpath().get_with_slash();
+        if let Some(drawing) = self.drawings.get(name) {
+            return Ok(drawing.clone());
+        }
         let file = self.files.get(name).ok_or_else(|| FileError::NotFound(PathBuf::from(name)))?;
         fs::read(file).map(Bytes::new).map_err(|_| FileError::NotFound(file.clone()))
     }
@@ -223,6 +307,27 @@ mod tests {
         // No date in the file: the same note makes the same PDF.
         run(root, &index, "Companies/Acme/Platform/Queue.md", &root.join("out/again.pdf"), &look).unwrap();
         assert_eq!(fs::read(root.join("out/again.pdf")).unwrap(), pdf);
+    }
+
+    #[test]
+    fn math_and_diagrams_are_drawn_and_what_does_not_parse_stays_text() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let note = "# Sums\n\nInline $\\frac{a^2}{\\sqrt{x}}$ and $\\nosuchcommand{x}$.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n```mermaid\ngraph TD\n  A[Start] --> B{Choose}\n  B -->|yes| C[سلام]\n```\n\n```mermaid\nnot a diagram at all\n```\n";
+        fs::write(root.join("Sums.md"), note).unwrap();
+        let index = Vault::index(root, None);
+        let look = Look { logo: None, folder_logo: false, footer: String::new() };
+        run(root, &index, "Sums.md", &root.join("Sums.pdf"), &look).unwrap();
+        let pdf = fs::read(root.join("Sums.pdf")).unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+        run(root, &index, "Sums.md", &root.join("again.pdf"), &look).unwrap();
+        assert_eq!(fs::read(root.join("again.pdf")).unwrap(), pdf);
+        assert!(diagram("graph TD\n  A --> B").is_some_and(|svg| svg.contains("Vazirmatn") && !svg.contains(DIAGRAM_FONT)));
+        assert_eq!(diagram("not a diagram at all"), None);
+        assert!(readable(&mitex::convert_math("\\frac{a}{b}", None).unwrap()));
+        // MiTeX writes an unknown command as a call Typst cannot make.
+        let unknown = mitex::convert_math("\\nosuchcommand{x}", None);
+        assert!(unknown.is_err() || unknown.is_ok_and(|code| !readable(&code)));
     }
 
     #[test]

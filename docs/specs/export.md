@@ -6,7 +6,7 @@ Made by `daftar-cli export` (`notes-linux`, `typst_note.rs` in the core and `exp
 
 - `daftar-cli export <note> [-o <file>] [--logo <file>] [--no-folder-logo]`, with the global `--vault`. The note is its vault path or its name, as the other commands take it. The PDF goes to `-o`, else `<title>.pdf` in the current folder; the command prints its path.
 - It is written through a temporary file and a rename, as every write of Daftar's. It never writes in the vault unless `-o` points there.
-- Typst is inside the binary, with its fonts: Vazirmatn (Regular and Bold) for the text, Typst's own for code and symbols. Nothing is installed or fetched, and the same note makes the same bytes on every computer: the PDF has no creation date.
+- Typst is inside the binary, with its fonts: Vazirmatn (Regular and Bold) for the text, DejaVu Sans Mono for code and symbols, New Computer Modern Math for math. So are MiTeX's Typst scope, for math, and a Mermaid renderer. Nothing is installed or fetched, and the same note makes the same bytes on every computer: the PDF has no creation date.
 - A failure (a logo that is not a file, a note that is not there, Typst's own error) is one line on stderr and a non-zero exit, and no PDF is written.
 
 ## 2. Settings
@@ -38,7 +38,8 @@ footer = ""   # the words at the foot of every page, beside the page count
 - A task (`- [ ]`, `- [x]`, and any other status, `[/]`, `[-]`) is its status in a box: done is ticked and greyed, cancelled greyed. The Tasks plugin's signs are words (`📅` due, `✅` done, `⏫` high, …); other emoji are left out, as no font of the PDF has them.
 - `==text==` is marked, `%%comments%%` are left out (not in code), and the front matter is left out.
 - A paragraph, heading, list or table whose first strong letter is Persian, Arabic or Hebrew is set right to left; a title in Persian too.
-- `$math$` and `$$math$$` are their TeX as code: Typst does not read TeX.
+- `$math$` and `$$math$$` are set as math: MiTeX turns the TeX into Typst's math, in New Computer Modern Math, left to right in a Persian paragraph too. TeX that MiTeX or Typst cannot read (a command neither knows) stays its TeX as code, and the rest of the note is made as before.
+- A ` ```mermaid ` block is drawn (mermaid-rs-renderer, in Vazirmatn, centred and never wider than the page). Its labels are sized by the renderer's own table, never by the fonts the computer has, so the bytes stay the same. A block that does not parse stays its text as code.
 
 ## 5. In the apps
 
@@ -47,4 +48,4 @@ footer = ""   # the words at the foot of every page, beside the page count
 
 ## 6. Tests
 
-`text_goes_in_as_strings`, `a_string_escapes_what_typst_reads`, `headings_emphasis_and_code`, `wiki_links_are_their_text`, `pictures_are_drawn_and_numbered_once`, `tasks_keep_their_status_and_signs_become_words`, `a_callout_is_a_box_with_its_title`, `persian_is_set_right_to_left`, `front_matter_and_comments_are_left_out`, `highlights_tables_and_footnotes` and `the_nearest_folder_with_a_logo` in the core; `a_note_with_both_logos_and_a_picture_is_a_pdf` (and that it makes the same bytes twice) and `a_logo_that_is_not_there_is_refused` in the CLI.
+`text_goes_in_as_strings`, `a_string_escapes_what_typst_reads`, `headings_emphasis_and_code`, `wiki_links_are_their_text`, `pictures_are_drawn_and_numbered_once`, `tasks_keep_their_status_and_signs_become_words`, `a_callout_is_a_box_with_its_title`, `persian_is_set_right_to_left`, `front_matter_and_comments_are_left_out`, `highlights_tables_and_footnotes`, `math_and_mermaid_are_numbered_for_the_cli` and `the_nearest_folder_with_a_logo` in the core; `a_note_with_both_logos_and_a_picture_is_a_pdf` (and that it makes the same bytes twice) `math_and_diagrams_are_drawn_and_what_does_not_parse_stays_text` and `a_logo_that_is_not_there_is_refused` in the CLI.
