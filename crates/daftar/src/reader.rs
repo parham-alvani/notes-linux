@@ -310,6 +310,7 @@ impl Reader {
         let object = note.as_object_mut().unwrap();
         object.insert("keepScroll".into(), json!(keep_scroll));
         object.insert("textSize".into(), json!(settings.text_size()));
+        object.insert("readingLine".into(), json!(settings.reading_line()));
         object.insert("fontText".into(), json!(font_text));
         object.insert("fontCode".into(), json!(font_code));
         if !keep_scroll {

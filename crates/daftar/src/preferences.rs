@@ -72,6 +72,18 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&size);
+    let band = adw::SpinRow::with_range(0.0, 100.0, 1.0);
+    band.set_title("Reading line");
+    band.set_subtitle("The band on the line being read in a long paragraph, in percent; 0 is none");
+    band.set_value(settings.borrow().reading_line() as f64);
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        band.connect_value_notify(move |row| {
+            write("appearance.reading_line", Value::Int(row.value() as i64));
+            (hooks.reader)();
+        });
+    }
+    looks.add(&band);
     for (key, title) in [("appearance.font", "Font"), ("appearance.code_font", "Code font")] {
         let row = adw::EntryRow::builder().title(title).show_apply_button(true).build();
         row.set_text(&settings.borrow().file.string(key).unwrap_or_default());

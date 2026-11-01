@@ -979,6 +979,10 @@ window.daftar = {
     // SF Pro's alternates mean other things in other fonts.
     root.setProperty("--font-features", note.fontText?.startsWith("-apple-system") === false ? "normal" : '"ss01" 1, "ss07" 1, "cv07" 1');
     if (note.fontCode) root.setProperty("--font-mono", note.fontCode);
+    if (typeof note.readingLine === "number") {
+      reading.strength = Math.max(0, Math.min(100, note.readingLine));
+      root.setProperty("--reading-line", `${reading.strength}%`);
+    }
     const main = document.getElementById("note");
     main.classList.toggle("is-canvas", Boolean(note.canvas));
     if (note.canvas) {
@@ -1324,15 +1328,22 @@ document.addEventListener("auxclick", (event) => {
 
 /**
  * The reading cursor: one block at a time -- a paragraph, a list item, a
- * heading -- tinted, with the accent bar the editor's cursor line has.
- * `j` and `k` or the arrows move it, `g` and `G` or Home and End go to the
- * ends, a click puts it there. The app hears its line, so the editor opens
- * where the reading is.
+ * heading -- tinted, with the accent bar the editor's cursor line has. In
+ * a block of many lines, a band marks one line of it, so a long paragraph
+ * does not lose the line being read: `j` and `k` or the arrows go a line at
+ * a time, and on to the next block after its last line. `g` and `G` or Home
+ * and End go to the ends, a click puts it on the line clicked. The app hears
+ * the file line of the line read, so the editor opens there.
  */
 const reading = {
   block: null,
   line: null,
   box: null,
+  /** The line of the block that is read, from 0; and its band. */
+  row: 0,
+  band: null,
+  /** The band's strength, in percent of the accent (`appearance.reading_line`); 0 is no band. */
+  strength: 18,
 
   /** The blocks in order: the innermost with a source line, not an embed's. */
   blocks() {
@@ -1351,70 +1362,196 @@ const reading = {
     return { top: box.top + window.scrollY, height: Math.max(bottom - box.top, 4), left: main.left + window.scrollX, width: main.width };
   },
 
-  place(block, scroll) {
+  /**
+   * The lines [block]'s text is laid out in, top to bottom, on the page:
+   * its letters only, not a nested list's, a picture or hidden math text.
+   * Two pieces of text are on one line when they share most of their height.
+   */
+  rows(block) {
+    if (!block?.isConnected || this.strength <= 0) return [];
+    const nested = block.tagName === "LI" ? block.querySelector(":scope > ul, :scope > ol") : null;
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) =>
+        (nested && nested.contains(node)) || node.parentElement.closest(".katex-mathml, .fold-toggle, .heading-link, .code-copy")
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    });
+    const rects = [];
+    const range = document.createRange();
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.data.trim()) continue;
+      range.selectNodeContents(node);
+      for (const r of range.getClientRects()) {
+        if (r.width >= 1 && r.height >= 4) rects.push({ top: r.top + window.scrollY, bottom: r.bottom + window.scrollY, left: r.left + window.scrollX, right: r.right + window.scrollX });
+      }
+    }
+    rects.sort((a, b) => a.top - b.top);
+    const rows = [];
+    for (const r of rects) {
+      const last = rows.at(-1);
+      if (last && r.top < last.bottom - Math.min(last.bottom - last.top, r.bottom - r.top) / 2) {
+        last.top = Math.min(last.top, r.top);
+        last.bottom = Math.max(last.bottom, r.bottom);
+        last.left = Math.min(last.left, r.left);
+        last.right = Math.max(last.right, r.right);
+      } else rows.push({ ...r });
+    }
+    return rows;
+  },
+
+  /**
+   * The file line the [index]th of [rows] starts at: the block's line and
+   * the line breaks of its text before it. A code block's text starts the
+   * line after its fence. Null when the line is not on screen to be found.
+   */
+  sourceLine(block, rows, index) {
+    const line = Number(block.dataset.line);
+    const row = rows[index];
+    if (!row || index === 0) return line + (block.tagName === "PRE" ? 1 : 0);
+    const rtl = getComputedStyle(block).direction === "rtl";
+    const x = (rtl ? row.right - 2 : row.left + 2) - window.scrollX;
+    const y = (row.top + row.bottom) / 2 - window.scrollY;
+    const caret = document.caretRangeFromPoint?.(x, y);
+    if (!caret || !block.contains(caret.startContainer)) return null;
+    const before = document.createRange();
+    before.setStart(block, 0);
+    before.setEnd(caret.startContainer, caret.startOffset);
+    // A loose list item's paragraph starts on a line break of the HTML.
+    const breaks = before.toString().replace(/^\s+/, "").match(/\n/g)?.length ?? 0;
+    return line + breaks + (block.tagName === "PRE" ? 1 : 0);
+  },
+
+  /** [rect] on screen, with room around it; one taller than the window from its top. */
+  reveal({ top, height }) {
+    const above = top - 80 < window.scrollY;
+    const below = top + height + 60 > window.scrollY + window.innerHeight;
+    if (above || (below && height > window.innerHeight - 140)) window.scrollTo({ top: top - 80, behavior: motion() });
+    else if (below) window.scrollTo({ top: top + height + 60 - window.innerHeight, behavior: motion() });
+  },
+
+  /** On [block], on its line [row] ("last" for its last), seen when [scroll]. */
+  place(block, scroll, row = 0) {
     if (!block) return;
     this.block = block;
-    this.line = Number(block.dataset.line);
-    if (!this.box) {
-      this.box = Object.assign(document.createElement("div"), { id: "reading-cursor" });
-      document.body.appendChild(this.box);
-    }
-    this.redraw();
+    const rows = this.rows(block);
+    this.row = row === "last" ? Math.max(0, rows.length - 1) : Math.max(0, Math.min(row, rows.length - 1));
+    this.show(scroll, rows);
+  },
+
+  /** Draws the cursor where it is, tells the app its line, and scrolls to it when [scroll]. */
+  show(scroll, rows = this.rows(this.block)) {
+    const own = Number(this.block.dataset.line);
+    this.line = rows.length > 1 ? (this.sourceLine(this.block, rows, this.row) ?? own) : own;
+    this.redraw(rows);
     if (scroll) {
-      const { top, height } = this.rect(block);
-      const above = top - 80 < window.scrollY;
-      const below = top + height + 60 > window.scrollY + window.innerHeight;
-      // A block taller than the window starts at the top.
-      if (above || (below && height > window.innerHeight - 140)) window.scrollTo({ top: top - 80, behavior: motion() });
-      else if (below) window.scrollTo({ top: top + height + 60 - window.innerHeight, behavior: motion() });
+      const row = rows.length > 1 ? rows[this.row] : null;
+      this.reveal(row ? { top: row.top, height: row.bottom - row.top } : this.rect(this.block));
+      // Scrolling moved the line under the point the file line was found at.
+      if (row) this.line = this.sourceLine(this.block, rows, this.row) ?? this.line;
     }
     post({ kind: "cursor", line: this.line });
   },
 
-  redraw() {
-    if (!this.box) return;
+  redraw(rows) {
+    if (!this.box) {
+      this.box = Object.assign(document.createElement("div"), { id: "reading-cursor" });
+      this.band = Object.assign(document.createElement("div"), { id: "reading-line" });
+      document.body.append(this.box, this.band);
+    }
     if (!this.block?.isConnected) {
       this.box.classList.remove("is-on");
+      this.band.classList.remove("is-on");
       return;
     }
     const { top, height, left, width } = this.rect(this.block);
+    const rtl = getComputedStyle(this.block).direction === "rtl";
     Object.assign(this.box.style, { top: `${top - 3}px`, height: `${height + 6}px`, left: `${left - 14}px`, width: `${width + 28}px` });
+    this.box.classList.toggle("is-rtl", rtl);
     this.box.classList.add("is-on");
+    // A note laid out again (a resize, a picture loaded) may have fewer lines.
+    rows ??= this.rows(this.block);
+    if (rows.length > 1) {
+      this.row = Math.min(this.row, rows.length - 1);
+      const row = rows[this.row];
+      Object.assign(this.band.style, { top: `${row.top - 2}px`, height: `${row.bottom - row.top + 4}px`, left: `${left - 14}px`, width: `${width + 28}px` });
+      this.band.classList.toggle("is-rtl", rtl);
+      this.band.classList.add("is-on");
+    } else this.band.classList.remove("is-on");
   },
 
-  /** On the block of [line], after the note was drawn again; on the first
-   * block on screen in a note just opened. */
+  /** On the line of the file [line], after the note was drawn again; on the
+   * first block on screen in a note just opened. */
   restore(line) {
     if (line == null) {
       const first = this.blocks().find((b) => b.getBoundingClientRect().bottom > 0) ?? null;
       this.block = first;
+      this.row = 0;
       this.line = first ? Number(first.dataset.line) : null;
       this.redraw();
       return;
     }
     const block = this.blocks().filter((b) => Number(b.dataset.line) <= line).pop() ?? this.blocks()[0];
     this.block = block ?? null;
+    this.row = 0;
     this.line = block ? Number(block.dataset.line) : null;
-    this.redraw();
+    const rows = block ? this.rows(block) : [];
+    if (rows.length > 1 && line > this.line) {
+      for (let index = 1; index < rows.length; index++) {
+        const at = this.sourceLine(block, rows, index);
+        if (at == null || at > line) break;
+        this.row = index;
+        this.line = at;
+      }
+    }
+    this.redraw(rows);
+  },
+
+  /**
+   * After a scroll by the wheel or the trackpad: a cursor left off screen
+   * comes to the first line on it, so the editor opens where the reading
+   * is, and the reader comes back there from the editor.
+   */
+  follow() {
+    if (!this.block?.isConnected) return;
+    const rows = this.rows(this.block);
+    const seen = rows.length > 1 ? rows[Math.min(this.row, rows.length - 1)].top - window.scrollY : this.block.getBoundingClientRect().top;
+    if (seen >= 0 && seen < window.innerHeight - 20) return;
+    const first = this.blocks().find((b) => b.getBoundingClientRect().bottom > 60);
+    if (first) this.place(first, false, this.rowAt(first, window.scrollY + 60));
+  },
+
+  /** The line of [block] at [y] on the page. */
+  rowAt(block, y) {
+    const rows = this.rows(block);
+    const index = rows.findIndex((row) => y < row.bottom + 2);
+    return index < 0 ? Math.max(0, rows.length - 1) : index;
   },
 
   move(step) {
     const blocks = this.blocks();
     if (blocks.length === 0) return;
     let at = blocks.indexOf(this.block);
-    const top = this.block?.getBoundingClientRect().top;
+    const rows = at < 0 ? [] : this.rows(this.block);
+    const seen = rows.length > 1 ? rows[Math.min(this.row, rows.length - 1)].top - window.scrollY : this.block?.getBoundingClientRect().top;
     // Scrolled away from it: the cursor starts again from what is on screen.
-    if (at < 0 || top < -40 || top > window.innerHeight) {
+    if (at < 0 || seen < -40 || seen > window.innerHeight) {
       at = blocks.findIndex((b) => b.getBoundingClientRect().bottom > 60);
       if (at < 0) at = blocks.length - 1;
-      return this.place(blocks[at], true);
+      return this.place(blocks[at], true, this.rowAt(blocks[at], window.scrollY + 60));
     }
-    this.place(blocks[Math.max(0, Math.min(blocks.length - 1, at + step))], true);
+    const next = this.row + step;
+    if (rows.length > 1 && next >= 0 && next < rows.length) {
+      this.row = next;
+      return this.show(true, rows);
+    }
+    const to = blocks[Math.max(0, Math.min(blocks.length - 1, at + step))];
+    if (to === this.block) return;
+    this.place(to, true, step < 0 ? "last" : 0);
   },
 
   end(last) {
     const blocks = this.blocks();
-    this.place(last ? blocks.at(-1) : blocks[0], true);
+    this.place(last ? blocks.at(-1) : blocks[0], true, last ? "last" : 0);
   },
 
   /** Space: a page on, and the cursor on the first block of that page. */
@@ -1423,8 +1560,8 @@ const reading = {
     clearTimeout(this.paging);
     this.paging = setTimeout(() => {
       const blocks = this.blocks();
-      const first = blocks.find((b) => b.getBoundingClientRect().top >= 70) ?? blocks.at(step > 0 ? -1 : 0);
-      this.place(first, false);
+      const first = blocks.find((b) => b.getBoundingClientRect().bottom >= 70) ?? blocks.at(step > 0 ? -1 : 0);
+      this.place(first, false, first ? this.rowAt(first, window.scrollY + 70) : 0);
     }, 350);
   },
 };
@@ -1494,10 +1631,19 @@ document.addEventListener("mousedown", (event) => {
   if (event.button !== 0) return;
   const blocks = reading.blocks();
   for (let el = event.target; el && el.id !== "note"; el = el.parentElement) {
-    if (blocks.includes(el)) return reading.place(el, false);
+    if (blocks.includes(el)) return reading.place(el, false, reading.rowAt(el, event.pageY));
   }
 });
 window.addEventListener("resize", () => reading.redraw());
+let scrollSettled;
+window.addEventListener(
+  "scroll",
+  () => {
+    clearTimeout(scrollSettled);
+    scrollSettled = setTimeout(() => reading.follow(), 250);
+  },
+  { passive: true },
+);
 
 /** A percent-encoded part of a link, or the text as it is when it is not. */
 function decoded(text) {

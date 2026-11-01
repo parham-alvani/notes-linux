@@ -67,6 +67,11 @@ impl AppSettings {
         self.file.int("appearance.text_size").unwrap_or(14)
     }
 
+    /// The reading cursor's band on the line being read, in percent of the accent; 0 is none.
+    pub fn reading_line(&self) -> i64 {
+        self.file.int("appearance.reading_line").unwrap_or(18).clamp(0, 100)
+    }
+
     /// The reader's font families as CSS, Persian always cascading to Vazirmatn.
     pub fn font_css(&self) -> (String, String) {
         let font = self.file.string("appearance.font").unwrap_or_default();

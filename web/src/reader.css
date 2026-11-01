@@ -728,8 +728,23 @@ li.task-list-item.is-checked .query-date { text-decoration: none; opacity: 0.75;
   transition: top 0.14s ease-out, height 0.14s ease-out, opacity 0.2s;
 }
 #reading-cursor.is-on { opacity: 1; }
+/* A Persian block has its bar on its right, where its lines start. */
+#reading-cursor.is-rtl { box-shadow: inset -3px 0 0 color-mix(in srgb, var(--accent) 80%, transparent); }
+/* The line being read in a block of many lines: a band, as strong as
+   `appearance.reading_line` sets it. */
+#reading-line {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) var(--reading-line, 18%), transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+  opacity: 0;
+  transition: top 0.1s ease-out, height 0.1s ease-out, opacity 0.2s;
+}
+#reading-line.is-rtl { box-shadow: inset -3px 0 0 var(--accent); }
+#reading-line.is-on { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
-  #reading-cursor { transition: none; }
+  #reading-cursor, #reading-line { transition: none; }
 }
 
 /* A heading's link button: there when the pointer is. */
@@ -769,7 +784,7 @@ li.task-list-item.is-checked .query-date { text-decoration: none; opacity: 0.75;
 @media print {
   :root { color-scheme: light; }
   html, body { background: #ffffff !important; }
-  #progress, #reading-cursor, .fold-toggle, .heading-link, .code-copy, .find-bar, .preview { display: none !important; }
+  #progress, #reading-cursor, #reading-line, .fold-toggle, .heading-link, .code-copy, .find-bar, .preview { display: none !important; }
   .folded-away { display: revert !important; }
   .is-folded::after { content: none; }
   .is-speaking { background: none !important; box-shadow: none !important; }

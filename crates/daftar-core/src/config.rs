@@ -199,6 +199,10 @@ text_size = 14
 font = "Inter"
 # Code and the editor's markup.
 code_font = "JetBrains Mono"
+# The reader's cursor marks the line being read in a paragraph of
+# many lines with a band: its strength, in percent of the accent
+# colour. 0 leaves it out, and j and k go a paragraph at a time.
+reading_line = 18
 # The Solar Hijri date beside the Gregorian one (home, Today, a daily
 # note), and Jalali days typed in a task's dates.
 persian_calendar = false
@@ -407,6 +411,7 @@ mod tests {
         assert_eq!(file.string("appearance.theme").as_deref(), Some("system"));
         assert_eq!(file.int("appearance.text_size"), Some(14));
         assert_eq!(file.string("appearance.code_font").as_deref(), Some("JetBrains Mono"));
+        assert_eq!(file.int("appearance.reading_line"), Some(18));
         assert_eq!(file.bool("git.pull_on_launch"), Some(true));
         assert_eq!(file.string("notifications.digest_time").as_deref(), Some("09:00"));
     }
