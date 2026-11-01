@@ -4,14 +4,16 @@
 
 use gtk::gdk;
 
-/// The page's palette, by name: background, text, muted, and the colors.
-const DAYLIGHT: [(&str, &str); 13] = [
+/// The page's palette, by name: background, text, muted, and the colors;
+/// `on_accent` is the text on the accent.
+const DAYLIGHT: [(&str, &str); 14] = [
     ("panel", "#efede6"),
     ("yellow", "#8a6a00"),
     ("background", "#faf9f5"),
     ("text", "#2a2a28"),
     ("muted", "#6a6a62"),
     ("accent", "#a85200"),
+    ("on_accent", "#ffffff"),
     ("red", "#c01030"),
     ("blue", "#0070a0"),
     ("aqua", "#00707a"),
@@ -21,13 +23,14 @@ const DAYLIGHT: [(&str, &str); 13] = [
     ("rule", "#d8d5cc"),
 ];
 
-const NAZ: [(&str, &str); 13] = [
+const NAZ: [(&str, &str); 14] = [
     ("panel", "#3a3a35"),
     ("yellow", "#ffd850"),
     ("background", "#323232"),
     ("text", "#f5f5f0"),
     ("muted", "#a8a8a0"),
     ("accent", "#ffb040"),
+    ("on_accent", "#323232"),
     ("red", "#ff5070"),
     ("blue", "#40d0ff"),
     ("aqua", "#80e5ff"),
@@ -46,6 +49,7 @@ fn css(palette: &[(&str, &str)]) -> String {
     for (name, color) in palette {
         out.push_str(&format!("@define-color daftar_{name} {color};\n"));
     }
+    out.push_str(&adwaita(palette));
     for tint in TINTS {
         out.push_str(&format!(
             ".daftar-card.t-{tint} {{ background-image: linear-gradient(135deg, alpha(@daftar_{tint}, 0.10), alpha(@daftar_{tint}, 0.03)); \
@@ -158,6 +162,54 @@ fn css(palette: &[(&str, &str)]) -> String {
     out
 }
 
+/// libadwaita's own colors from the palette, so the header bars, the sidebar,
+/// selections, switches and suggested buttons are naz's (or Daylight's) and
+/// not Adwaita's blue and grey. libadwaita 1.6 and later read the variables;
+/// the named colors are for older ones.
+fn adwaita(palette: &[(&str, &str)]) -> String {
+    let color = |name: &str| palette.iter().find(|(key, _)| *key == name).map_or("", |(_, color)| *color);
+    let (background, panel, text, accent) = (color("background"), color("panel"), color("text"), color("accent"));
+    let colors = [
+        ("accent-bg-color", accent),
+        ("accent-fg-color", color("on_accent")),
+        ("accent-color", accent),
+        ("destructive-bg-color", color("red")),
+        ("destructive-color", color("red")),
+        ("success-bg-color", color("green")),
+        ("success-color", color("green")),
+        ("warning-color", color("yellow")),
+        ("error-color", color("red")),
+        ("window-bg-color", background),
+        ("window-fg-color", text),
+        ("view-bg-color", background),
+        ("view-fg-color", text),
+        ("headerbar-bg-color", panel),
+        ("headerbar-fg-color", text),
+        ("headerbar-backdrop-color", background),
+        ("sidebar-bg-color", panel),
+        ("sidebar-fg-color", text),
+        ("sidebar-backdrop-color", background),
+        ("secondary-sidebar-bg-color", panel),
+        ("secondary-sidebar-fg-color", text),
+        ("secondary-sidebar-backdrop-color", background),
+        ("popover-bg-color", panel),
+        ("popover-fg-color", text),
+        ("dialog-bg-color", panel),
+        ("dialog-fg-color", text),
+        ("thumbnail-bg-color", panel),
+        ("thumbnail-fg-color", text),
+    ];
+    let mut out = String::from(":root {\n");
+    for (name, value) in colors {
+        out.push_str(&format!("  --{name}: {value};\n"));
+    }
+    out.push_str("}\n");
+    for (name, value) in colors {
+        out.push_str(&format!("@define-color {} {value};\n", name.replace('-', "_")));
+    }
+    out
+}
+
 /// Loads the palette for the current scheme, and again when it changes.
 pub fn install() {
     let Some(display) = gdk::Display::default() else { return };
@@ -183,5 +235,18 @@ mod tests {
             assert!(DAYLIGHT.iter().any(|(name, _)| *name == tint), "{tint}");
         }
         assert!(css(&NAZ).contains("@define-color daftar_accent #ffb040;"));
+    }
+
+    #[test]
+    fn adwaita_takes_the_palette_and_not_its_blue() {
+        let naz = css(&NAZ);
+        assert!(naz.contains("--accent-bg-color: #ffb040;"));
+        assert!(naz.contains("--accent-fg-color: #323232;"));
+        assert!(naz.contains("--window-bg-color: #323232;"));
+        assert!(naz.contains("--sidebar-bg-color: #3a3a35;"));
+        assert!(naz.contains("@define-color accent_bg_color #ffb040;"));
+        let daylight = css(&DAYLIGHT);
+        assert!(daylight.contains("--accent-bg-color: #a85200;"));
+        assert!(daylight.contains("--accent-fg-color: #ffffff;"));
     }
 }
