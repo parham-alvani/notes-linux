@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use chrono::Datelike;
 use daftar_core::typst_note::right_to_left;
 use daftar_core::{ConfigFile, Git, TypstNote, Vault, VaultIndex};
 use typst::diag::{FileError, FileResult};
@@ -49,12 +50,30 @@ pub struct Look {
     pub folder_logo: bool,
     /// `export.footer`.
     pub footer: String,
+    /// The day of the export, at the foot of every page and in the PDF's
+    /// properties.
+    pub day: chrono::NaiveDate,
 }
 
 impl Look {
     pub fn from_config(config: &ConfigFile) -> Look {
-        Look { logo: config.path("export.logo"), folder_logo: true, footer: config.string("export.footer").unwrap_or_default() }
+        Look {
+            logo: config.path("export.logo"),
+            folder_logo: true,
+            footer: config.string("export.footer").unwrap_or_default(),
+            day: export_day(std::env::var("SOURCE_DATE_EPOCH").ok().as_deref()),
+        }
     }
+}
+
+/// The day of an export: [source_date_epoch]'s (`$SOURCE_DATE_EPOCH`, in
+/// seconds), for a build that must make the same bytes on another day, else
+/// today. A day and no time, so one note makes one PDF all day.
+fn export_day(source_date_epoch: Option<&str>) -> chrono::NaiveDate {
+    source_date_epoch
+        .and_then(|seconds| seconds.trim().parse::<i64>().ok())
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map_or_else(|| chrono::Local::now().date_naive(), |time| time.date_naive())
 }
 
 /// The note at [path] as a PDF at [output].
@@ -89,13 +108,16 @@ pub fn run(root: &Path, index: &VaultIndex, path: &str, output: &Path, look: &Lo
         files.insert(name, root.join(&file));
         folder = Some(Vault::title(&at));
     }
-    let subtitle = [folder, changed(root, path)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    let subtitle = [folder, changed(root, path).map(|day| format!("Changed {day}"))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let main = format!(
-        "#import \"/export.typ\": *\n#show: note.with(title: {}, subtitle: {}, logo: {logo}, folder-logo: {folder_logo}, footer: {}, title-rtl: {})\n\n{}",
+        "#import \"/export.typ\": *\n#show: note.with(title: {}, subtitle: {}, logo: {logo}, folder-logo: {folder_logo}, footer: {}, title-rtl: {}, exported: datetime(year: {}, month: {}, day: {}))\n\n{}",
         TypstNote::string(&title),
         TypstNote::string(&subtitle),
         TypstNote::string(&look.footer),
         right_to_left(&title),
+        look.day.year(),
+        look.day.month(),
+        look.day.day(),
         body,
     );
     let mut formulas: Vec<Option<String>> = note.formulas.iter().map(|tex| mitex::convert_math(tex, None).ok()).collect();
@@ -283,6 +305,15 @@ impl World for Export {
 mod tests {
     use super::*;
 
+    const DAY: chrono::NaiveDate = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+
+    #[test]
+    fn the_day_is_source_date_epochs_else_today() {
+        assert_eq!(export_day(Some("1793836800")), chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap());
+        assert_eq!(export_day(Some("not a number")), chrono::Local::now().date_naive());
+        assert_eq!(export_day(None), chrono::Local::now().date_naive());
+    }
+
     const LOGO: &str =
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#a85200"/></svg>"##;
 
@@ -300,7 +331,7 @@ mod tests {
         let index = Vault::index(root, None);
         let output = root.join("out/Queue.pdf");
         fs::create_dir_all(output.parent().unwrap()).unwrap();
-        let look = Look { logo: Some(root.join("me.svg")), folder_logo: true, footer: "A footer".to_string() };
+        let look = Look { logo: Some(root.join("me.svg")), folder_logo: true, footer: "A footer".to_string(), day: DAY };
         run(root, &index, "Companies/Acme/Platform/Queue.md", &output, &look).unwrap();
         let pdf = fs::read(&output).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
@@ -316,7 +347,7 @@ mod tests {
         let note = "# Sums\n\nInline $\\frac{a^2}{\\sqrt{x}}$ and $\\nosuchcommand{x}$.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n```mermaid\ngraph TD\n  A[Start] --> B{Choose}\n  B -->|yes| C[سلام]\n```\n\n```mermaid\nnot a diagram at all\n```\n";
         fs::write(root.join("Sums.md"), note).unwrap();
         let index = Vault::index(root, None);
-        let look = Look { logo: None, folder_logo: false, footer: String::new() };
+        let look = Look { logo: None, folder_logo: false, footer: String::new(), day: DAY };
         run(root, &index, "Sums.md", &root.join("Sums.pdf"), &look).unwrap();
         let pdf = fs::read(root.join("Sums.pdf")).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
@@ -336,7 +367,7 @@ mod tests {
         let root = root.path();
         fs::write(root.join("Note.md"), "Text.\n").unwrap();
         let index = Vault::index(root, None);
-        let look = Look { logo: Some(root.join("missing.svg")), folder_logo: true, footer: String::new() };
+        let look = Look { logo: Some(root.join("missing.svg")), folder_logo: true, footer: String::new(), day: DAY };
         let error = run(root, &index, "Note.md", &root.join("Note.pdf"), &look).unwrap_err();
         assert!(error.starts_with("export.logo: "), "{error}");
         assert!(!root.join("Note.pdf").exists());

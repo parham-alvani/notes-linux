@@ -108,9 +108,9 @@
   ]
 }
 
-#let note(title: "", subtitle: "", logo: none, folder-logo: none, footer: "", title-rtl: false, body) = {
-  // No date: the same note makes the same file.
-  set document(title: title, date: none)
+#let note(title: "", subtitle: "", logo: none, folder-logo: none, footer: "", title-rtl: false, exported: none, body) = {
+  // The day of the export, with no time: the same note makes the same file all day.
+  set document(title: title, date: exported)
   set page(
     paper: "a4",
     margin: (top: 24mm, bottom: 20mm, x: 18mm),
@@ -131,13 +131,20 @@
         columns: (1fr, auto),
         align: (left + horizon, right + horizon),
         footer,
-        text(fill: ink)[#counter(page).display() / #counter(page).final().first()],
+        {
+          if exported != none [Exported #exported.display() #h(0.6em) ]
+          text(fill: ink)[#counter(page).display() / #counter(page).final().first()]
+        },
       )
     },
   )
 
   set text(font: ("Vazirmatn", mono), size: 10.5pt, fill: ink, lang: "en")
-  set par(justify: false, leading: 0.75em, spacing: 0.9em)
+  // Justified, as TeX sets a page, with words broken at their syllables;
+  // a table's narrow cells stay ragged.
+  set par(justify: true, leading: 0.75em, spacing: 0.9em)
+  set text(hyphenate: auto)
+  show table: set par(justify: false)
   set list(marker: text(fill: accent)[•], indent: 0.4em, spacing: 0.65em)
   set enum(indent: 0.4em, spacing: 0.65em)
   set highlight(fill: gold.lighten(75%))

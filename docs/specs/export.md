@@ -6,7 +6,7 @@ Made by `daftar-cli export` (`notes-linux`, `typst_note.rs` in the core and `exp
 
 - `daftar-cli export <note> [-o <file>] [--logo <file>] [--no-folder-logo]`, with the global `--vault`. The note is its vault path or its name, as the other commands take it. The PDF goes to `-o`, else `<title>.pdf` in the current folder; the command prints its path.
 - It is written through a temporary file and a rename, as every write of Daftar's. It never writes in the vault unless `-o` points there.
-- Typst is inside the binary, with its fonts: Vazirmatn (Regular and Bold) for the text, DejaVu Sans Mono for code and symbols, New Computer Modern Math for math. So are MiTeX's Typst scope, for math, and a Mermaid renderer. Nothing is installed or fetched, and the same note makes the same bytes on every computer: the PDF has no creation date.
+- Typst is inside the binary, with its fonts: Vazirmatn (Regular and Bold) for the text, DejaVu Sans Mono for code and symbols, New Computer Modern Math for math. So are MiTeX's Typst scope, for math, and a Mermaid renderer. Nothing is installed or fetched, and the same note makes the same bytes on every computer on one day: the PDF's date is the day of the export, with no time. `$SOURCE_DATE_EPOCH` (seconds) sets that day, for a build that must make the same bytes on another day.
 - A failure (a logo that is not a file, a note that is not there, Typst's own error) is one line on stderr and a non-zero exit, and no PDF is written.
 
 ## 2. Settings
@@ -24,9 +24,10 @@ footer = ""   # the words at the foot of every page, beside the page count
 ## 3. The page
 
 - A4, the reader's Daylight colors. A bar along the top edge of every page.
-- The head of the first page: the person's logo (`export.logo`), the note's title (its file name) and under it the folder's name and the day the note last changed (its last commit, else its file's time), then the folder's logo. A line under them.
+- Paragraphs, list items and quotes are justified, as TeX sets them, with English words hyphenated; a Persian paragraph is justified from the right. A table's cells and code are not.
+- The head of the first page: the person's logo (`export.logo`), the note's title (its file name) and under it the folder's name and `Changed` and the day the note last changed (its last commit, else its file's time), then the folder's logo. A line under them.
 - The folder's logo is the `logo.svg` or `logo.png` of the folder nearest the note, going up; the vault's top is never one. In a vault of companies, `Companies/Acme/Platform/Queue.md` gets `Companies/Acme/logo.svg` and the subtitle `Acme`. `--no-folder-logo` leaves it out.
-- Every page after the first: the title and the subtitle at its head. Every page: `export.footer` and `n / N` at its foot.
+- Every page after the first: the title and the subtitle at its head. Every page: `export.footer`, `Exported` and the day of the export, and `n / N` at its foot.
 - A first `# Heading` that says the title again is left out: the head has it.
 
 ## 4. The note
@@ -48,4 +49,4 @@ footer = ""   # the words at the foot of every page, beside the page count
 
 ## 6. Tests
 
-`text_goes_in_as_strings`, `a_string_escapes_what_typst_reads`, `headings_emphasis_and_code`, `wiki_links_are_their_text`, `pictures_are_drawn_and_numbered_once`, `tasks_keep_their_status_and_signs_become_words`, `a_callout_is_a_box_with_its_title`, `persian_is_set_right_to_left`, `front_matter_and_comments_are_left_out`, `highlights_tables_and_footnotes`, `math_and_mermaid_are_numbered_for_the_cli` and `the_nearest_folder_with_a_logo` in the core; `a_note_with_both_logos_and_a_picture_is_a_pdf` (and that it makes the same bytes twice) `math_and_diagrams_are_drawn_and_what_does_not_parse_stays_text` and `a_logo_that_is_not_there_is_refused` in the CLI.
+`text_goes_in_as_strings`, `a_string_escapes_what_typst_reads`, `headings_emphasis_and_code`, `wiki_links_are_their_text`, `pictures_are_drawn_and_numbered_once`, `tasks_keep_their_status_and_signs_become_words`, `a_callout_is_a_box_with_its_title`, `persian_is_set_right_to_left`, `front_matter_and_comments_are_left_out`, `highlights_tables_and_footnotes`, `math_and_mermaid_are_numbered_for_the_cli` and `the_nearest_folder_with_a_logo` in the core; `a_note_with_both_logos_and_a_picture_is_a_pdf` (and that it makes the same bytes twice), `the_day_is_source_date_epochs_else_today`, `math_and_diagrams_are_drawn_and_what_does_not_parse_stays_text` and `a_logo_that_is_not_there_is_refused` in the CLI.
