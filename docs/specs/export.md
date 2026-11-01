@@ -1,6 +1,6 @@
 # Daftar export: a note as a PDF, by `daftar-cli export`
 
-Made by `daftar-cli export` (`notes-linux`, `typst_note.rs` in the core and `export.rs` and `export.typ` in the CLI). The apps do not make the PDF themselves: Export as PDF runs this command, so a script, CI and every app make the same file. Linux runs it from Ctrl+Shift+E (`crates/daftar/src/export.rs`); the Mac's ⇧⌘E should run it the same way, and Android has no export.
+Made by `daftar-cli export` (`notes-linux`, `typst_note.rs` in the core and `export.rs` and `export.typ` in the CLI). The apps do not make the PDF themselves: Export as PDF runs this command, so a script, CI and every app make the same file. Linux runs it from Ctrl+Shift+E (`crates/daftar/src/export.rs`); the Mac's ⇧⌘E runs it the same way (`PDFExport.swift`), and Android has no export.
 
 ## 1. The command
 
@@ -43,7 +43,7 @@ footer = ""   # the words at the foot of every page, beside the page count
 ## 5. In the apps
 
 - Export as PDF works on the note on screen, in the reader or the editor; the editor saves first, as the command reads the file.
-- The app asks where to save, then runs `daftar-cli --vault <vault> export <note> -o <file>`: the `daftar-cli` beside the app's own binary (the packages install them together), else the one on `$PATH`. It says "Saved <name>." when the command succeeds, and the command's last line of stderr when it fails. When there is no `daftar-cli`, it says so.
+- The app asks where to save, then runs `daftar-cli --vault <vault> export <note> -o <file>`: the `daftar-cli` beside the app's own binary (the packages install them together), else the one on `$PATH`; on the Mac, else Homebrew's or Cargo's (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`, `~/.local/bin`), as an app opened from the Finder has no Homebrew on its `$PATH`. It says "Saved <name>." when the command succeeds, and the command's last line of stderr when it fails. When there is no `daftar-cli`, it says so.
 
 ## 6. Tests
 
