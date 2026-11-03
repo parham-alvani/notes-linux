@@ -5,8 +5,10 @@
 //! Warnings are a backlog: a link to a note not written yet, a bare link
 //! whose name more than one note has, a fence in a fence, a picture no note
 //! shows, a block id written twice, a task whose status and dates disagree,
-//! and with `--urls` a web address that is gone. Prints `path:line`, a tab, `error` or `warning`, a tab, the kind
-//! and what it found; in GitHub Actions, an annotation for each. With
+//! and with `--urls` a web address that is gone, with `--figures` the text
+//! of an SVG a note shows that overlaps, leaves the canvas or spills out of
+//! its box (`figures.rs`). Prints `path:line`, a tab, `error` or `warning`,
+//! a tab, the kind and what it found; in GitHub Actions, an annotation for each. With
 //! `--fix` it mends what has one answer: a bare link whose name more than
 //! one note has gets the shortest path that names the note it goes to now,
 //! and keeps the text it showed.
@@ -21,9 +23,10 @@ use daftar_core::vault::LOGO_NAMES;
 use daftar_core::web_fetch::Answer;
 use daftar_core::{Day, ParsedTask, Recurrence, TaskStatuses, TaskType, Vault, VaultEdits};
 use percent_encoding::percent_decode_str;
+use rayon::prelude::*;
 use regex::Regex;
 
-use crate::report;
+use crate::{figures, report};
 
 pub struct Options {
     /// Fail on warnings too.
@@ -46,6 +49,9 @@ pub struct Options {
     /// With [urls], asks the Wayback Machine for a copy of each dead
     /// address, which [fix] puts in its place.
     pub archive: bool,
+    /// Lays out the text of every SVG a note shows or links to, and warns
+    /// of text over text, off the canvas, or out of its box.
+    pub figures: bool,
     /// Prints GitHub Actions annotations.
     pub github: bool,
     /// Mends what has one answer, and prints each change instead.
@@ -678,18 +684,39 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
             texts.push(text);
         }
     }
+    let mut figures: Vec<&String> = Vec::new();
     for file in &index.files {
-        // A folder's logo is its icon in the tree.
-        if LOGO_NAMES.contains(&file.rsplit('/').next().unwrap_or(file)) {
-            continue;
-        }
-        let is_picture = file.rsplit_once('.').is_some_and(|(_, ext)| PICTURES.contains(&ext.to_lowercase().as_str()));
-        if !is_picture || used.contains(file) || hidden(file) {
-            continue;
-        }
         let name = file.rsplit('/').next().unwrap_or(file);
-        if !texts.iter().any(|t| t.contains(name)) {
+        let is_picture = file.rsplit_once('.').is_some_and(|(_, ext)| PICTURES.contains(&ext.to_lowercase().as_str()));
+        // A figure in a folder Obsidian excludes (the attachments, often)
+        // is still one a note shows.
+        let is_figure = options.figures && name.to_lowercase().ends_with(".svg");
+        // A folder's logo is its icon in the tree.
+        let logo = LOGO_NAMES.contains(&name);
+        if !is_picture || ((hidden(file) || logo) && !is_figure) {
+            continue;
+        }
+        let shown = used.contains(file) || texts.iter().any(|t| t.contains(name));
+        if !shown && !logo && !hidden(file) {
             found.insert((file.clone(), 0, false, "unused-picture", "no note shows it".into()));
+        }
+        if shown && is_figure {
+            figures.push(file);
+        }
+    }
+    if !figures.is_empty() {
+        let fonts = &*figures::FONTS;
+        let problems: Vec<(&String, Vec<(&'static str, String)>)> = figures
+            .par_iter()
+            .map(|file| match fs::read(root.join(file.as_str())) {
+                Ok(data) => (*file, figures::problems(&data, fonts)),
+                Err(error) => (*file, vec![("svg-parse", format!("cannot read it: {error}"))]),
+            })
+            .collect();
+        for (file, problems) in problems {
+            for (kind, what) in problems {
+                found.insert((file.clone(), 0, false, kind, what));
+            }
         }
     }
     if !web.is_empty() {
@@ -873,6 +900,7 @@ mod tests {
             github_token: None,
             skip_urls: Vec::new(),
             archive: false,
+            figures: false,
             github: false,
             fix: false,
             dry_run: false,
@@ -1050,6 +1078,50 @@ mod tests {
         assert_eq!(github_repo("https://github.com/o/r.git/issues/1#x").as_deref(), Some("o/r"));
         assert_eq!(github_repo("https://github.com/orgs/o/people"), None);
         assert_eq!(github_repo("https://github.com/o"), None);
+    }
+
+    #[test]
+    fn figures_are_laid_out_only_when_asked() {
+        let svg = |body: &str| {
+            format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 50\" width=\"100%\"><style>\n\
+                 svg{{font-family:\"DejaVu Sans Mono\";font-size:10px}}\n@media (prefers-color-scheme:dark){{text{{fill:#eee}}}}\n</style>{body}</svg>"
+            )
+        };
+        let dir = vault(&[
+            ("A.md", "![[clean.svg]] ![[over.svg]]\n\n![off](uploads/off.svg)\n"),
+            // Linked to, not shown: checked all the same.
+            ("B.md", "See [[spill.svg]].\n"),
+            ("uploads/clean.svg", &svg("<text x=\"5\" y=\"20\">Fine</text><text x=\"5\" y=\"40\">Also fine</text>")),
+            ("uploads/over.svg", &svg("<text x=\"5\" y=\"20\">One label</text><text x=\"20\" y=\"24\">Two</text>")),
+            ("uploads/off.svg", &svg("<text x=\"60\" y=\"20\">Off the edge</text>")),
+            (
+                "uploads/spill.svg",
+                &svg("<rect x=\"2\" y=\"5\" width=\"40\" height=\"20\" rx=\"4\" fill=\"#ddd\"/><text x=\"6\" y=\"19\">Too long</text>"),
+            ),
+            // Shown nowhere: unused, and not laid out.
+            ("uploads/unshown.svg", &svg("<text x=\"60\" y=\"20\">Off the edge</text>")),
+        ]);
+        let of = |lines: Vec<String>| -> Vec<(String, String)> {
+            lines.iter().map(|l| (l.split('\t').next().unwrap().to_string(), l.split('\t').nth(2).unwrap().to_string())).collect()
+        };
+        assert_eq!(of(findings(dir.path(), &options())), [("uploads/unshown.svg".to_string(), "unused-picture".to_string())]);
+        let mut options = options();
+        options.figures = true;
+        let lines = findings(dir.path(), &options);
+        assert_eq!(
+            of(lines.clone()),
+            [
+                ("uploads/off.svg", "svg-text-outside"),
+                ("uploads/over.svg", "svg-text-overlap"),
+                ("uploads/spill.svg", "svg-text-spill"),
+                ("uploads/unshown.svg", "unused-picture"),
+            ]
+            .map(|(p, k)| (p.to_string(), k.to_string())),
+            "{lines:#?}"
+        );
+        assert!(lines.iter().all(|l| l.contains("\twarning\t")));
+        assert!(lines[1].ends_with("“One label” at 5,20 overlaps “Two” at 20,24"), "{}", lines[1]);
     }
 
     #[test]

@@ -24,7 +24,7 @@ use typst::{Library, LibraryExt, World, WorldExt};
 use typst_layout::PagedDocument;
 
 const TEMPLATE: &str = include_str!("export.typ");
-const FONTS: [&[u8]; 5] = [
+pub(crate) const FONTS: [&[u8]; 5] = [
     include_bytes!("../fonts/Vazirmatn-Regular.ttf"),
     include_bytes!("../fonts/Vazirmatn-Bold.ttf"),
     include_bytes!("../fonts/DejaVuSansMono.ttf"),

@@ -853,6 +853,7 @@ dependencies = [
  "typst-layout",
  "typst-pdf",
  "unicode-width",
+ "usvg",
  "walkdir",
 ]
 

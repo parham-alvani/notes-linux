@@ -145,6 +145,7 @@ impl Server {
                     github_token: None,
                     skip_urls: Vec::new(),
                     archive: false,
+                    figures: false,
                     github: false,
                     fix: false,
                     dry_run: false,

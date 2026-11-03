@@ -13,6 +13,7 @@ macro_rules! out {
 mod check;
 mod clip;
 mod export;
+mod figures;
 mod fmt;
 mod images;
 mod lint;
@@ -306,8 +307,10 @@ enum Command {
     /// links to no note or to no heading or block, links a code span stops,
     /// callouts that fall apart, task dates that are not days, front matter
     /// never closed, block ids written twice, pictures no note shows, and
-    /// web addresses written wrong, and with --urls web addresses that are
-    /// gone. Fails on an error; on a warning too with --strict.
+    /// web addresses written wrong, with --urls web addresses that are
+    /// gone, and with --figures SVG text that overlaps, leaves the canvas
+    /// or spills out of its box. Fails on an error; on a warning too with
+    /// --strict.
     Check {
         /// Fails on warnings too.
         #[arg(long)]
@@ -337,6 +340,13 @@ enum Command {
         /// address and names it; --fix puts the copy in its place.
         #[arg(long, requires = "urls")]
         archive: bool,
+        /// Lays out the text of every SVG a note shows or links to, with the
+        /// system's fonts and the built-in ones, and warns of text over
+        /// other text (svg-text-overlap), past the canvas
+        /// (svg-text-outside) or out of the box it starts in
+        /// (svg-text-spill). Off unless asked.
+        #[arg(long)]
+        figures: bool,
         /// Mends what has one answer: a bare link whose name more than one
         /// note has gets the shortest path to the note it goes to now, and
         /// shows the text it showed. Prints each change.
@@ -716,7 +726,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{} of {} notes are not formatted; run daftar-cli fmt", outcome.changed, outcome.checked));
             }
         }
-        Command::Check { strict, no_h1, callout, urls, unreachable, skip_url, archive, fix, dry_run } => {
+        Command::Check { strict, no_h1, callout, urls, unreachable, skip_url, archive, figures, fix, dry_run } => {
             let github_token = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).ok();
             let options = check::Options {
                 strict,
@@ -727,6 +737,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 github_token,
                 skip_urls: skip_url,
                 archive,
+                figures,
                 github: report::github(),
                 fix,
                 dry_run,
