@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
 
 use daftar_core::properties::{FrontMatterForm, PropertyEdit, PropertyNames, PropertySheet, PropertyType, PropertyValue};
 
@@ -95,40 +94,33 @@ fn control(key: &str, value: &PropertyValue, kind: PropertyType) -> gtk::Widget 
             entry.set_hexpand(true);
             entry.set_width_chars(if kind == PropertyType::Date { 10 } else { 16 });
             field.append(&entry);
-            let calendar = gtk::Calendar::new();
-            if let Some(date) = PropertyType::date(&text)
-                && let Ok(day) = glib::DateTime::from_local(
-                    chrono::Datelike::year(&date),
-                    i32::try_from(chrono::Datelike::month(&date)).unwrap_or(1),
-                    i32::try_from(chrono::Datelike::day(&date)).unwrap_or(1),
-                    0,
-                    0,
-                    0.0,
-                )
-            {
-                calendar.select_day(&day);
-            }
-            let popover = gtk::Popover::builder().child(&calendar).build();
+            let popover = gtk::Popover::new();
+            let shown = PropertyType::date(&text).map(|date| daftar_core::Day::from(date.date_naive()));
+            let (key, time) = (key.to_string(), kind == PropertyType::Datetime);
+            let picker = {
+                let (popover, field) = (popover.clone(), field.downgrade());
+                crate::day_picker::DayPicker::new(move |day| {
+                    // A date and time keeps its time; a new one starts at nine.
+                    let value = if time {
+                        let clock = text.split_once(['T', ' ']).map_or("09:00", |(_, t)| t);
+                        format!("{day}T{}", &clock[..clock.len().min(5)])
+                    } else {
+                        day.to_string()
+                    };
+                    popover.popdown();
+                    if let Some(field) = field.upgrade() {
+                        send(&field, &PropertyEdit::Set(key.clone(), PropertyValue::Text(value)));
+                    }
+                })
+            };
+            popover.set_child(Some(&picker.widget));
+            popover.connect_show(move |_| picker.select(shown));
             let button = gtk::MenuButton::builder()
                 .icon_name("x-office-calendar-symbolic")
                 .popover(&popover)
                 .css_classes(["flat"])
                 .tooltip_text("Pick a day")
                 .build();
-            let (key, time) = (key.to_string(), kind == PropertyType::Datetime);
-            calendar.connect_day_selected(move |calendar| {
-                let day = calendar.date();
-                let picked = format!("{:04}-{:02}-{:02}", day.year(), day.month(), day.day_of_month());
-                // A date and time keeps its time; a new one starts at nine.
-                let value = if time {
-                    let clock = text.split_once(['T', ' ']).map_or("09:00", |(_, t)| t);
-                    format!("{picked}T{}", &clock[..clock.len().min(5)])
-                } else {
-                    picked
-                };
-                popover.popdown();
-                send(calendar, &PropertyEdit::Set(key.clone(), PropertyValue::Text(value)));
-            });
             field.append(&button);
             field.upcast()
         }

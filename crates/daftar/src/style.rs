@@ -83,6 +83,16 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-date { font-size: 28pt; font-weight: 800; color: @daftar_accent; }\n\
          .daftar-note { color: @daftar_aqua; }\n\
          .daftar-muted { color: @daftar_muted; }\n\
+         .daftar-picker { padding: 6px; }\n\
+         .daftar-picker-day { min-width: 34px; padding: 2px 0; border-radius: 8px; }\n\
+         .daftar-picker-day.weekend { color: @daftar_muted; }\n\
+         .daftar-picker-day.holiday { color: @daftar_red; }\n\
+         .daftar-picker-day.today { box-shadow: inset 0 0 0 1px @daftar_accent; }\n\
+         .daftar-picker-day.selected { background-color: @daftar_accent; color: @daftar_on_accent; }\n\
+         .daftar-picker-other { font-size: 7pt; opacity: 0.6; }\n\
+         .daftar-picker-dot { font-size: 7pt; color: @daftar_aqua; margin-top: -4px; }\n\
+         .daftar-picker-day.holiday .daftar-picker-dot { color: @daftar_red; }\n\
+         .daftar-picker-day.selected .daftar-picker-dot { color: @daftar_on_accent; }\n\
          .daftar-task { padding: 2px 0; }\n\
          .daftar-task button.flat { padding: 2px 4px; }\n\
          .daftar-meeting { padding: 3px 0; }\n\

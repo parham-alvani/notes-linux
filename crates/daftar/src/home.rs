@@ -262,7 +262,11 @@ impl HomePage {
         let now = Local::now();
         let settings = self.settings.borrow();
         self.time.set_label(&time(now, settings.twenty_four_hour.unwrap_or_else(system_twenty_four_hour)));
-        let date = now.format("%A, %B %-d").to_string();
+        let mut date = now.format("%A, %B %-d").to_string();
+        for event in crate::settings::events_on(daftar_core::Day::today()) {
+            date.push_str(" · ");
+            date.push_str(event.title);
+        }
         self.date.set_label(&match crate::settings::persian_date(daftar_core::Day::today()) {
             Some(persian) => format!("{date}\n{persian}"),
             None => date,

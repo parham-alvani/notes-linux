@@ -4,10 +4,10 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use daftar_core::jalali::Jalali;
-use daftar_core::{ConfigFile, Day, Value};
+use daftar_core::{Calendar, CalendarEvent, CalendarEvents, ConfigFile, Day, Happening, Place, Value};
 
 /// `appearance.persian_calendar`, for the pages that show a date and do not
 /// hold the settings: the home page, Today, a daily note's subtitle.
@@ -17,6 +17,30 @@ static PERSIAN_CALENDAR: AtomicBool = AtomicBool::new(false);
 /// want it beside the Gregorian date.
 pub fn persian_date(day: Day) -> Option<String> {
     PERSIAN_CALENDAR.load(Ordering::Relaxed).then(|| Jalali::long(day))
+}
+
+/// `calendar.place`: 0 is none, else a [Place] and one.
+static PLACE: AtomicU8 = AtomicU8::new(0);
+
+const PLACES: [Place; 3] = [Place::Spain, Place::Catalonia, Place::Barcelona];
+
+/// The calendar the day picker shows: the Jalali one with the Persian date.
+pub fn calendar() -> Calendar {
+    if PERSIAN_CALENDAR.load(Ordering::Relaxed) { Calendar::Jalali } else { Calendar::Gregorian }
+}
+
+fn place() -> Option<Place> {
+    PLACES.get(usize::from(PLACE.load(Ordering::Relaxed)).checked_sub(1)?).copied()
+}
+
+/// The holidays and feasts of `calendar.place` from [from] to [to].
+pub fn events(from: Day, to: Day) -> Vec<Happening> {
+    place().map(|place| CalendarEvents::between(place, from, to)).unwrap_or_default()
+}
+
+/// The holidays and feasts of `calendar.place` on [day].
+pub fn events_on(day: Day) -> Vec<&'static CalendarEvent> {
+    place().map(|place| CalendarEvents::on(place, day)).unwrap_or_default()
 }
 
 pub struct AppSettings {
@@ -45,6 +69,8 @@ impl AppSettings {
     /// The settings the pages read without holding them.
     fn publish(&self) {
         PERSIAN_CALENDAR.store(self.file.bool("appearance.persian_calendar").unwrap_or(false), Ordering::Relaxed);
+        let place = Place::parse(&self.file.string("calendar.place").unwrap_or_default());
+        PLACE.store(place.and_then(|p| PLACES.iter().position(|q| *q == p)).map_or(0, |i| i as u8 + 1), Ordering::Relaxed);
     }
 
     /// Writes one value back, keeping the rest of the file as it is.

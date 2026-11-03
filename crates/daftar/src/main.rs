@@ -4,6 +4,7 @@
 mod board;
 mod capture;
 mod conflicts;
+mod day_picker;
 mod editor;
 mod editor_popup;
 mod editor_style;

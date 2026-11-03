@@ -416,8 +416,19 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
         .width_chars(11)
         .sensitive(value.is_some())
         .build();
-    let calendar = gtk::Calendar::new();
-    let popover = gtk::Popover::builder().child(&calendar).build();
+    let popover = gtk::Popover::new();
+    let picker = {
+        let (entry, popover) = (entry.clone(), popover.clone());
+        crate::day_picker::DayPicker::new(move |day| {
+            entry.set_text(&day.to_string());
+            popover.popdown();
+        })
+    };
+    popover.set_child(Some(&picker.widget));
+    {
+        let entry = entry.clone();
+        popover.connect_show(move |_| picker.select(parse(&entry.text())));
+    }
     let pick = gtk::MenuButton::builder().icon_name("x-office-calendar-symbolic").popover(&popover).sensitive(value.is_some()).build();
     let how_far = gtk::Label::builder().css_classes(["daftar-day", tint]).build();
     row.append(&entry);
@@ -457,7 +468,7 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
         });
     }
     {
-        let (entry, pick, changed) = (entry.clone(), pick, changed);
+        let (entry, pick, changed) = (entry, pick, changed);
         switch.connect_active_notify(move |switch| {
             let on = switch.is_active();
             entry.set_sensitive(on);
@@ -471,16 +482,6 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
                 changed(None);
             }
             show(on);
-        });
-    }
-    {
-        let (entry, popover) = (entry, popover);
-        calendar.connect_day_selected(move |calendar| {
-            let date = calendar.date();
-            if let Some(day) = Day::new(date.year(), date.month() as u32, date.day_of_month() as u32) {
-                entry.set_text(&day.to_string());
-            }
-            popover.popdown();
         });
     }
     row

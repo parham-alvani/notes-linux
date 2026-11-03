@@ -207,6 +207,13 @@ reading_line = 18
 # note), and Jalali days typed in a task's dates.
 persian_calendar = false
 
+[calendar]
+# The holidays and feasts of where you live, on Today, the home page and
+# the day picker, each with its note when the vault has one by that name:
+# "spain", "catalonia" or "barcelona", each keeping the days of the one
+# before it. Empty is none.
+place = ""
+
 [editor]
 # Away from the cursor's line, the marks (**, ==, [[ ]], #, a link's
 # address) hide, so the note reads as it will look.

@@ -111,6 +111,10 @@ impl Today {
             row.append(&gtk::Label::new(Some(&text)));
             chips.insert(&row, -1);
         };
+        for event in crate::settings::events_on(today) {
+            let tint = if event.holiday { "t-red" } else { "t-aqua" };
+            chip(event.title.to_string(), "starred-symbolic", tint);
+        }
         let meetings = day.map_or(0, |d| d.meetings.len());
         chip(format!("{meetings} {}", if meetings == 1 { "meeting" } else { "meetings" }), "x-office-calendar-symbolic", "t-blue");
         if let Some(free) = day.and_then(|d| d.free.as_deref()) {
@@ -148,6 +152,9 @@ impl Today {
             meetings_card.append(&muted(&format!("Tomorrow starts at {}: {}", clock(start), first.title)));
         }
         self.content.append(&meetings_card);
+        if let Some(card) = self.holidays(store, today) {
+            self.content.append(&card);
+        }
 
         let cards = [
             ("Overdue", "dialog-warning-symbolic", &groups.overdue, "t-red"),
@@ -191,6 +198,47 @@ impl Today {
             self.content.append(&card);
         }
         self.content.append(&self.review(store, today, scratchpad));
+    }
+
+    /// The holidays and feasts of the next 45 days, each opening its note
+    /// when the vault has one by its title; none when there are none.
+    fn holidays(self: &Rc<Self>, store: &VaultStore, today: Day) -> Option<gtk::Box> {
+        let coming = crate::settings::events(today, today.adding_days(HOLIDAY_DAYS));
+        if coming.is_empty() {
+            return None;
+        }
+        let card = card("Holidays and feasts", "starred-symbolic", "t-red", None);
+        for happening in coming {
+            let event = happening.event;
+            let row = gtk::Box::builder().spacing(8).build();
+            let tint = if event.holiday { "t-red" } else { "t-aqua" };
+            row.append(
+                &gtk::Label::builder().label(crate::task_edit::relative(happening.day, today)).css_classes(["daftar-day", tint]).build(),
+            );
+            row.append(&gtk::Label::builder().label(event.title).xalign(0.0).build());
+            if event.local != event.title {
+                row.append(&gtk::Label::builder().label(event.local).xalign(0.0).css_classes(["daftar-muted"]).build());
+            }
+            let spacer = gtk::Box::builder().hexpand(true).build();
+            row.append(&spacer);
+            row.append(
+                &gtk::Label::builder()
+                    .label(happening.day.date().format("%a %-d %b").to_string())
+                    .css_classes(["daftar-muted", "caption"])
+                    .build(),
+            );
+            let note = store.index().resolve(event.title, "").filter(|p| Vault::is_note(p));
+            match note {
+                Some(path) => {
+                    let button = gtk::Button::builder().child(&row).css_classes(["flat"]).tooltip_text(&path).build();
+                    let this = self.clone();
+                    button.connect_clicked(move |_| (this.open)(&path, 0));
+                    card.append(&button);
+                }
+                None => card.append(&row),
+            }
+        }
+        Some(card)
     }
 
     /// The day's review, under the tasks: today's scratchpad, and the notes
@@ -374,6 +422,9 @@ impl Today {
 
 /// Tasks a card shows before "Show all".
 const SHOWN: usize = 50;
+
+/// How far ahead the holidays card looks.
+const HOLIDAY_DAYS: i64 = 45;
 
 fn muted(text: &str) -> gtk::Label {
     gtk::Label::builder().label(text).xalign(0.0).wrap(true).css_classes(["daftar-muted"]).build()

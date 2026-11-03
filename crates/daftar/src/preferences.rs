@@ -30,6 +30,9 @@ pub struct Hooks {
 
 const THEMES: [(&str, &str); 3] = [("system", "Follow the System"), ("light", "Daylight"), ("dark", "Naz")];
 
+/// `calendar.place`, as `daftar_core::Place` reads it.
+const PLACES: [(&str, &str); 4] = [("", "None"), ("spain", "Spain"), ("catalonia", "Catalonia"), ("barcelona", "Barcelona")];
+
 /// [root] is the open vault's folder: a picture in it is kept as its path in the vault.
 pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>>, root: Option<PathBuf>, hooks: Rc<Hooks>) {
     let dialog = adw::PreferencesDialog::builder().title("Settings").build();
@@ -108,6 +111,25 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&persian);
+    let place = adw::ComboRow::builder()
+        .title("Holidays")
+        .subtitle("The public holidays and feasts of where you live, on Today, home and the day picker")
+        .model(&gtk::StringList::new(&PLACES.map(|(_, name)| name)))
+        .selected(
+            PLACES
+                .iter()
+                .position(|(key, _)| *key == settings.borrow().file.string("calendar.place").unwrap_or_default().trim().to_lowercase())
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        place.connect_selected_notify(move |row| {
+            write("calendar.place", Value::String(PLACES[row.selected() as usize].0.into()));
+            (hooks.home)();
+        });
+    }
+    looks.add(&place);
     page.add(&looks);
     page.add(&home_group(&settings, root, write.clone(), hooks.clone()));
     page.add(&editor_group(&settings, write.clone(), hooks.clone()));

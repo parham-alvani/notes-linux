@@ -31,8 +31,8 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use daftar_core::{
-    Candidate, Clock, ConfigFile, Day, ExcludedFiles, Git, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions, SearchIndex, Sections,
-    Side, SyncFailure, TaskLine, TaskStatuses, TaskType, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
+    CalendarEvents, Candidate, Clock, ConfigFile, Day, ExcludedFiles, Git, Place, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions,
+    SearchIndex, Sections, Side, SyncFailure, TaskLine, TaskStatuses, TaskType, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
 };
 
 #[derive(Parser)]
@@ -227,6 +227,23 @@ enum Command {
         /// Prints the path and makes nothing.
         #[arg(long)]
         no_create: bool,
+    },
+    /// The holidays and feasts of `calendar.place` (spain, catalonia or
+    /// barcelona), a line each: the day, `holiday` or `event`, its name, its
+    /// name there, and its note when the vault has one.
+    Events {
+        /// The first day (YYYY-MM-DD); else today.
+        #[arg(long)]
+        from: Option<String>,
+        /// How many days from it.
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+        /// A whole year, in place of --from and --days.
+        #[arg(long, conflicts_with_all = ["from", "days"])]
+        year: Option<i32>,
+        /// The place, in place of calendar.place.
+        #[arg(long)]
+        place: Option<String>,
     },
     /// A note as a PDF on A4: export.logo at its head, and the logo of the
     /// folder it is in (a company's logo.svg or logo.png) on the other side;
@@ -651,6 +668,29 @@ fn run(cli: Cli) -> Result<(), String> {
             let path = note_path(&index, &note)?;
             let at = line.checked_sub(1).ok_or("lines count from 1")?;
             out!("{}", vault_commands::postpone(&root, &path, at, &by, Day::today())?);
+        }
+        Command::Events { from, days, year, place } => {
+            let named = place.or_else(|| config().string("calendar.place")).unwrap_or_default();
+            let place = Place::parse(&named).ok_or_else(|| match named.trim() {
+                "" => "no place: set calendar.place in the config file, or pass --place (spain, catalonia or barcelona)".to_string(),
+                _ => format!("{named} is not a place it knows: spain, catalonia or barcelona"),
+            })?;
+            let (first, last) = if let Some(year) = year {
+                (Day::new(year, 1, 1).ok_or("no such year")?, Day::new(year, 12, 31).ok_or("no such year")?)
+            } else {
+                let first = match from {
+                    Some(text) => Day::parse(&text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,
+                    None => Day::today(),
+                };
+                (first, first.adding_days(days.max(0)))
+            };
+            let index = Vault::index(&root, None);
+            for happening in CalendarEvents::between(place, first, last) {
+                let event = happening.event;
+                let note = index.resolve(event.title, "").filter(|p| Vault::is_note(p)).unwrap_or_default();
+                let kind = if event.holiday { "holiday" } else { "event" };
+                out!("{}\t{kind}\t{}\t{}\t{note}", happening.day, event.title, event.local);
+            }
         }
         Command::Daily { day, no_create } => {
             let index = Vault::index(&root, None);
