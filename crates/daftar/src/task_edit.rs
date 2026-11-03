@@ -96,7 +96,8 @@ const PRIORITIES: [(Option<&str>, &str, &str); 6] = [
     (Some("🔺"), "Highest", "t-red"),
 ];
 
-const RULES: [&str; 6] = ["every day", "every week", "every 2 weeks", "every month", "every year", "every week when done"];
+const RULES: [&str; 7] =
+    ["every day", "every week", "every 2 weeks", "every month", "every jalali month", "every year", "every week when done"];
 
 /// The task on [line] of the note at [path], as it is in the file now; an
 /// error to show when the line is gone or no longer a task.
@@ -277,7 +278,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
     let warning = gtk::Image::builder()
         .icon_name("dialog-warning-symbolic")
         .css_classes(["t-yellow", "tint"])
-        .tooltip_text("Daftar repeats only plain intervals, such as every 2 weeks; Obsidian reads the rest.")
+        .tooltip_text("Daftar repeats only plain intervals, such as every 2 weeks or every jalali month; Obsidian reads the rest.")
         .build();
     let check = {
         let warning = warning.clone();

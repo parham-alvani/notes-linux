@@ -7,6 +7,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::day::Day;
+use crate::jalali::Jalali;
 use crate::task_status::{TaskStatuses, TaskType};
 use crate::text::{is_blank, trim, trim_end};
 
@@ -294,7 +295,7 @@ impl TaskLine {
         }
         let leading = MOVED.iter().find_map(|e| dates.get(e).copied())?;
         let from = if recurrence.when_done { now } else { leading };
-        let shift = leading.days_to(recurrence.next(from, now));
+        let shift = leading.days_to(recurrence.next(from, now)?);
         let mut parts = vec![trim_end(&text).to_string()];
         for m in &meta {
             let value = match dates.get(m.emoji.as_str()) {
@@ -461,7 +462,8 @@ impl TaskReason {
     }
 }
 
-/// How often a task comes back: the plain intervals only. A rule with
+/// How often a task comes back: the plain intervals, and months and years of
+/// the Jalali calendar (`docs/specs/jalali-recurrence.md`). A rule with
 /// weekdays or ordinals is refused rather than guessed at, because a wrong
 /// guess writes a wrong date into the vault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,9 +479,14 @@ pub enum Unit {
     Week,
     Month,
     Year,
+    /// `every jalali month`: the same day of the Jalali month.
+    JalaliMonth,
+    /// `every jalali year`.
+    JalaliYear,
 }
 
-static RULE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^every(?:\s+(\d+))?\s+(day|week|month|year)s?$").unwrap());
+static RULE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^every(?:\s+(\d+))?\s+(?:(jalali)\s+(month|year)|(day|week|month|year))s?$").unwrap());
 
 impl Recurrence {
     pub fn parse(rule: &str) -> Option<Recurrence> {
@@ -496,35 +503,42 @@ impl Recurrence {
         if amount == 0 {
             return None;
         }
-        let unit = match &caps[2] {
-            "day" => Unit::Day,
-            "week" => Unit::Week,
-            "month" => Unit::Month,
-            _ => Unit::Year,
+        let unit = match caps.get(3).map(|m| m.as_str()) {
+            Some("month") => Unit::JalaliMonth,
+            Some(_) => Unit::JalaliYear,
+            None => match &caps[4] {
+                "day" => Unit::Day,
+                "week" => Unit::Week,
+                "month" => Unit::Month,
+                _ => Unit::Year,
+            },
         };
         Some(Recurrence { amount, unit, when_done })
     }
 
     /// Stepped until it lands after [not_before], so a daily task ticked ten
-    /// days late does not come back already overdue.
-    pub fn next(&self, from: Day, not_before: Day) -> Day {
-        let mut date = self.step(from);
+    /// days late does not come back already overdue. `None` when a step runs
+    /// off the Jalali calendar.
+    pub fn next(&self, from: Day, not_before: Day) -> Option<Day> {
+        let mut date = self.step(from)?;
         let mut guard = 0;
         while date <= not_before && guard < 4000 {
-            date = self.step(date);
+            date = self.step(date)?;
             guard += 1;
         }
-        date
+        Some(date)
     }
 
-    fn step(self, day: Day) -> Day {
+    fn step(self, day: Day) -> Option<Day> {
         let n = i64::from(self.amount);
-        match self.unit {
+        Some(match self.unit {
             Unit::Day => day.adding_days(n),
             Unit::Week => day.adding_days(7 * n),
             Unit::Month => day.adding_months(n as i32),
             Unit::Year => day.adding_months(12 * n as i32),
-        }
+            Unit::JalaliMonth => Jalali::adding_months(day, n)?,
+            Unit::JalaliYear => Jalali::adding_months(day, 12 * n)?,
+        })
     }
 }
 
@@ -616,6 +630,53 @@ mod tests {
         assert_eq!(
             toggled("- [ ] Haircut 🔁 every month when done ⏳ 2026-01-31", "2026-03-15")[0],
             "- [ ] Haircut 🔁 every month when done ⏳ 2026-04-15"
+        );
+    }
+
+    #[test]
+    fn jalali_rules_are_read() {
+        let rule = |text: &str| Recurrence::parse(text).map(|r| (r.amount, r.unit, r.when_done));
+        assert_eq!(rule("every jalali month"), Some((1, Unit::JalaliMonth, false)));
+        assert_eq!(rule("Every 3 Jalali Months when done"), Some((3, Unit::JalaliMonth, true)));
+        assert_eq!(rule("every jalali year"), Some((1, Unit::JalaliYear, false)));
+        assert_eq!(rule("every 2 jalali years"), Some((2, Unit::JalaliYear, false)));
+        assert_eq!(rule("every month"), Some((1, Unit::Month, false)));
+        for refused in ["every jalali week", "every jalali day", "every jalali", "every 0 jalali months", "every jalali month on the 10th"]
+        {
+            assert_eq!(rule(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn jalali_repeat_keeps_the_day_of_the_jalali_month() {
+        let next = |line: &str, today: &str| toggled(line, today)[0].clone();
+        assert_eq!(next("- [ ] Pay 🔁 every jalali month ⏳ 2026-12-31", "2026-12-31"), "- [ ] Pay 🔁 every jalali month ⏳ 2027-01-30");
+        assert_eq!(next("- [ ] Pay 🔁 every jalali month ⏳ 2026-09-22", "2026-09-22"), "- [ ] Pay 🔁 every jalali month ⏳ 2026-10-22");
+        assert_eq!(next("- [ ] Pay 🔁 every jalali year ⏳ 2025-03-20", "2025-03-20"), "- [ ] Pay 🔁 every jalali year ⏳ 2026-03-20");
+        assert_eq!(next("- [ ] Pay 🔁 every jalali month ⏳ 2026-09-01", "2026-11-03"), "- [ ] Pay 🔁 every jalali month ⏳ 2026-12-01");
+        assert_eq!(
+            next("- [ ] Pay 🔁 every jalali month when done ⏳ 2026-10-01", "2026-11-01"),
+            "- [ ] Pay 🔁 every jalali month when done ⏳ 2026-12-01"
+        );
+        assert_eq!(
+            next("- [ ] Pay 🔁 every jalali month ➕ 2026-12-01 ⏳ 2026-12-31 📅 2027-01-02", "2026-12-31"),
+            "- [ ] Pay 🔁 every jalali month ➕ 2026-12-01 ⏳ 2027-01-30 📅 2027-02-01"
+        );
+        assert_eq!(
+            next("- [ ] Pay 🔁 every 3 jalali months ⏳ 2026-12-31", "2026-12-31"),
+            "- [ ] Pay 🔁 every 3 jalali months ⏳ 2027-03-30"
+        );
+        assert_eq!(
+            toggled("- [ ] Pay 🔁 every jalali month ⏳ 2026-12-31", "2026-12-31")[1],
+            "- [x] Pay 🔁 every jalali month ⏳ 2026-12-31 ✅ 2026-12-31"
+        );
+    }
+
+    #[test]
+    fn a_jalali_repeat_off_the_calendar_completes_without_one() {
+        assert_eq!(
+            toggled("- [ ] Far 🔁 every 9000 jalali years ⏳ 2026-12-31", "2026-12-31"),
+            ["- [x] Far 🔁 every 9000 jalali years ⏳ 2026-12-31 ✅ 2026-12-31"]
         );
     }
 

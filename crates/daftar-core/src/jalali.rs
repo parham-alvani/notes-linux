@@ -93,16 +93,37 @@ impl Jalali {
         Jalali { year: year as i32, month: (7 + k / 30) as u32, day: (k % 30 + 1) as u32 }
     }
 
+    /// The days of [month] in [year]: 31 in the first six months, 30 in the
+    /// next five, and Esfand's 30 in a leap year or 29. `None` for a month
+    /// or a year the calendar does not have.
+    pub fn month_length(year: i32, month: u32) -> Option<u32> {
+        let (leap, _, _) = year_of(i64::from(year))?;
+        match month {
+            1..=6 => Some(31),
+            7..=11 => Some(30),
+            12 if leap => Some(30),
+            12 => Some(29),
+            _ => None,
+        }
+    }
+
+    /// [months] Jalali months after [day], on the same day of the month or
+    /// the last day of a shorter one (Shahrivar 31 and a month is Mehr 30):
+    /// the step of `🔁 every jalali month` (`docs/specs/jalali-recurrence.md`).
+    /// `None` past the calendar's range.
+    pub fn adding_months(day: Day, months: i64) -> Option<Day> {
+        let from = Jalali::from_day(day);
+        let index = (i64::from(from.year) * 12 + i64::from(from.month) - 1).checked_add(months)?;
+        let year = i32::try_from(index.div_euclid(12)).ok()?;
+        let month = u32::try_from(index.rem_euclid(12) + 1).ok()?;
+        let length = Jalali::month_length(year, month)?;
+        Jalali { year, month, day: from.day.min(length) }.to_day()
+    }
+
     /// The Gregorian day, or `None` for a day the calendar does not have.
     pub fn to_day(self) -> Option<Day> {
-        let (leap, gregorian, march) = year_of(i64::from(self.year))?;
-        let length = match self.month {
-            1..=6 => 31,
-            7..=11 => 30,
-            12 if leap => 30,
-            12 => 29,
-            _ => return None,
-        };
+        let (_, gregorian, march) = year_of(i64::from(self.year))?;
+        let length = Jalali::month_length(self.year, self.month)?;
         if self.day == 0 || self.day > length {
             return None;
         }
@@ -186,6 +207,23 @@ mod tests {
         }
         assert_eq!(Jalali { year: 1404, month: 12, day: 30 }.to_day(), None);
         assert_eq!(Jalali { year: 1403, month: 12, day: 30 }.to_day(), Some(day(2025, 3, 20)));
+    }
+
+    #[test]
+    fn a_month_on_keeps_the_day_or_the_last_one() {
+        // Dey 10 to Bahman 10, a day before the Gregorian month would go.
+        assert_eq!(Jalali::adding_months(day(2026, 12, 31), 1), Some(day(2027, 1, 30)));
+        // Shahrivar 31 to Mehr 30.
+        assert_eq!(Jalali::adding_months(day(2026, 9, 22), 1), Some(day(2026, 10, 22)));
+        // 1403-12-30, a leap Esfand, to 1404-12-29.
+        assert_eq!(Jalali::adding_months(day(2025, 3, 20), 12), Some(day(2026, 3, 20)));
+        // Dey 10 1405 to Farvardin 10 1406, over the year's end.
+        assert_eq!(Jalali::adding_months(day(2026, 12, 31), 3), Some(day(2027, 3, 30)));
+        assert_eq!(Jalali::adding_months(day(2026, 12, 31), -1), Some(day(2026, 12, 1)));
+        assert_eq!(Jalali::adding_months(day(2026, 12, 31), 12 * 5000), None);
+        assert_eq!(Jalali::month_length(1403, 12), Some(30));
+        assert_eq!(Jalali::month_length(1404, 12), Some(29));
+        assert_eq!(Jalali::month_length(1404, 13), None);
     }
 
     #[test]

@@ -430,7 +430,10 @@ pub(crate) fn task_problems(task: &ParsedTask, statuses: &TaskStatuses, today: &
     }
     if let Some(rule) = &task.recurring {
         if Recurrence::parse(rule).is_none() {
-            found.push(("task-repeat", format!("🔁 {rule} is not a rule it can repeat by (every 2 weeks, every month when done)")));
+            found.push((
+                "task-repeat",
+                format!("🔁 {rule} is not a rule it can repeat by (every 2 weeks, every month when done, every jalali month)"),
+            ));
         } else if task.due.is_none() && task.scheduled.is_none() && task.start.is_none() {
             found.push(("task-repeat", "repeats, but has no 📅, ⏳ or 🛫 date to repeat from".to_string()));
         }
@@ -1007,6 +1010,14 @@ mod tests {
         );
         // Warnings: they fail only with --strict.
         assert!(lines.iter().all(|l| l.contains("\twarning\t")));
+    }
+
+    #[test]
+    fn a_jalali_rule_is_one_it_can_repeat_by() {
+        let dir = vault(&[("T.md", "- [ ] Rent 🔁 every jalali month ⏳ 2026-12-31\n- [ ] Odd 🔁 every jalali week ⏳ 2026-12-31\n")]);
+        let lines = findings(dir.path(), &options());
+        let kinds: Vec<(&str, &str)> = lines.iter().map(|l| (l.split('\t').next().unwrap(), l.split('\t').nth(2).unwrap())).collect();
+        assert_eq!(kinds, [("T.md:2", "task-repeat")], "{lines:#?}");
     }
 
     #[test]
