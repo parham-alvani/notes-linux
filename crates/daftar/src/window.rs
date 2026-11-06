@@ -1255,6 +1255,38 @@ impl Window {
         *self.config_monitor.borrow_mut() = Some(monitor);
     }
 
+    /// The last failed sync's whole output from git, to read or copy.
+    fn show_sync_error(&self) {
+        let Some((at, failure)) = self.git.last_failure() else {
+            self.toasts.add_toast(crate::toast("The last sync went through."));
+            return;
+        };
+        let output = gtk::Label::builder()
+            .label(if failure.output.is_empty() { "(git said nothing)" } else { failure.output.as_str() })
+            .selectable(true)
+            .wrap(true)
+            .xalign(0.0)
+            .css_classes(["monospace"])
+            .build();
+        let scrolled = gtk::ScrolledWindow::builder()
+            .child(&output)
+            .min_content_height(160)
+            .max_content_height(360)
+            .propagate_natural_height(true)
+            .build();
+        let dialog = adw::AlertDialog::builder()
+            .heading("Last Sync Error")
+            .body(format!("At {at}, git {} failed:", failure.arguments.join(" ")))
+            .extra_child(&scrolled)
+            .close_response("close")
+            .build();
+        dialog.add_responses(&[("close", "Close"), ("sync", "Sync Again")]);
+        dialog.set_response_appearance("sync", adw::ResponseAppearance::Suggested);
+        let git = self.git.clone();
+        dialog.connect_response(Some("sync"), move |_, _| git.run(Run::Sync, true));
+        dialog.present(Some(&self.window));
+    }
+
     fn reload_readers(&self) {
         let tabs = self.tabs.borrow().clone();
         for tab in &tabs {
@@ -1663,6 +1695,10 @@ impl Window {
             action.connect_activate(move |_, _| this.text_size(step));
             self.window.add_action(&action);
         }
+        let sync_error = gio::SimpleAction::new("sync-error", None);
+        let this = self.clone();
+        sync_error.connect_activate(move |_, _| this.show_sync_error());
+        self.window.add_action(&sync_error);
         for (name, kind) in [("sync", Run::Sync), ("pull", Run::Pull)] {
             let action = gio::SimpleAction::new(name, None);
             let git = self.git.clone();

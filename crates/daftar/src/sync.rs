@@ -74,6 +74,8 @@ pub struct GitSync {
     conflicts: RefCell<Vec<Conflicted>>,
     /// Shows the conflicts: the window's dialog.
     on_stopped: RefCell<Option<Shown>>,
+    /// The last run that failed, at what time, until one goes through.
+    failure: RefCell<Option<(String, GitFailure)>>,
 }
 
 impl GitSync {
@@ -90,6 +92,7 @@ impl GitSync {
         menu.append(Some("Sync Now"), Some("win.sync"));
         menu.append(Some("Pull"), Some("win.pull"));
         menu.append(Some("Resolve Sync Conflicts…"), Some("win.conflicts"));
+        menu.append(Some("Last Sync Error…"), Some("win.sync-error"));
         let button = gtk::MenuButton::builder().child(&content).menu_model(&menu).css_classes(["flat"]).visible(false).build();
         Rc::new(GitSync {
             button,
@@ -103,6 +106,7 @@ impl GitSync {
             soon: RefCell::new(None),
             notice: Box::new(notice),
             rebasing: Cell::new(false),
+            failure: RefCell::new(None),
             conflicts: RefCell::new(Vec::new()),
             on_stopped: RefCell::new(None),
         })
@@ -333,9 +337,16 @@ impl GitSync {
                     this.set_conflicts(true, stopped.conflicts);
                     this.stopped(loud);
                 }
-                Err(SyncFailure::Git(failure)) => (this.notice)(&describe(&failure)),
-                Ok(done) if loud => (this.notice)(&summary(kind, done)),
-                Ok(_) => {}
+                Err(SyncFailure::Git(failure)) => {
+                    (this.notice)(&describe(&failure));
+                    this.failed(Some(failure));
+                }
+                Ok(done) => {
+                    this.failed(None);
+                    if loud {
+                        (this.notice)(&summary(kind, done));
+                    }
+                }
             }
         });
     }
@@ -421,6 +432,29 @@ impl GitSync {
         self.button.set_sensitive(!on);
     }
 
+    /// The last failure, with the time it came: git's whole output.
+    pub fn last_failure(&self) -> Option<(String, GitFailure)> {
+        self.failure.borrow().clone()
+    }
+
+    /// A run failed, or [None], went through: the button says which.
+    fn failed(&self, failure: Option<GitFailure>) {
+        let failed = failure.is_some();
+        *self.failure.borrow_mut() = failure.map(|failure| (chrono::Local::now().format("%H:%M").to_string(), failure));
+        self.icon.set_icon_name(Some(if failed { "dialog-warning-symbolic" } else { "emblem-synchronizing-symbolic" }));
+        if let Some(text) = self.button.tooltip_text() {
+            let text = text.split("\nThe last sync failed").next().unwrap_or_default().to_string();
+            self.button.set_tooltip_text(Some(&self.with_failure(text)));
+        }
+    }
+
+    fn with_failure(&self, tooltip: String) -> String {
+        match &*self.failure.borrow() {
+            Some((at, _)) => format!("{tooltip}\nThe last sync failed at {at}: its output is under Last Sync Error…"),
+            None => tooltip,
+        }
+    }
+
     fn show(&self, status: &GitStatus) {
         if self.rebasing.get() {
             let count = self.conflicts.borrow().len();
@@ -429,7 +463,7 @@ impl GitSync {
             return;
         }
         self.label.set_label(&badge(status));
-        self.button.set_tooltip_text(Some(&tooltip(status)));
+        self.button.set_tooltip_text(Some(&self.with_failure(tooltip(status))));
     }
 }
 
