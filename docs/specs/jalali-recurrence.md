@@ -14,7 +14,7 @@ The dates on the task stay Gregorian, as every other date in the vault is: only 
 
 Reading, case-insensitively, after trimming and taking a trailing `when done` off as the plain intervals do:
 
-- `every [N] jalali (month|year)[s]`: `N` is a positive whole number, 1 when it is not written, at most the app's existing limit for the plain intervals (10,000 on Android). Whitespace between the words is one or more spaces.
+- `every [N] jalali (month|year)[s]`: `N` is a positive whole number, 1 when it is not written, at most 10,000, the limit of every rule, plain intervals too: `every 10001 days` and `every 999999999 years` are refused, so a tick never overflows. Whitespace between the words is one or more spaces.
 - `jalali` with `day` or `week` is refused: a day and a week are the same in both calendars, so `every day` and `every week` say it. Anything else (`every jalali`, `every 0 jalali months`, `every jalali month on the 10th`, `every persian month`) is refused too.
 - A refused rule is what it is today: the tick completes the task without a next one, the edit form shows its warning, and `daftar-cli check` reports `task-repeat`.
 - In code it is a `Recurrence` whose unit is one of two new ones, `JalaliMonth` and `JalaliYear` (`jalali_month` / `JALALI_MONTH` in each language's style). The existing four units are untouched.
@@ -28,7 +28,7 @@ From a Gregorian day `D`, a step of `N` Jalali months:
 3. Clamp `d` to the length of the new month: months 1 to 6 have 31 days, 7 to 11 have 30, and 12 (Esfand) has 30 in a leap year and 29 otherwise.
 4. Convert back to the Gregorian day.
 
-Everything else is the plain intervals' rule, unchanged: the step starts from the leading date (📅, else ⏳, else 🛫; or today with `when done`), steps are chained until the date is after today (a task ticked late does not come back overdue), and every date of the task moves by the same number of days as the leading one. A chained step clamps from the day it reached, as `every month` does: a 31st that went to a 30th stays on the 30th.
+Everything else is the plain intervals' rule, unchanged: the step starts from the leading date (📅, else ⏳, else 🛫; or today with `when done`), steps are chained until the date is after today (a task ticked late does not come back overdue, however late: days and weeks jump there in one step, and months and years stop after 4,000 steps with no next occurrence rather than an overdue one), and every date of the task moves by the same number of days as the leading one. A chained step clamps from the day it reached, as `every month` does: a 31st that went to a 30th stays on the 30th.
 
 The conversion is jalaali-js's arithmetic (Borkowski's leap years, as Iran's calendar sets them), good for Jalali years 1 to 3177. Linux has it as `daftar_core::jalali` (`jalali.rs`); macOS and Android port that file, with its tests, so the three agree day for day. Do not use a platform's Persian calendar (Foundation's `.persian`, ICU's `PersianCalendar`): their leap years can differ from Iran's, and the three apps must give the same date. A step outside the calendar's range leaves the task completed without a next one, never a crash.
 
@@ -66,3 +66,12 @@ Ticking (today in brackets; the first line is the next one the tick leaves above
 | `- [ ] Pay 🔁 every 3 jalali months ⏳ 2026-12-31` [2026-12-31] | `⏳ 2027-03-30` (Dey 10 → Farvardin 10, 1406) |
 
 The completed copy below is the plain intervals' (`- [x] … ✅ today`). Linux also checks that `daftar-cli check` reports no `task-repeat` for `🔁 every jalali month` and still reports one for `🔁 every jalali week`.
+
+Limits, for every rule (added after the first release, in every app):
+
+| Task | Today | Next |
+| --- | --- | --- |
+| `- [ ] Far 🔁 every 999999999 years 📅 2026-01-01` | 2026-01-01 | none: ticked as `- [x] … ✅ 2026-01-01` |
+| `- [ ] Water 🔁 every day 📅 1990-01-01` | 2026-11-06 | `📅 2026-11-07` |
+| `- [ ] Bins 🔁 every 2 weeks 📅 1990-01-01` | 2026-11-06 | `📅 2026-11-16` |
+| `- [ ] Rent 🔁 every month 📅 1990-01-31` | 2026-11-06 | `📅 2026-11-28` |

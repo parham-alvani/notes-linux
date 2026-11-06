@@ -485,6 +485,13 @@ pub enum Unit {
     JalaliYear,
 }
 
+/// The most a rule's number may be, in every app: a larger one is refused,
+/// so the task is ticked with no next occurrence.
+pub const MAX_AMOUNT: u32 = 10_000;
+
+/// The most chained steps of a month or a year: 333 years of months.
+const MAX_STEPS: u32 = 4000;
+
 static RULE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^every(?:\s+(\d+))?\s+(?:(jalali)\s+(month|year)|(day|week|month|year))s?$").unwrap());
 
@@ -500,7 +507,7 @@ impl Recurrence {
             Some(m) => m.as_str().parse().ok()?,
             None => 1,
         };
-        if amount == 0 {
+        if amount == 0 || amount > MAX_AMOUNT {
             return None;
         }
         let unit = match caps.get(3).map(|m| m.as_str()) {
@@ -517,12 +524,27 @@ impl Recurrence {
     }
 
     /// Stepped until it lands after [not_before], so a daily task ticked ten
-    /// days late does not come back already overdue. `None` when a step runs
-    /// off the Jalali calendar.
+    /// days late does not come back already overdue: days and weeks in one
+    /// jump, months and years a step at a time, as each clamps from the day
+    /// the last one reached. `None` when a step runs off the calendar, or
+    /// months and years would take more than `MAX_STEPS`.
     pub fn next(&self, from: Day, not_before: Day) -> Option<Day> {
+        let days = match self.unit {
+            Unit::Day => Some(i64::from(self.amount)),
+            Unit::Week => Some(7 * i64::from(self.amount)),
+            _ => None,
+        };
+        if let Some(days) = days {
+            let behind = from.days_to(not_before);
+            let steps = if behind < 0 { 1 } else { behind / days + 1 };
+            return from.checked_adding_days(steps.checked_mul(days)?);
+        }
         let mut date = self.step(from)?;
         let mut guard = 0;
-        while date <= not_before && guard < 4000 {
+        while date <= not_before {
+            if guard == MAX_STEPS {
+                return None;
+            }
             date = self.step(date)?;
             guard += 1;
         }
@@ -531,14 +553,14 @@ impl Recurrence {
 
     fn step(self, day: Day) -> Option<Day> {
         let n = i64::from(self.amount);
-        Some(match self.unit {
-            Unit::Day => day.adding_days(n),
-            Unit::Week => day.adding_days(7 * n),
-            Unit::Month => day.adding_months(n as i32),
-            Unit::Year => day.adding_months(12 * n as i32),
-            Unit::JalaliMonth => Jalali::adding_months(day, n)?,
-            Unit::JalaliYear => Jalali::adding_months(day, 12 * n)?,
-        })
+        match self.unit {
+            Unit::Day => day.checked_adding_days(n),
+            Unit::Week => day.checked_adding_days(7 * n),
+            Unit::Month => day.checked_adding_months(n),
+            Unit::Year => day.checked_adding_months(12 * n),
+            Unit::JalaliMonth => Jalali::adding_months(day, n),
+            Unit::JalaliYear => Jalali::adding_months(day, 12 * n),
+        }
     }
 }
 
@@ -631,6 +653,31 @@ mod tests {
             toggled("- [ ] Haircut 🔁 every month when done ⏳ 2026-01-31", "2026-03-15")[0],
             "- [ ] Haircut 🔁 every month when done ⏳ 2026-04-15"
         );
+    }
+
+    #[test]
+    fn a_number_over_the_limit_is_refused() {
+        assert_eq!(Recurrence::parse("every 10000 years").map(|r| r.amount), Some(10_000));
+        for refused in ["every 10001 days", "every 999999999 years", "every 4000000000 days", "every 99999999999999999999 weeks"] {
+            assert_eq!(Recurrence::parse(refused), None, "{refused}");
+        }
+        // Ticked with no next occurrence, never a crash.
+        assert_eq!(
+            toggled("- [ ] Far 🔁 every 999999999 years 📅 2026-01-01", "2026-01-01"),
+            ["- [x] Far 🔁 every 999999999 years 📅 2026-01-01 ✅ 2026-01-01"]
+        );
+        assert_eq!(
+            toggled("- [ ] Far 🔁 every 10000 years 📅 2026-01-01", "2026-01-01")[0],
+            "- [ ] Far 🔁 every 10000 years 📅 12026-01-01"
+        );
+    }
+
+    #[test]
+    fn a_task_ticked_years_late_comes_back_after_today() {
+        assert_eq!(toggled("- [ ] Water 🔁 every day 📅 1990-01-01", "2026-11-06")[0], "- [ ] Water 🔁 every day 📅 2026-11-07");
+        assert_eq!(toggled("- [ ] Bins 🔁 every 2 weeks 📅 1990-01-01", "2026-11-06")[0], "- [ ] Bins 🔁 every 2 weeks 📅 2026-11-16");
+        assert_eq!(toggled("- [ ] Rent 🔁 every month 📅 1990-01-31", "2026-11-06")[0], "- [ ] Rent 🔁 every month 📅 2026-11-28");
+        assert_eq!(toggled("- [ ] Early 🔁 every day 📅 2026-12-01", "2026-11-06")[0], "- [ ] Early 🔁 every day 📅 2026-12-02");
     }
 
     #[test]

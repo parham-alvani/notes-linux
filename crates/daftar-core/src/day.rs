@@ -65,6 +65,17 @@ impl Day {
         Day(date.expect("a date in range"))
     }
 
+    /// [adding_days], or `None` past the calendar's range.
+    pub fn checked_adding_days(self, days: i64) -> Option<Day> {
+        self.0.checked_add_signed(chrono::Duration::try_days(days)?).map(Day)
+    }
+
+    /// [adding_months], or `None` past the calendar's range.
+    pub fn checked_adding_months(self, months: i64) -> Option<Day> {
+        let count = Months::new(u32::try_from(months.unsigned_abs()).ok()?);
+        if months >= 0 { self.0.checked_add_months(count) } else { self.0.checked_sub_months(count) }.map(Day)
+    }
+
     /// Whole days from this day to [other]; negative when [other] is earlier.
     pub fn days_to(self, other: Day) -> i64 {
         (other.0 - self.0).num_days()
