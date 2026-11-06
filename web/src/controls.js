@@ -80,25 +80,28 @@ export function zoomLabel(alt, diagram) {
   return `${alt ? alt : "Picture"}. Escape closes it.`;
 }
 
-/** The buttons of a picture opened large; ‹ and › only when the note has more than one. */
-export function zoomBar(count) {
-  const step = count > 1
-    ? `<button type="button" class="zoom-prev" title="Previous picture (←)" aria-label="Previous picture">‹</button>` +
-      `<span class="zoom-count" aria-live="polite"></span>` +
-      `<button type="button" class="zoom-next" title="Next picture (→)" aria-label="Next picture">›</button>`
-    : "";
+/**
+ * The bar of a picture: zoom out, the zoom in words, zoom in, fit, 100 %,
+ * and on a picture file's own page, a button that opens it in its own app.
+ */
+export function imageBar({ external = false } = {}) {
   return (
-    `<div class="zoom-bar" role="toolbar" aria-label="Picture">${step}` +
-    `<button type="button" class="zoom-out" title="Zoom out (−)" aria-label="Zoom out">−</button>` +
-    `<span class="zoom-scale"></span>` +
-    `<button type="button" class="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>` +
-    `<button type="button" class="zoom-fit" title="Fit the window (0)" aria-label="Fit the window">Fit</button>` +
-    `<button type="button" class="zoom-actual" title="Actual size (1)" aria-label="Actual size">1:1</button>` +
-    `<button type="button" class="zoom-close" title="Close (Escape)" aria-label="Close">✕</button></div>`
+    `<div class="image-bar" role="toolbar" aria-label="Zoom">` +
+    `<button type="button" data-zoom="out" title="Zoom out (−)" aria-label="Zoom out">−</button>` +
+    `<span class="image-percent" aria-label="Zoom">100 %</span>` +
+    `<button type="button" data-zoom="in" title="Zoom in (+)" aria-label="Zoom in">+</button>` +
+    `<button type="button" data-zoom="fit" title="Fit in the window (0)" aria-label="Fit in the window">Fit</button>` +
+    `<button type="button" data-zoom="actual" title="Actual size (1)" aria-label="Actual size">1:1</button>` +
+    (external ? `<button type="button" class="image-external" title="Open in the default app" aria-label="Open in the default app">Open in Default App</button>` : "") +
+    `</div>`
   );
 }
 
-/** "125%": a zoom as the bar shows it. */
-export function zoomPercent(scale) {
-  return `${Math.round(scale * 100)}%`;
+/** The line under a picture file: "1200 × 800 · 245 KB · PNG image", with what is known. */
+export function imageInfo(width, height, size, type) {
+  const parts = [];
+  if (width > 0 && height > 0) parts.push(`${width} × ${height}`);
+  if (size) parts.push(size);
+  if (type) parts.push(type);
+  return escape(parts.join(" · "));
 }

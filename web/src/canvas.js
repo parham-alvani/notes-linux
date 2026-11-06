@@ -15,7 +15,7 @@ export function canvasColor(value) {
   return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value) ? value : null;
 }
 
-const IMAGE = /\.(png|jpe?g|gif|webp|svg|bmp|avif|heic|tiff?)$/i;
+const IMAGE = /\.(png|jpe?g|gif|webp|svg|bmp|avif|hei[cf]|tiff?)$/i;
 
 /** The box around every card, for fitting the board to the window. */
 export function bounds(nodes) {

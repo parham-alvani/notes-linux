@@ -2,10 +2,11 @@
 // what the person does with it. Every message to the app goes through
 // `post`, and the app calls `daftar.show` and `daftar.scrollTo`.
 
-import { render, renderInline, isClosed, hue, languageColor } from "./render.js";
+import { render, renderInline, isClosed, hue, languageColor, vaultUrl, escapeHtml } from "./render.js";
 import { renderView } from "./bases.js";
 import { renderCanvas, bounds, fit } from "./canvas.js";
-import { codeHead, findBar as findBarHtml, foldState, taskChip, baseTabs, canvasBar, zoomLabel, zoomBar, zoomPercent } from "./controls.js";
+import { codeHead, findBar as findBarHtml, foldState, taskChip, baseTabs, canvasBar, zoomLabel, imageBar, imageInfo } from "./controls.js";
+import { PanZoom, percent, svgSize } from "./viewer.js";
 
 const app = window.webkit?.messageHandlers;
 
@@ -81,7 +82,12 @@ function section(root, anchor) {
   if (anchor.startsWith("^")) {
     const block = root.querySelector(`[id="${CSS.escape(anchor)}"]`);
     const wrap = document.createElement("div");
-    if (block) wrap.appendChild(block.cloneNode(true));
+    if (block?.tagName === "LI") {
+      // An item alone, with what is nested under it, in a list of its kind.
+      const list = block.parentElement.cloneNode(false);
+      list.appendChild(block.cloneNode(true));
+      wrap.appendChild(list);
+    } else if (block) wrap.appendChild(block.cloneNode(true));
     return wrap;
   }
   const start = heading(root, anchor);
@@ -341,17 +347,11 @@ window.addEventListener("scroll", () => {
 }, { passive: true });
 
 /**
- * Click a picture or a diagram to see it large: the wheel, a pinch, + and −
- * zoom around the pointer, a drag pans, a double click goes between fitting
- * the window and the actual size (0 and 1 too), ← and → go to the note's
- * other pictures, and Escape or a click beside it closes it. A picture is
- * sized, not scaled, so an SVG stays sharp at any zoom; a GIF keeps playing.
+ * Click an image or a diagram to see it as large as the window allows, then
+ * zoom and pan it as a picture file's page does. A click on the backdrop or
+ * Escape closes it; a click on the picture does not, so it can be dragged.
  */
 function zoom(node) {
-  let pictures = [...document.querySelectorAll("#note img[tabindex], #note pre.mermaid svg[tabindex]")];
-  // A picture of a canvas or a card is shown alone.
-  if (!pictures.includes(node)) pictures = [node];
-  let at = pictures.indexOf(node);
   const overlay = document.createElement("div");
   overlay.className = "zoom";
   // A dialog that takes the focus and gives it back when it closes.
@@ -359,187 +359,91 @@ function zoom(node) {
   Object.assign(overlay, { tabIndex: -1 });
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
-  overlay.insertAdjacentHTML("beforeend", zoomBar(pictures.length));
-  const bar = overlay.querySelector(".zoom-bar");
-  // The picture's size at 1:1, its zoom, and where its top left corner is.
-  const view = { copy: null, width: 0, height: 0, vector: false, scale: 1, fit: 1, x: 0, y: 0 };
-  const room = () => ({ width: overlay.clientWidth, height: overlay.clientHeight });
-
-  const draw = () => {
-    const { copy } = view;
-    if (!copy) return;
-    const width = view.width * view.scale;
-    const height = view.height * view.scale;
-    const { width: w, height: h } = room();
-    // Smaller than the window, it is centred; larger, it never leaves an edge empty.
-    view.x = width <= w ? (w - width) / 2 : Math.min(0, Math.max(w - width, view.x));
-    view.y = height <= h ? (h - height) / 2 : Math.min(0, Math.max(h - height, view.y));
-    copy.style.width = `${width}px`;
-    copy.style.height = `${height}px`;
-    copy.style.transform = `translate(${view.x}px, ${view.y}px)`;
-    // Pixels drawn large are seen as pixels, as a screenshot's are.
-    copy.classList.toggle("is-pixelated", !view.vector && view.scale >= 2);
-    overlay.classList.toggle("is-larger", width > w + 1 || height > h + 1);
-    bar.querySelector(".zoom-scale").textContent = zoomPercent(view.scale);
-  };
-  // Zooms to [scale], keeping the point at ([cx], [cy]) of the window where it is.
-  const zoomTo = (scale, cx, cy) => {
-    const { width: w, height: h } = room();
-    cx ??= w / 2;
-    cy ??= h / 2;
-    const next = Math.min(Math.max(scale, Math.min(view.fit, 0.05)), 32);
-    view.x = cx - ((cx - view.x) * next) / view.scale;
-    view.y = cy - ((cy - view.y) * next) / view.scale;
-    view.scale = next;
-    draw();
-  };
-  const fit = () => {
-    view.scale = view.fit;
-    draw();
-  };
-
-  const show = (index) => {
-    at = (index + pictures.length) % pictures.length;
-    const node = pictures[at];
-    view.copy?.remove();
-    const image = node.tagName === "IMG";
-    const copy = image ? Object.assign(document.createElement("img"), { src: node.src, alt: node.alt, draggable: false }) : node.cloneNode(true);
-    for (const name of ["width", "height", "style", "tabindex", "class"]) copy.removeAttribute(name);
-    copy.classList.add("zoom-picture");
-    overlay.setAttribute("aria-label", zoomLabel(node.getAttribute("alt"), !image));
-    const count = bar.querySelector(".zoom-count");
-    if (count) count.textContent = `${at + 1} / ${pictures.length}`;
-    view.copy = copy;
-    overlay.insertBefore(copy, bar);
-    const measure = () => {
-      if (view.copy !== copy) return;
-      const { width: w, height: h } = room();
-      view.vector = !image || /\.svg(\?|#|$)/i.test(node.getAttribute("src") ?? "");
-      let width = image ? copy.naturalWidth : 0;
-      let height = image ? copy.naturalHeight : 0;
-      if (!image) {
-        const box = copy.viewBox?.baseVal;
-        const shown = node.getBoundingClientRect();
-        width = box?.width || shown.width;
-        height = box?.height || shown.height;
-      }
-      // An SVG with no size of its own takes the window's.
-      if (!width || !height) [width, height] = [w, h];
-      view.width = width;
-      view.height = height;
-      // A drawing fills the window; a photo is never blown up past its pixels.
-      const fits = Math.min((w - 32) / width, (h - 72) / height);
-      view.fit = view.vector ? fits : Math.min(1, fits);
-      view.scale = view.fit;
-      draw();
-    };
-    if (image && !copy.complete) copy.addEventListener("load", measure, { once: true });
-    else measure();
-  };
-
+  overlay.setAttribute("aria-label", zoomLabel(node.getAttribute("alt"), node.tagName !== "IMG"));
+  const diagram = node.tagName !== "IMG";
+  const copy = diagram ? node.cloneNode(true) : Object.assign(document.createElement("img"), { src: node.currentSrc || node.src, alt: node.alt });
+  for (const name of ["width", "height", "style", "tabindex"]) copy.removeAttribute(name);
+  copy.draggable = false;
+  overlay.innerHTML = imageBar();
+  overlay.prepend(copy);
+  document.body.appendChild(overlay);
+  const size = diagram
+    ? svgSize(node.getAttribute("viewBox"), node.getAttribute("width"), node.getAttribute("height"), node.getBoundingClientRect())
+    : { width: node.naturalWidth || node.clientWidth, height: node.naturalHeight || node.clientHeight };
+  const label = overlay.querySelector(".image-percent");
+  const viewer = new PanZoom(overlay, copy, { ...size, pad: 32, onChange: (view) => (label.textContent = percent(view.scale)) });
+  if (!diagram && !copy.complete) copy.addEventListener("load", () => viewer.setSize(copy.naturalWidth, copy.naturalHeight), { once: true });
+  overlay.querySelectorAll("[data-zoom]").forEach((button) => button.addEventListener("click", () => viewer.command(button.dataset.zoom)));
   const close = () => {
     overlay.remove();
+    viewer.observer.disconnect();
     document.removeEventListener("keydown", onKey, true);
-    window.removeEventListener("resize", onResize);
     back?.focus?.({ preventScroll: true });
   };
-  // Fitted, it fits the new window; zoomed, it stays as it is.
-  const onResize = () => (view.scale === view.fit ? show(at) : draw());
   const onKey = (event) => {
-    if (event.metaKey || event.altKey) return;
-    const keys = {
-      Escape: close,
-      "+": () => zoomTo(view.scale * 1.25),
-      "=": () => zoomTo(view.scale * 1.25),
-      "-": () => zoomTo(view.scale * 0.8),
-      0: fit,
-      1: () => zoomTo(1),
-      ArrowLeft: () => pictures.length > 1 && show(at - 1),
-      ArrowRight: () => pictures.length > 1 && show(at + 1),
-      PageUp: () => pictures.length > 1 && show(at - 1),
-      PageDown: () => pictures.length > 1 && show(at + 1),
-      Home: () => pictures.length > 1 && show(0),
-      End: () => pictures.length > 1 && show(pictures.length - 1),
-    };
-    // Ctrl with + − 0 is the zoom of the page elsewhere; here it is the picture's.
-    const action = keys[event.key];
-    if (!action || (event.ctrlKey && !"+=-0".includes(event.key))) return;
-    event.preventDefault();
-    event.stopPropagation();
-    action();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    } else if (viewer.key(event)) event.stopPropagation();
   };
-
-  bar.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const button = event.target.closest("button");
-    if (!button) return;
-    const actions = {
-      "zoom-prev": () => show(at - 1),
-      "zoom-next": () => show(at + 1),
-      "zoom-out": () => zoomTo(view.scale * 0.8),
-      "zoom-in": () => zoomTo(view.scale * 1.25),
-      "zoom-fit": fit,
-      "zoom-actual": () => zoomTo(1),
-      "zoom-close": close,
-    };
-    actions[[...button.classList].find((name) => actions[name])]?.();
+  // Only a click that went down and up on the backdrop, with no drag, closes.
+  let down = null;
+  overlay.addEventListener("pointerdown", (event) => (down = event.target), true);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay && down === overlay && !viewer.moved) close();
   });
-  // A trackpad pinch comes as a wheel with Control; a mouse wheel zooms too.
-  overlay.addEventListener("wheel", (event) => {
-    if (event.target.closest(".zoom-bar")) return;
-    event.preventDefault();
-    zoomTo(view.scale * Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.002)), event.clientX, event.clientY);
-  }, { passive: false });
-  // WebKit's own pinch, on a touchscreen.
-  let pinch = 1;
-  overlay.addEventListener("gesturestart", (event) => {
-    event.preventDefault();
-    pinch = 1;
-  });
-  overlay.addEventListener("gesturechange", (event) => {
-    event.preventDefault();
-    zoomTo((view.scale * event.scale) / pinch, event.clientX, event.clientY);
-    pinch = event.scale;
-  });
-  // A drag pans; a click that did not drag, beside the picture, closes.
-  let drag = null;
-  overlay.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || event.target.closest(".zoom-bar")) return;
-    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: view.x, startY: view.y, moved: false };
-    overlay.setPointerCapture(event.pointerId);
-  });
-  overlay.addEventListener("pointermove", (event) => {
-    if (!drag || drag.id !== event.pointerId) return;
-    const dx = event.clientX - drag.x;
-    const dy = event.clientY - drag.y;
-    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-    drag.moved = true;
-    overlay.classList.add("is-dragging");
-    view.x = drag.startX + dx;
-    view.y = drag.startY + dy;
-    draw();
-  });
-  const endDrag = (event) => {
-    if (!drag || drag.id !== event.pointerId) return;
-    const { moved } = drag;
-    drag = null;
-    overlay.classList.remove("is-dragging");
-    if (!moved && event.type === "pointerup" && !event.target.closest(".zoom-picture, .zoom-bar")) close();
-  };
-  overlay.addEventListener("pointerup", endDrag);
-  overlay.addEventListener("pointercancel", endDrag);
-  overlay.addEventListener("dblclick", (event) => {
-    if (!event.target.closest(".zoom-picture")) return;
-    if (Math.abs(view.scale - 1) < 0.01 && view.fit !== 1) fit();
-    else zoomTo(1, event.clientX, event.clientY);
-  });
-  // The page's own click handler must not see a click on the overlay.
-  overlay.addEventListener("click", (event) => event.stopPropagation());
   document.addEventListener("keydown", onKey, true);
-  window.addEventListener("resize", onResize);
-  document.body.appendChild(overlay);
-  show(at);
   overlay.focus();
+}
+
+/**
+ * A picture file on its own page: fitted to the window, zoomed and panned
+ * by `PanZoom`, with its bar and a line of what it is. The view is kept
+ * when the same file is shown again after it changed on disk.
+ */
+const imagePage = { viewer: null, path: "" };
+
+function showImage(main, note) {
+  const old = imagePage.viewer;
+  const kept = note.keepScroll && imagePage.path === note.path && old ? { view: old.view, fitted: old.fitted, width: old.width, height: old.height } : null;
+  old?.observer.disconnect();
+  imagePage.viewer = null;
+  imagePage.path = note.path;
+  const info = note.image ?? {};
+  main.innerHTML =
+    `<div class="image-page"><div class="image-stage">` +
+    `<img class="image-file" alt="${escapeHtml(note.title)}" draggable="false" src="${vaultUrl(note.path)}?v=${encodeURIComponent(info.version ?? "")}">` +
+    `</div><div class="image-foot"><span class="image-info" dir="auto">${imageInfo(0, 0, info.size, info.type)}</span>${imageBar({ external: true })}</div></div>`;
+  const page = main.querySelector(".image-page");
+  const stage = page.querySelector(".image-stage");
+  const img = stage.querySelector("img");
+  const label = page.querySelector(".image-percent");
+  page.querySelectorAll("[data-zoom]").forEach((button) => button.addEventListener("click", () => imagePage.viewer?.command(button.dataset.zoom)));
+  page.querySelector(".image-external").addEventListener("click", () => post({ kind: "openExternal" }));
+  img.addEventListener(
+    "load",
+    () => {
+      // An SVG with only a viewBox has no size of its own: it fills the window.
+      const width = img.naturalWidth || stage.clientWidth, height = img.naturalHeight || stage.clientHeight;
+      page.querySelector(".image-info").innerHTML = imageInfo(img.naturalWidth, img.naturalHeight, info.size, info.type);
+      const viewer = new PanZoom(stage, img, { width, height, pad: 24, onChange: (view) => (label.textContent = percent(view.scale)) });
+      if (kept && !kept.fitted && kept.width === width && kept.height === height) {
+        viewer.fitted = false;
+        viewer.apply(kept.view);
+      }
+      imagePage.viewer = viewer;
+      img.classList.add("is-loaded");
+    },
+    { once: true },
+  );
+  img.addEventListener(
+    "error",
+    () => {
+      stage.innerHTML = `<p class="image-error">This picture cannot be shown here. Open it in the default app.</p>`;
+      page.querySelectorAll("[data-zoom]").forEach((button) => (button.disabled = true));
+    },
+    { once: true },
+  );
 }
 
 /** Says [text] with VoiceOver through the page's live region. */
@@ -757,7 +661,7 @@ function decorate(root) {
   root.querySelectorAll('input.task-list-item-checkbox[data-status="/"]').forEach((box) => (box.indeterminate = true));
   // A picture opens large with a click, or with Return or Space on it.
   root.querySelectorAll("img, pre.mermaid svg").forEach((picture) => {
-    if (picture.closest(".zoom, .preview, .base-card-cover") || picture.hasAttribute("tabindex")) return;
+    if (picture.closest(".zoom, .preview, .base-card-cover, .image-page") || picture.hasAttribute("tabindex")) return;
     picture.setAttribute("tabindex", "0");
     if (picture.tagName !== "IMG") {
       picture.setAttribute("role", "img");
@@ -959,9 +863,8 @@ function renderProperties(properties, note) {
 }
 
 function escape(text) {
-  const div = document.createElement("div");
-  div.textContent = String(text);
-  return div.innerHTML;
+  // Quotes too: the text goes into attributes (`data-path="…"`) as well.
+  return escapeHtml(String(text));
 }
 
 window.daftar = {
@@ -979,17 +882,27 @@ window.daftar = {
     // SF Pro's alternates mean other things in other fonts.
     root.setProperty("--font-features", note.fontText?.startsWith("-apple-system") === false ? "normal" : '"ss01" 1, "ss07" 1, "cv07" 1');
     if (note.fontCode) root.setProperty("--font-mono", note.fontCode);
+    if (typeof note.textWidth === "number") root.setProperty("--text-width", note.textWidth > 0 ? `${note.textWidth}em` : "none");
     if (typeof note.readingLine === "number") {
       reading.strength = Math.max(0, Math.min(100, note.readingLine));
       root.setProperty("--reading-line", `${reading.strength}%`);
     }
     const main = document.getElementById("note");
     main.classList.toggle("is-canvas", Boolean(note.canvas));
+    main.classList.toggle("is-image", Boolean(note.image));
     if (note.canvas) {
       await showCanvas(main, note);
       return;
     }
     board.el = null;
+    if (note.image) {
+      showImage(main, note);
+      // A picture has no reading cursor: the last note's goes.
+      reading.restore(null);
+      return;
+    }
+    imagePage.viewer?.observer.disconnect();
+    imagePage.viewer = null;
     main.innerHTML =
       `<h1 class="inline-title" dir="${RTL_FIRST.test(note.title) ? "rtl" : "auto"}">${escape(note.title)}</h1>` +
       renderProperties(note.properties, note) +
@@ -1032,7 +945,14 @@ window.daftar = {
     if (anchor.startsWith("^")) target = main.querySelector(`[id="${CSS.escape(anchor)}"]`);
     else target = heading(main, anchor);
     if (target) folds.reveal(target);
-    target?.scrollIntoView({ block: "start" });
+    target?.scrollIntoView({ block: anchor.startsWith("^") ? "center" : "start" });
+    // A block a link names is marked a moment, so the eye finds it.
+    if (target && anchor.startsWith("^")) {
+      target.classList.remove("is-linked-block");
+      void target.offsetWidth;
+      target.classList.add("is-linked-block");
+      target.addEventListener("animationend", () => target.classList.remove("is-linked-block"), { once: true });
+    }
   },
 
   /**
@@ -1064,11 +984,26 @@ window.daftar = {
   },
 
   /** Scrolls to the block that holds a file line. */
-  scrollToLine(line) {
+  /** [anchor]: a block link's `^id`, marked a moment; empty for a line alone. */
+  scrollToLine(line, anchor = "") {
     const blocks = [...document.querySelectorAll("#note [data-line]")];
     const target = blocks.filter((b) => Number(b.dataset.line) <= line).pop();
     if (target) folds.reveal(target);
-    target?.scrollIntoView({ block: "start" });
+    target?.scrollIntoView({ block: anchor.startsWith("^") ? "center" : "start" });
+    // A block a link names is marked a moment, so the eye finds it.
+    if (target && anchor.startsWith("^")) {
+      target.classList.remove("is-linked-block");
+      void target.offsetWidth;
+      target.classList.add("is-linked-block");
+      target.addEventListener("animationend", () => target.classList.remove("is-linked-block"), { once: true });
+    }
+  },
+
+  /** View › Zoom In, Zoom Out, Zoom to Fit and Actual Size on a picture file: "in", "out", "fit" or "actual". */
+  imageCommand(name) {
+    if (!imagePage.viewer?.stage.isConnected) return false;
+    imagePage.viewer.command(name);
+    return true;
   },
 
   /** Edit › Find, Find Next and Find Previous, from the app's menu. */
@@ -1271,7 +1206,7 @@ document.addEventListener("click", (event) => {
   }
   if (!link) {
     const picture = event.target.closest("#note img, #note pre.mermaid svg");
-    if (picture && !event.target.closest(".zoom")) zoom(picture);
+    if (picture && !event.target.closest(".zoom, .image-page")) zoom(picture);
     return;
   }
   if (link.classList.contains("tag")) {
@@ -1585,6 +1520,11 @@ document.addEventListener("keydown", (event) => {
   }
   // A focused control takes its own Return and Space, not the reading cursor's.
   if ((event.key === "Enter" || event.key === " ") && event.target.closest?.("button, a[href], summary, [role=tab]")) return;
+  // A picture file has none either: its keys pan and zoom.
+  if (imagePage.viewer?.stage.isConnected) {
+    imagePage.viewer.key(event);
+    return;
+  }
   // A canvas has no reading cursor: its keys pan and zoom.
   if (board.el?.isConnected) {
     boardKey(event);

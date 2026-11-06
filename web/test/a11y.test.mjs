@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { render, taskLabel, baseName } from "../src/render.js";
-import { codeHead, findBar, foldState, taskChip, baseTabs, canvasBar, zoomLabel, zoomBar, zoomPercent } from "../src/controls.js";
+import { codeHead, findBar, foldState, taskChip, baseTabs, canvasBar, zoomLabel, imageBar, imageInfo } from "../src/controls.js";
 import { renderView } from "../src/bases.js";
 
 const links = { Inbox: "Notes/Inbox.md", "logo.png": "uploads/logo.png" };
@@ -50,13 +50,6 @@ test("the page's controls are buttons with names", () => {
   for (const name of ["Zoom out", "Zoom in", "Show the whole canvas"]) assert.match(canvas, new RegExp(`aria-label="${name}"`));
   assert.equal(zoomLabel("logo", false), "logo. Escape closes it.");
   assert.equal(zoomLabel("", true), "Diagram. Escape closes it.");
-  // Every button of the picture viewer has a name; ‹ › only with more than one picture.
-  for (const count of [1, 3]) {
-    const bar = zoomBar(count);
-    for (const button of bar.match(/<button[^>]*>/g)) assert.match(button, /aria-label="[^"]+"/);
-    assert.equal(bar.includes("zoom-next"), count > 1);
-  }
-  assert.equal(zoomPercent(1.254), "125%");
 });
 
 test("a task chip says its colour: overdue, priority, repeat", () => {
@@ -75,4 +68,14 @@ test("a base's views are tabs, and its cells and cards have names", () => {
   const rows = [{ path: "Notes/Inbox.md", cells: [{ check: true, parts: [] }] }];
   assert.match(renderView({ kind: "table", columns: ["Done"], groups: [{ rows }], count: 1 }), /<th scope="col" dir="auto">Done<\/th>.*aria-label="Done"/s);
   assert.match(renderView({ kind: "cards", columns: ["Done"], groups: [{ rows }], count: 1 }), /class="base-card" role="group" aria-label="Inbox"/);
+});
+
+test("a picture's zoom bar is a toolbar of named buttons", () => {
+  const bar = imageBar();
+  assert.match(bar, /role="toolbar" aria-label="Zoom"/);
+  for (const name of ["Zoom out", "Zoom in", "Fit in the window", "Actual size"]) assert.match(bar, new RegExp(`<button type="button"[^>]*aria-label="${name}"`));
+  assert.doesNotMatch(bar, /default app/);
+  assert.match(imageBar({ external: true }), /<button type="button" class="image-external"[^>]*aria-label="Open in the default app">/);
+  assert.equal(imageInfo(1200, 800, "245 KB", "PNG image"), "1200 × 800 · 245 KB · PNG image");
+  assert.equal(imageInfo(0, 0, "3 KB", "SVG <image>"), "3 KB · SVG &lt;image&gt;");
 });

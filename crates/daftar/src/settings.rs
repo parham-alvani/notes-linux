@@ -93,6 +93,11 @@ impl AppSettings {
         self.file.int("appearance.text_size").unwrap_or(14)
     }
 
+    /// The reader's widest line, in em of the text size; 0 is the whole window.
+    pub fn text_width(&self) -> i64 {
+        self.file.int("appearance.text_width").unwrap_or(46).max(0)
+    }
+
     /// The reading cursor's band on the line being read, in percent of the accent; 0 is none.
     pub fn reading_line(&self) -> i64 {
         self.file.int("appearance.reading_line").unwrap_or(18).clamp(0, 100)
