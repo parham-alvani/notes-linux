@@ -14,7 +14,7 @@ use serde_json::json;
 use daftar_core::{SearchIndex, Value, Vault};
 
 use crate::board::{self, Board};
-use crate::editor::{Editor, Saved};
+use crate::editor::Editor;
 use crate::home::{self, HomePage};
 use crate::inspector::Inspector;
 use crate::notifier::{Notifier, Wanted};
@@ -317,10 +317,12 @@ impl Window {
             window.connect_close_request(move |_| {
                 this.save_tabs();
                 let tabs = this.tabs.borrow().clone();
-                for tab in &tabs {
-                    tab.editor.save();
+                let unsaved: Vec<Rc<Tab>> = tabs.iter().filter(|tab| tab.editor.save().kept()).cloned().collect();
+                if unsaved.is_empty() {
+                    return glib::Propagation::Proceed;
                 }
-                glib::Propagation::Proceed
+                this.ask_close_unsaved(unsaved);
+                glib::Propagation::Stop
             });
         }
         this.add_actions();
@@ -591,9 +593,9 @@ impl Window {
             return glib::Propagation::Stop;
         }
         let panes = self.panes_of(&group);
-        if panes.iter().any(|tab| tab.editing() && tab.editor.close() == Saved::ChangedOnDisk) {
+        if panes.iter().any(|tab| tab.editing() && tab.editor.close().kept()) {
             self.tab_view.close_page_finish(page, false);
-            self.toasts.add_toast(adw::Toast::new("The note changed on disk; the tab stays open so the text is not lost."));
+            self.toasts.add_toast(adw::Toast::new("The note was not saved; the tab stays open so the text is not lost."));
             return glib::Propagation::Stop;
         }
         self.tabs.borrow_mut().retain(|other| !Rc::ptr_eq(&other.group, &group));
@@ -822,6 +824,31 @@ impl Window {
         }
     }
 
+    /// The window was closed with text its editors could not save: the
+    /// person keeps editing, or lets the text go and the window closes.
+    fn ask_close_unsaved(&self, unsaved: Vec<Rc<Tab>>) {
+        let names: Vec<String> = unsaved.iter().filter_map(|tab| tab.editor.path()).collect();
+        let dialog = adw::AlertDialog::builder()
+            .heading("Close Without Saving?")
+            .body(format!(
+                "{} could not be saved: it changed on disk, or it could not be written. Closing loses what you typed since the last save.",
+                names.join(", ")
+            ))
+            .default_response("keep")
+            .close_response("keep")
+            .build();
+        dialog.add_responses(&[("keep", "Keep Editing"), ("discard", "Close Without Saving")]);
+        dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+        let this = self.clone();
+        dialog.connect_response(Some("discard"), move |_, _| {
+            for tab in &unsaved {
+                tab.editor.discard();
+            }
+            this.window.close();
+        });
+        dialog.present(Some(&self.window));
+    }
+
     /// Saves and closes the chosen tab's editor; false when the save was
     /// refused, and the editor stays so the person's text is not lost.
     fn leave_editor(&self) -> bool {
@@ -833,7 +860,7 @@ impl Window {
             return true;
         }
         let path = tab.editor.path();
-        if tab.editor.close() == Saved::ChangedOnDisk {
+        if tab.editor.close().kept() {
             return false;
         }
         if self.is_chosen(tab) {

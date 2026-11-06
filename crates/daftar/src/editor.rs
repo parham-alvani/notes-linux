@@ -58,6 +58,14 @@ pub enum Saved {
     Failed(String),
 }
 
+impl Saved {
+    /// The text is still only in the editor: the file changed under it, or
+    /// it could not be written. Whoever was letting the note go keeps it.
+    pub fn kept(&self) -> bool {
+        matches!(self, Saved::ChangedOnDisk | Saved::Failed(_))
+    }
+}
+
 /// The note open in the editor: its path, and the text the file had when it
 /// was loaded or last saved.
 struct Open {
@@ -394,16 +402,28 @@ impl Editor {
         self.vim.borrow().is_some()
     }
 
-    /// Saves, then lets go of the note.
+    /// Saves, then lets go of the note, unless the save kept the text.
     pub fn close(&self) -> Saved {
         let saved = self.save();
-        if saved != Saved::ChangedOnDisk {
-            self.stop_vim();
-            self.popup.close();
-            self.clear_pictures();
-            *self.open.borrow_mut() = None;
+        if !saved.kept() {
+            self.release();
         }
         saved
+    }
+
+    /// Lets go of the note and what was typed into it since the last save:
+    /// the person chose to.
+    pub fn discard(&self) {
+        self.cancel_pending();
+        self.buffer.set_modified(false);
+        self.release();
+    }
+
+    fn release(&self) {
+        self.stop_vim();
+        self.popup.close();
+        self.clear_pictures();
+        *self.open.borrow_mut() = None;
     }
 
     /// The file changed on disk: an editor with nothing unsaved reads it
