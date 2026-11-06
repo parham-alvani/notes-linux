@@ -605,25 +605,69 @@ fn register_schemes() {
             let path = request.path().unwrap_or_default();
             let path = path.trim_start_matches('/');
             match READER.get_file(path) {
-                Some(file) => respond(request, file.contents().to_vec(), path, false),
+                Some(file) => respond(request, Body::Bytes(file.contents()), path, false),
                 None => fail(request),
             }
         });
         context.register_uri_scheme("vault", |request| {
             let path = request.path().unwrap_or_default();
             let path = glib::Uri::unescape_string(&path, None::<&str>).map(|p| p.to_string()).unwrap_or_default();
-            let file = VAULT_ROOT.with(|root| root.borrow().as_ref().and_then(|root| file_in(path.trim_start_matches('/'), root)));
-            match file.and_then(|file| std::fs::read(file).ok()) {
-                Some(data) => respond(request, data, &path, true),
+            let inside = path.trim_start_matches('/');
+            // `.git`, `.obsidian` and the like are not the vault's notes.
+            let hidden = inside.split('/').any(|part| part.starts_with('.'));
+            let file = VAULT_ROOT
+                .with(|root| root.borrow().as_ref().and_then(|root| file_in(inside, root)))
+                .filter(|file| !hidden && file.is_file());
+            match file {
+                Some(file) => respond(request, Body::File(file), &path, true),
                 None => fail(request),
             }
         });
     });
 }
 
+/// What a scheme serves: a file of the reader, built in, or one of the vault,
+/// read from disk only as far as the request asks.
+enum Body {
+    Bytes(&'static [u8]),
+    File(PathBuf),
+}
+
+impl Body {
+    fn size(&self) -> Option<usize> {
+        match self {
+            Body::Bytes(data) => Some(data.len()),
+            Body::File(file) => std::fs::metadata(file).ok().and_then(|m| usize::try_from(m.len()).ok()),
+        }
+    }
+
+    /// The bytes from [start] to [end], both in.
+    fn part(&self, start: usize, end: usize) -> Option<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        match self {
+            Body::Bytes(data) => data.get(start..=end).map(<[u8]>::to_vec),
+            Body::File(file) => {
+                let mut opened = std::fs::File::open(file).ok()?;
+                opened.seek(SeekFrom::Start(start as u64)).ok()?;
+                let mut out = vec![0; end - start + 1];
+                opened.read_exact(&mut out).ok()?;
+                Some(out)
+            }
+        }
+    }
+
+    /// All of it, as a stream: a file is read as WebKit takes it, not copied first.
+    fn stream(&self) -> Option<gio::InputStream> {
+        match self {
+            Body::Bytes(data) => Some(gio::MemoryInputStream::from_bytes(&glib::Bytes::from_static(data)).upcast()),
+            Body::File(file) => gio::File::for_path(file).read(gio::Cancellable::NONE).ok().map(Cast::upcast),
+        }
+    }
+}
+
 /// A video or a sound is read in parts, with `Range: bytes=start-end`, and
 /// a page or a picture from the vault with script in it runs with no rights.
-fn respond(request: &URISchemeRequest, data: Vec<u8>, path: &str, from_vault: bool) {
+fn respond(request: &URISchemeRequest, data: Body, path: &str, from_vault: bool) {
     let kind = mime_guess::from_path(path).first_or_octet_stream().essence_str().to_string();
     let headers = soup::MessageHeaders::new(soup::MessageHeadersType::Response);
     let sandboxed = ["text/html", "image/svg+xml", "application/xhtml+xml", "text/xml", "application/xml"].contains(&kind.as_str());
@@ -631,23 +675,25 @@ fn respond(request: &URISchemeRequest, data: Vec<u8>, path: &str, from_vault: bo
         headers.append("Content-Security-Policy", "sandbox; default-src 'none'; img-src vault: data:; style-src 'unsafe-inline'");
     }
     headers.append("Accept-Ranges", "bytes");
-    let size = data.len();
+    let Some(size) = data.size() else { return fail(request) };
     let range = request.http_headers().and_then(|h| h.one("Range")).map(|r| r.to_string());
-    let (status, body) = match range {
+    let part = |bytes: Vec<u8>| -> gio::InputStream { gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes)).upcast() };
+    let (status, stream, length) = match range {
         Some(range) => {
-            if let Some((start, end)) = bytes(&range, size) {
+            if let Some((start, end, body)) = bytes(&range, size).and_then(|(start, end)| Some((start, end, data.part(start, end)?))) {
                 headers.append("Content-Range", &format!("bytes {start}-{end}/{size}"));
-                (206, data[start..=end].to_vec())
+                (206, part(body), end - start + 1)
             } else {
                 headers.append("Content-Range", &format!("bytes */{size}"));
-                (416, Vec::new())
+                (416, part(Vec::new()), 0)
             }
         }
-        None => (200, data),
+        None => match data.stream() {
+            Some(stream) => (200, stream, size),
+            None => return fail(request),
+        },
     };
-    let length = body.len() as i64;
-    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(body));
-    let response = URISchemeResponse::new(&stream, length);
+    let response = URISchemeResponse::new(&stream, i64::try_from(length).unwrap_or(i64::MAX));
     response.set_status(status, None);
     response.set_content_type(&kind);
     response.set_http_headers(headers);
@@ -672,7 +718,7 @@ fn bytes(header: &str, size: usize) -> Option<(usize, usize)> {
     let (first, last) = (first.parse::<usize>().ok(), last.parse::<usize>().ok());
     let (start, end) = match (first, last) {
         (Some(a), Some(b)) => (a, b.min(size - 1)),
-        (Some(a), None) => (a, (size - 1).min(a + CHUNK - 1)),
+        (Some(a), None) => (a, (size - 1).min(a.saturating_add(CHUNK - 1))),
         (None, Some(b)) => (size.saturating_sub(b), size - 1),
         (None, None) => return None,
     };
@@ -811,6 +857,19 @@ mod tests {
         assert_eq!(bytes("bytes=10-", 10), None);
         assert_eq!(bytes("bytes=0-", CHUNK * 2), Some((0, CHUNK - 1)));
         assert_eq!(bytes("lines=0-", 10), None);
+        assert_eq!(bytes(&format!("bytes={}-", usize::MAX), 10), None);
+    }
+
+    #[test]
+    fn a_part_is_read_from_the_file_alone() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("a.bin");
+        std::fs::write(&file, b"0123456789").unwrap();
+        let body = Body::File(file);
+        assert_eq!(body.size(), Some(10));
+        assert_eq!(body.part(2, 4).as_deref(), Some(&b"234"[..]));
+        assert_eq!(body.part(8, 12), None);
+        assert_eq!(Body::Bytes(b"abc").part(1, 2).as_deref(), Some(&b"bc"[..]));
     }
 
     #[test]
