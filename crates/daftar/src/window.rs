@@ -1,7 +1,7 @@
 //! A Daftar window: the tree on the side, and tabs of notes, each in its
 //! own reader, as the Mac's window tabs have them.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
@@ -43,6 +43,9 @@ const RECENT: usize = 20;
 
 #[derive(Clone)]
 pub struct Window {
+    /// Which vault load is the latest: an older one that finishes after it
+    /// is dropped, so the vault shown is the one chosen last.
+    loading: Rc<Cell<u64>>,
     /// The commands the palette ran in this window, the last first.
     recent_commands: Rc<RefCell<Vec<String>>>,
     #[expect(clippy::struct_field_names, reason = "the GTK window this one is")]
@@ -210,6 +213,7 @@ impl Window {
             git: git.clone(),
             terminal: terminal.clone(),
             notifier: Notifier::new(),
+            loading: Rc::default(),
             inspector,
             inspector_split: inspector_split.clone(),
             store,
@@ -698,6 +702,8 @@ impl Window {
         for tab in &tabs {
             tab.stack.set_visible_child_name("loading");
         }
+        let generation = self.loading.get() + 1;
+        self.loading.set(generation);
         let this = self.clone();
         glib::spawn_future_local(async move {
             let search = Arc::new(SearchIndex::new());
@@ -708,6 +714,9 @@ impl Window {
                     Err(_) => return,
                 }
             };
+            if this.loading.get() != generation {
+                return;
+            }
             let folder = root;
             let store = Rc::new(VaultStore::new(folder.clone(), index, search));
             {
