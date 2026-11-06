@@ -21,7 +21,7 @@ use std::sync::LazyLock;
 use chrono::NaiveDate;
 use daftar_core::vault::LOGO_NAMES;
 use daftar_core::web_fetch::Answer;
-use daftar_core::{Day, ParsedTask, Recurrence, TaskStatuses, TaskType, Vault, VaultEdits};
+use daftar_core::{Day, ParsedTask, Recurrence, TaskReason, TaskStatuses, TaskType, Vault, VaultEdits};
 use percent_encoding::percent_decode_str;
 use rayon::prelude::*;
 use regex::Regex;
@@ -588,7 +588,12 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
                 }
             }
             if TASK.is_match(&code) {
-                for m in TASK_DATE.captures_iter(&code) {
+                // A date in the reason is the reason's words: `[reason:: ⏳ 2026-01-01]`.
+                let mut dated = code.to_string();
+                while TaskReason::range(&dated).is_some() {
+                    dated = TaskReason::remove(&dated);
+                }
+                for m in TASK_DATE.captures_iter(&dated) {
                     // A word after the sign is the sentence's, not a mistaken day.
                     if m[2].starts_with(|c: char| c.is_ascii_digit())
                         && (m[2].len() != 10 || NaiveDate::parse_from_str(&m[2], "%Y-%m-%d").is_err())
@@ -991,7 +996,7 @@ mod tests {
         let dir = vault(&[
             (
                 "A.md",
-                "## My Heading\n\n[[#My Heading]] [[#Nope]] [up](#my-heading) [x](#gone) [y](B.md#second-part)\n\none ^id\ntwo ^id\n\n- [ ] a 📅 2026-02-30\n- [ ] b 📅 2026-1-5 ⏳ 2026-10-01\n- [ ] c ⏳ waiting\n",
+                "## My Heading\n\n[[#My Heading]] [[#Nope]] [up](#my-heading) [x](#gone) [y](B.md#second-part)\n\none ^id\ntwo ^id\n\n- [ ] a 📅 2026-02-30\n- [ ] b 📅 2026-1-5 ⏳ 2026-10-01\n- [ ] c ⏳ waiting\n- [-] d [reason:: ⏳ 2026-01-01] ❌ 2026-01-02\n",
             ),
             ("B.md", "---\ntitle: b\n\n## Second Part\n"),
         ]);
