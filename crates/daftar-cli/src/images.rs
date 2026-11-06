@@ -7,7 +7,8 @@
 //! anywhere, even in a code block, in any case and percent-encoded or not: a
 //! word too many keeps a picture, never removes one. A picture is renamed
 //! only when every file that names it can be rewritten to the new name;
-//! else it is left as it is.
+//! else it is left as it is. A background of the home page (Beautitab's
+//! settings) is never removed or renamed.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -56,10 +57,16 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
         notes.into_iter().filter_map(|path| fs::read_to_string(&path).ok().map(|text| (path, text))).collect();
     let lowered: Vec<String> = texts.iter().map(|(_, text)| text.to_lowercase()).collect();
     let folder = folder_in(root, uploads);
+    let home: Vec<String> =
+        daftar_core::home::Beautitab::read(root).backgrounds.iter().map(|b| b.rsplit('/').next().unwrap_or(b).to_lowercase()).collect();
 
-    let (mut used, mut unused, mut fixed) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut used, mut unused, mut fixed, mut backgrounds) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for path in pictures {
         let name = file_name(&path);
+        if home.contains(&name.to_lowercase()) {
+            backgrounds.push(path);
+            continue;
+        }
         let naming: Vec<usize> = (0..texts.len()).filter(|&i| mentions(&lowered[i], &name)).collect();
         if naming.is_empty() {
             unused.push(path);
@@ -90,6 +97,9 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
     out!("  {} pictures, {}", unused.len(), mb(freed));
 
     out!("\n2. Pictures notes show");
+    for path in &backgrounds {
+        out!("  kept {}: the home page's background", file_name(path));
+    }
     for (path, stuck) in &fixed {
         out!("  kept {}: named in a way that cannot be rewritten in {}", file_name(path), stuck.join(", "));
     }
@@ -519,6 +529,19 @@ mod tests {
             rewrite_in("![](media/a.png) ![[a.png]]", "media", "a.png", "N_12345678.jpg").unwrap(),
             "![](media/N_12345678.jpg) ![[media/N_12345678.jpg]]"
         );
+    }
+
+    #[test]
+    fn the_home_pages_background_is_kept_as_it_is() {
+        let root = tempfile::tempdir().unwrap();
+        let uploads = root.path().join("uploads");
+        fs::create_dir_all(&uploads).unwrap();
+        fs::create_dir_all(root.path().join(".obsidian/plugins/beautitab")).unwrap();
+        fs::write(root.path().join(".obsidian/plugins/beautitab/data.json"), r#"{"customBackground": "uploads/Home.webp"}"#).unwrap();
+        RgbImage::from_pixel(4, 4, Rgb([10, 200, 30])).save(uploads.join("Home.webp")).unwrap();
+        run(root.path(), &uploads, &Options { dry_run: false, keep_originals: false, trash: false }).unwrap();
+        let left: Vec<String> = pictures_in(&uploads).unwrap().iter().map(|p| file_name(p)).collect();
+        assert_eq!(left, ["Home.webp"]);
     }
 
     #[test]

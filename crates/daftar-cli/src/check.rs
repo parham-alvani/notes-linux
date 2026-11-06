@@ -689,6 +689,8 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
             texts.push(text);
         }
     }
+    // So does the home page, with its backgrounds.
+    texts.push(daftar_core::home::Beautitab::read(root).backgrounds.join("\n"));
     let mut figures: Vec<&String> = Vec::new();
     for file in &index.files {
         let name = file.rsplit('/').next().unwrap_or(file);
@@ -944,6 +946,19 @@ mod tests {
         );
         assert!(lines[0].starts_with("A.md:1\twarning\t"));
         assert!(lines.last().unwrap().starts_with("uploads/lost.png\twarning"));
+    }
+
+    #[test]
+    fn the_home_pages_background_is_a_picture_shown() {
+        let dir = vault(&[
+            ("A.md", "Text\n"),
+            (".obsidian/plugins/beautitab/data.json", r#"{"customBackground": "uploads/Home.webp"}"#),
+            ("uploads/Home.webp", ""),
+            ("uploads/lost.webp", ""),
+        ]);
+        let unused: Vec<String> = findings(dir.path(), &options()).into_iter().filter(|l| l.contains("unused-picture")).collect();
+        assert_eq!(unused.len(), 1, "{unused:?}");
+        assert!(unused[0].starts_with("uploads/lost.webp"), "{unused:?}");
     }
 
     #[test]
