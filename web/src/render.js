@@ -733,5 +733,62 @@ export function renderInline(text, { path = "", links = {} } = {}) {
 export function render(text, { path = "", links = {} } = {}) {
   const lineOffset = frontMatterLines(text);
   const body = text.split("\n").slice(lineOffset).join("\n");
-  return shared.render(stripComments(body), { path, links, lineOffset });
+  return shownImages(shared.render(stripComments(body), { path, links, lineOffset }));
+}
+
+let remoteImages = true;
+
+/** Whether pictures from the web are shown; `false` leaves each one a placeholder until it is clicked (docs/specs/remote-images.md). */
+export function setRemoteImages(shown) {
+  remoteImages = shown !== false;
+}
+
+/** [html] as the setting wants it: its pictures from the web kept, or each one a placeholder. */
+export function shownImages(html) {
+  return remoteImages ? html : blockRemoteImages(html);
+}
+
+const IMG_TAG = /<img\b[^>]*>/gi;
+
+/**
+ * [html] with every `<img>` whose `src` is on the web replaced by a
+ * `remote-image` button that keeps its address, alt text and size, so the
+ * page asks no site for anything until the person clicks one. Pictures from
+ * the vault and `data:` pictures stay.
+ */
+export function blockRemoteImages(html) {
+  return html.replace(IMG_TAG, (tag) => {
+    const attribute = (name) => {
+      const found = tag.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"));
+      return found ? (found[1] ?? found[2] ?? found[3]) : null;
+    };
+    const src = attribute("src");
+    const address = src?.replace(/&amp;/g, "&");
+    if (!address || !/^https?:\/\//i.test(address)) return tag;
+    let host = "";
+    try {
+      host = new URL(address).host;
+    } catch {
+      host = address;
+    }
+    const alt = attribute("alt") ?? "";
+    const size = ["width", "height"].map((name) => (attribute(name) ? ` data-${name}="${attribute(name).replace(/"/g, "&quot;")}"` : "")).join("");
+    return (
+      `<button type="button" class="remote-image" data-src="${src.replace(/"/g, "&quot;")}" data-alt="${alt.replace(/"/g, "&quot;")}"${size} title="Load this picture from ${escapeHtml(host)}">` +
+      `<span class="remote-image-icon" aria-hidden="true">🖼</span><span class="remote-image-host">${escapeHtml(host)}</span>` +
+      (alt ? `<span class="remote-image-alt" dir="auto">${alt}</span>` : "") +
+      `</button>`
+    );
+  });
+}
+
+/** Puts a placeholder's picture back, for this view only. */
+export function loadRemoteImage(button) {
+  const img = button.ownerDocument.createElement("img");
+  img.src = button.dataset.src;
+  img.alt = button.dataset.alt ?? "";
+  if (button.dataset.width) img.setAttribute("width", button.dataset.width);
+  if (button.dataset.height) img.setAttribute("height", button.dataset.height);
+  button.replaceWith(img);
+  return img;
 }

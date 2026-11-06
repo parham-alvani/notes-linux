@@ -111,6 +111,19 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&persian);
+    let remote = adw::SwitchRow::builder()
+        .title("Pictures from the web")
+        .subtitle("Off asks no site for a picture until you click it, so opening a note tells no one")
+        .active(settings.borrow().remote_images())
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        remote.connect_active_notify(move |row| {
+            write("appearance.remote_images", Value::Bool(row.is_active()));
+            (hooks.reader)();
+        });
+    }
+    looks.add(&remote);
     let place = adw::ComboRow::builder()
         .title("Holidays")
         .subtitle("The public holidays and feasts of where you live, on Today, home and the day picker")

@@ -312,6 +312,7 @@ impl Reader {
         object.insert("textSize".into(), json!(settings.text_size()));
         object.insert("readingLine".into(), json!(settings.reading_line()));
         object.insert("textWidth".into(), json!(settings.text_width()));
+        object.insert("remoteImages".into(), json!(settings.remote_images()));
         object.insert("fontText".into(), json!(font_text));
         object.insert("fontCode".into(), json!(font_code));
         if !keep_scroll {

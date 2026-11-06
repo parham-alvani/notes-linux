@@ -2,7 +2,7 @@
 // what the person does with it. Every message to the app goes through
 // `post`, and the app calls `daftar.show` and `daftar.scrollTo`.
 
-import { render, renderInline, isClosed, hue, languageColor, vaultUrl, escapeHtml } from "./render.js";
+import { render, renderInline, isClosed, hue, languageColor, vaultUrl, escapeHtml, setRemoteImages, shownImages, loadRemoteImage } from "./render.js";
 import { renderView } from "./bases.js";
 import { renderCanvas, bounds, fit } from "./canvas.js";
 import { codeHead, findBar as findBarHtml, foldState, taskChip, baseTabs, canvasBar, zoomLabel, imageBar, imageInfo } from "./controls.js";
@@ -199,7 +199,7 @@ function renderBase(holder, result, key, wanted) {
   const problems = (result.problems ?? []).map((line) => `<li>${escape(line)}</li>`).join("");
   const warning = problems ? `<div class="callout query-warning" data-callout="warning"><div class="callout-title">Not understood</div><ul>${problems}</ul></div>` : "";
   const tabs = views.length > 1 ? baseTabs(views, chosen) : "";
-  holder.innerHTML = warning + tabs + `<div class="base-view">${views[chosen] ? renderView(views[chosen]) : ""}</div>`;
+  holder.innerHTML = warning + tabs + `<div class="base-view">${views[chosen] ? shownImages(renderView(views[chosen])) : ""}</div>`;
   const choose = (at) => {
     chosenViews.set(key, at);
     renderBase(holder, result, key, wanted);
@@ -883,6 +883,7 @@ window.daftar = {
     root.setProperty("--font-features", note.fontText?.startsWith("-apple-system") === false ? "normal" : '"ss01" 1, "ss07" 1, "cv07" 1');
     if (note.fontCode) root.setProperty("--font-mono", note.fontCode);
     if (typeof note.textWidth === "number") root.setProperty("--text-width", note.textWidth > 0 ? `${note.textWidth}em` : "none");
+    setRemoteImages(note.remoteImages);
     if (typeof note.readingLine === "number") {
       reading.strength = Math.max(0, Math.min(100, note.readingLine));
       root.setProperty("--reading-line", `${reading.strength}%`);
@@ -1595,3 +1596,18 @@ function decoded(text) {
 }
 
 post({ kind: "ready" });
+
+// A picture from the web left out by `appearance.remote_images = false` loads
+// when its placeholder is clicked, and the click goes no further: a picture
+// inside a link does not follow the link.
+document.addEventListener(
+  "click",
+  (event) => {
+    const button = event.target instanceof Element ? event.target.closest(".remote-image") : null;
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    loadRemoteImage(button);
+  },
+  true,
+);

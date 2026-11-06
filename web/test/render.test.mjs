@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { render, stripComments, frontMatterLines, parseWikilink } from "../src/render.js";
+import { render, stripComments, frontMatterLines, parseWikilink, setRemoteImages, blockRemoteImages } from "../src/render.js";
 
 const links = { Inbox: "Notes/Inbox.md", "logo.png": "uploads/logo.png", Other: "Other.md" };
 
@@ -205,4 +205,23 @@ test("findReason balances brackets and takes the first field", async () => {
   assert.equal(findReason("Ship [reason:: ]").value, null);
   assert.equal(findReason("Ship [reason:: open"), null);
   assert.equal(findReason("Ship [reasons:: x]"), null);
+});
+
+test("a picture from the web is a placeholder until clicked when remote images are off", () => {
+  setRemoteImages(false);
+  try {
+    const remote = render("![a](https://x.org/a.png)", { links });
+    assert.match(remote, /class="remote-image" data-src="https:\/\/x.org\/a.png"/);
+    assert.match(remote, /remote-image-host">x.org</);
+    assert.doesNotMatch(remote, /<img/);
+    assert.match(render("![[logo.png]]", { links }), /<img src="vault:/);
+    assert.match(render("![a](data:image/png;base64,AAAA)", { links }), /<img src="data:image\/png/);
+    const html = blockRemoteImages('<img src="HTTP://X.ORG/a.png" width="20">');
+    assert.match(html, /data-width="20"/);
+    assert.match(html, /remote-image-host">x.org</);
+    assert.match(render("[link](https://x.org)", { links }), /<a href="https:\/\/x.org"/);
+  } finally {
+    setRemoteImages(true);
+  }
+  assert.match(render("![a](https://x.org/a.png)", { links }), /<img src="https:\/\/x.org\/a.png"/);
 });

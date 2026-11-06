@@ -127,6 +127,12 @@ impl AppSettings {
         self.file.int("appearance.reading_line").unwrap_or(18).clamp(0, 100)
     }
 
+    /// Pictures from the web in the reader; `false` leaves each one a
+    /// placeholder until it is clicked (docs/specs/remote-images.md).
+    pub fn remote_images(&self) -> bool {
+        self.file.bool("appearance.remote_images").unwrap_or(true)
+    }
+
     /// The reader's font families as CSS, Persian always cascading to Vazirmatn.
     pub fn font_css(&self) -> (String, String) {
         let font = self.file.string("appearance.font").unwrap_or_default();
@@ -163,5 +169,14 @@ mod tests {
         settings.set("appearance.text_size", Value::Int(16)).unwrap();
         assert_eq!(fs::read_to_string(&real).unwrap(), "[appearance]\ntheme = \"dark\"\ntext_size = 16\n");
         assert!(fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn remote_images_are_shown_unless_turned_off() {
+        let of = |text: &str| AppSettings { file: ConfigFile::new(text), path: PathBuf::new() }.remote_images();
+        assert!(of(""));
+        assert!(of("[appearance]\nremote_images = \"maybe\"\n"));
+        assert!(of("[appearance]\nremote_images = true\n"));
+        assert!(!of("[appearance]\nremote_images = false\n"));
     }
 }

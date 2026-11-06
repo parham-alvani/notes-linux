@@ -412,6 +412,10 @@ pre code { color: var(--code-text); }
   background: repeating-conic-gradient(var(--panel) 0 25%, var(--background) 0 50%) 0 0 / 16px 16px;
 }
 #note .image-stage > img.is-loaded { visibility: visible; }
+.remote-image { display: inline-flex; align-items: center; gap: 0.5em; max-width: 100%; padding: 0.4em 0.8em; border: 1px dashed var(--text-muted); border-radius: 6px; background: transparent; color: var(--text-muted); font: inherit; font-size: 0.9em; cursor: pointer; }
+.remote-image:hover, .remote-image:focus-visible { color: inherit; border-style: solid; }
+.remote-image-host { font-family: var(--font-mono); }
+.remote-image-alt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .image-error { margin: 3em auto; max-width: 28em; text-align: center; color: var(--text-muted); }
 .image-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 1em;
