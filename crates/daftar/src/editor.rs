@@ -1007,12 +1007,15 @@ impl Editor {
     /// the character is handled here.
     fn on_char(self: &Rc<Self>, typed: char) -> bool {
         let selection = self.selection();
-        let chars: Vec<char> = self.text().chars().collect();
+        // The characters around the cursor, read from the buffer: a copy of
+        // the whole note at each key costs a long note's typing.
+        let count = usize::try_from(self.buffer.char_count()).unwrap_or(0);
+        let char_at = |offset: usize| (offset < count).then(|| self.iter(offset).char());
         if !selection.is_empty()
             && let Some(close) = Self::wrapping(typed)
-            && !chars[selection.clone()].contains(&'\n')
+            && let inner = self.slice(selection.clone())
+            && !inner.contains('\n')
         {
-            let inner: String = chars[selection.clone()].iter().collect();
             self.replace(selection.clone(), &format!("{typed}{inner}{close}"), Some(selection.start + 1..selection.end + 1));
             return true;
         }
@@ -1020,19 +1023,19 @@ impl Editor {
             return false;
         }
         let at = selection.start;
-        if self.auto_closed.get() == Some(at) && chars.get(at) == Some(&typed) && [')', ']', '}'].contains(&typed) {
+        if self.auto_closed.get() == Some(at) && char_at(at) == Some(typed) && [')', ']', '}'].contains(&typed) {
             self.auto_closed.set(None);
             self.buffer.place_cursor(&self.iter(at + 1));
             return true;
         }
         // `[[`: the link's own closing, and the note completion.
-        if typed == '[' && at >= 1 && chars.get(at - 1) == Some(&'[') && chars.get(at) == Some(&']') && self.auto_closed.get() == Some(at) {
+        if typed == '[' && at >= 1 && char_at(at - 1) == Some('[') && char_at(at) == Some(']') && self.auto_closed.get() == Some(at) {
             self.replace(at..at + 1, "[]]", Some(at + 1..at + 1));
             self.auto_closed.set(None);
             self.complete_links();
             return true;
         }
-        if typed == '[' && at >= 1 && chars.get(at - 1) == Some(&'[') {
+        if typed == '[' && at >= 1 && char_at(at - 1) == Some('[') {
             self.replace(at..at, "[]]", Some(at + 1..at + 1));
             self.complete_links();
             return true;
@@ -1055,7 +1058,7 @@ impl Editor {
             return false;
         };
         // Only before a space, the end of a line or another closing mark.
-        let next = chars.get(at).copied().unwrap_or('\n');
+        let next = char_at(at).unwrap_or('\n');
         if !matches!(next, '\n' | ' ' | '\t' | ')' | ']' | '}' | ',' | '.') {
             return false;
         }
