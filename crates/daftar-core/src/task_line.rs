@@ -462,6 +462,20 @@ impl TaskReason {
     }
 }
 
+impl TaskLine {
+    /// Whether [raw], a task's line, is the task [expected] names: the whole
+    /// line, the line after its checkbox, or the task's text, exactly, but for
+    /// whitespace around it. A tool that read the task before acts on it only
+    /// while this holds.
+    pub fn holds(raw: &str, expected: &str) -> bool {
+        let raw = raw.trim_end_matches('\r');
+        let expected = expected.trim();
+        let Some(task) = TaskLine::parse(raw, 0, "") else { return false };
+        let body = raw.split_once(']').map_or("", |(_, body)| body.trim());
+        !expected.is_empty() && (raw.trim() == expected || body == expected || task.text.trim() == expected)
+    }
+}
+
 /// How often a task comes back: the plain intervals, and months and years of
 /// the Jalali calendar (`docs/specs/jalali-recurrence.md`). A rule with
 /// weekdays or ordinals is refused rather than guessed at, because a wrong
@@ -653,6 +667,18 @@ mod tests {
             toggled("- [ ] Haircut 🔁 every month when done ⏳ 2026-01-31", "2026-03-15")[0],
             "- [ ] Haircut 🔁 every month when done ⏳ 2026-04-15"
         );
+    }
+
+    #[test]
+    fn a_line_holds_only_its_own_task() {
+        let raw = "  - [ ] Water plants 📅 2026-11-06";
+        for named in ["Water plants", "- [ ] Water plants 📅 2026-11-06", "Water plants 📅 2026-11-06", " Water plants "] {
+            assert!(TaskLine::holds(raw, named), "{named}");
+        }
+        for other in ["a", "Water", "plants", ""] {
+            assert!(!TaskLine::holds(raw, other), "{other}");
+        }
+        assert!(!TaskLine::holds("Water plants", "Water plants"));
     }
 
     #[test]

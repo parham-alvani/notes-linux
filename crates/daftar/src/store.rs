@@ -297,10 +297,13 @@ impl VaultStore {
     /// Ticks or opens a task. Only a note in the index is written, and only
     /// when its line still holds the task the page showed.
     pub fn toggle_task(&self, path: &str, line: usize, status: char) -> Result<(), Failure> {
-        if !self.index().notes.contains_key(path) {
-            return Err(Failure::Unreadable);
-        }
-        VaultEdits::apply(path, &self.root, |text| VaultEdits::toggle_task(text, line, status, Day::today()))?;
+        // The task the index read, which the page was drawn from.
+        let expected = {
+            let index = self.index();
+            let note = index.notes.get(path).ok_or(Failure::Unreadable)?;
+            note.parsed.tasks.iter().find(|t| t.line == line).map(|t| t.text.clone())
+        };
+        VaultEdits::apply(path, &self.root, |text| VaultEdits::toggle_task(text, line, status, expected.as_deref(), Day::today()))?;
         self.refresh(&[path.to_string()]);
         if self.places.last_read(path).is_some() {
             self.places.mark_read(path);

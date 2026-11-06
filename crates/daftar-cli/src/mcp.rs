@@ -169,7 +169,7 @@ impl Server {
             "create_note" => vec![create_note(root, args.text("path")?, args.text("text")?)?],
             "toggle_task" => {
                 let (path, at, task) = task_at(root, &index, args)?;
-                VaultEdits::apply(&path, root, |text| VaultEdits::toggle_task(text, at, task.status, Day::today()))
+                VaultEdits::apply(&path, root, |text| VaultEdits::toggle_task(text, at, task.status, Some(&task.text), Day::today()))
                     .map_err(|e| e.to_string())?;
                 let after = fs::read_to_string(root.join(&path)).unwrap_or_default();
                 vec![format!("{path}:{}\t{}", at + 1, after.split('\n').nth(at).unwrap_or_default())]
@@ -426,7 +426,7 @@ fn task_at(root: &Path, index: &VaultIndex, args: &Arguments) -> Result<(String,
     let raw = text.split('\n').nth(at).ok_or_else(|| format!("{path} has no line {line}"))?;
     let task = TaskLine::parse(raw.trim_end_matches('\r'), at, "").ok_or_else(|| format!("{path}:{line} is not a task: {raw}"))?;
     let expected = args.text("text")?;
-    if !raw.contains(expected.trim()) {
+    if !TaskLine::holds(raw, expected) {
         return Err(format!("{path}:{line} is now “{raw}”, not the task “{expected}”; list the tasks again"));
     }
     Ok((path, at, task))

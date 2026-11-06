@@ -39,13 +39,14 @@ pub struct VaultEdits;
 impl VaultEdits {
     /// Ticks or opens the task on [line] of [text]. [status] is what the view
     /// showed, which the line must still hold.
-    pub fn toggle_task(text: &str, line: usize, status: char, today: Day) -> Result<String, Failure> {
+    pub fn toggle_task(text: &str, line: usize, status: char, expected: Option<&str>, today: Day) -> Result<String, Failure> {
         let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
         let raw = lines.get(line).ok_or(Failure::TaskMoved)?;
         let crlf = raw.ends_with('\r');
         let clean = raw.strip_suffix('\r').unwrap_or(raw);
         let task = TaskLine::parse(clean, line, "").ok_or(Failure::TaskMoved)?;
-        if task.status != status {
+        // Another task with the same status that moved onto the line is not this one.
+        if task.status != status || expected.is_some_and(|text| text.trim() != task.text.trim()) {
             return Err(Failure::TaskMoved);
         }
         let replacement = TaskLine::toggled(clean, &today.to_string()).ok_or(Failure::TaskMoved)?;
@@ -126,10 +127,13 @@ mod tests {
     #[test]
     fn toggle_checks_the_line_still_says_the_same() {
         let text = "# T\n- [ ] One\n- [ ] Two\n";
-        assert_eq!(VaultEdits::toggle_task(text, 2, ' ', day("2026-10-05")).unwrap(), "# T\n- [ ] One\n- [x] Two ✅ 2026-10-05\n");
-        assert_eq!(VaultEdits::toggle_task(text, 0, ' ', day("2026-10-05")), Err(Failure::TaskMoved));
-        assert_eq!(VaultEdits::toggle_task(text, 1, 'x', day("2026-10-05")), Err(Failure::TaskMoved));
-        assert_eq!(VaultEdits::toggle_task(text, 9, ' ', day("2026-10-05")), Err(Failure::TaskMoved));
+        assert_eq!(VaultEdits::toggle_task(text, 2, ' ', None, day("2026-10-05")).unwrap(), "# T\n- [ ] One\n- [x] Two ✅ 2026-10-05\n");
+        assert_eq!(VaultEdits::toggle_task(text, 0, ' ', None, day("2026-10-05")), Err(Failure::TaskMoved));
+        assert_eq!(VaultEdits::toggle_task(text, 1, 'x', None, day("2026-10-05")), Err(Failure::TaskMoved));
+        assert_eq!(VaultEdits::toggle_task(text, 9, ' ', None, day("2026-10-05")), Err(Failure::TaskMoved));
+        // The text the page showed must still be the line's.
+        assert_eq!(VaultEdits::toggle_task(text, 2, ' ', Some("One"), day("2026-10-05")), Err(Failure::TaskMoved));
+        assert!(VaultEdits::toggle_task(text, 2, ' ', Some("Two"), day("2026-10-05")).is_ok());
     }
 
     #[test]
@@ -151,7 +155,7 @@ mod tests {
 
     #[test]
     fn windows_line_endings_survive() {
-        assert_eq!(VaultEdits::toggle_task("- [ ] One\r\n", 0, ' ', day("2026-10-05")).unwrap(), "- [x] One ✅ 2026-10-05\r\n");
+        assert_eq!(VaultEdits::toggle_task("- [ ] One\r\n", 0, ' ', None, day("2026-10-05")).unwrap(), "- [x] One ✅ 2026-10-05\r\n");
     }
 
     #[test]
@@ -168,7 +172,7 @@ mod tests {
     fn apply_writes_the_file() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("a.md"), "- [ ] One\n").unwrap();
-        VaultEdits::apply("a.md", root.path(), |text| VaultEdits::toggle_task(text, 0, ' ', day("2026-10-05"))).unwrap();
+        VaultEdits::apply("a.md", root.path(), |text| VaultEdits::toggle_task(text, 0, ' ', None, day("2026-10-05"))).unwrap();
         assert_eq!(fs::read_to_string(root.path().join("a.md")).unwrap(), "- [x] One ✅ 2026-10-05\n");
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }

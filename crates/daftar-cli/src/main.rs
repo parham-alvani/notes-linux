@@ -97,6 +97,10 @@ enum Command {
         note: String,
         /// The line, from 1, as `tasks` prints it.
         line: usize,
+        /// The task's text, or its whole line, as `tasks` printed it: the
+        /// tick is refused when the line holds another task now.
+        #[arg(long)]
+        expect: Option<String>,
     },
     /// Sets the status of the task on a line of a note, as the app's status
     /// menu does: `daftar-cli set-status Tasks/Work.md 12 r --reason 'waiting on review'`.
@@ -498,14 +502,19 @@ fn run(cli: Cli) -> Result<(), String> {
                 }
             }
         }
-        Command::Toggle { note, line } => {
+        Command::Toggle { note, line, expect } => {
             let index = Vault::index(&root, None);
             let path = note_path(&index, &note)?;
             let at = line.checked_sub(1).ok_or("lines count from 1")?;
             let text = fs::read_to_string(root.join(&path)).map_err(|e| format!("{path}: {e}"))?;
             let raw = text.split('\n').nth(at).ok_or_else(|| format!("{path} has no line {line}"))?;
             let task = TaskLine::parse(raw.trim_end_matches('\r'), at, "").ok_or_else(|| format!("{path}:{line} is not a task"))?;
-            VaultEdits::apply(&path, &root, |text| VaultEdits::toggle_task(text, at, task.status, Day::today()))
+            if let Some(expected) = &expect
+                && !TaskLine::holds(raw, expected)
+            {
+                return Err(format!("{path}:{line} is now “{}”, not “{expected}”", raw.trim()));
+            }
+            VaultEdits::apply(&path, &root, |text| VaultEdits::toggle_task(text, at, task.status, Some(&task.text), Day::today()))
                 .map_err(|e| e.to_string())?;
             let after = fs::read_to_string(root.join(&path)).unwrap_or_default();
             out!("{}", after.split('\n').nth(at).unwrap_or_default());

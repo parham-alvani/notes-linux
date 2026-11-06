@@ -598,7 +598,10 @@ impl App {
     /// Writes the tick through `VaultEdits`, which refuses when the line is
     /// no longer the task that was shown.
     pub fn toggle(&mut self, path: &str, line: usize, status: char) {
-        let result = VaultEdits::apply(path, &self.root, |text| VaultEdits::toggle_task(text, line, status, Day::today()));
+        // What the index read, as the screen was drawn from it.
+        let expected = self.index.notes.get(path).and_then(|n| n.parsed.tasks.iter().find(|t| t.line == line)).map(|t| t.text.clone());
+        let result =
+            VaultEdits::apply(path, &self.root, |text| VaultEdits::toggle_task(text, line, status, expected.as_deref(), Day::today()));
         match result {
             Ok(()) => {
                 let done = if TaskLine::is_closed(status) { "Opened again" } else { "Done" };
