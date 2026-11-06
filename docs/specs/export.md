@@ -2,6 +2,8 @@
 
 Made by `daftar-cli export` (`notes-linux`, `typst_note.rs` in the core and `export.rs` and `export.typ` in the CLI). The apps do not make the PDF themselves: Export as PDF runs this command, so a script, CI and every app make the same file. Linux runs it from Ctrl+Shift+E (`crates/daftar/src/export.rs`); the Mac's ⇧⌘E runs it the same way (`PDFExport.swift`), and Android has no export.
 
+Android cannot run `daftar-cli`, so its Export as PDF (notes-droid#28, `NotePdf`) lays the note out with Android's own PDF writer as close to this page as that writer allows: the head and foot, Vazirmatn, sized headings, code, callouts, tasks and the vault's pictures. It has no logos, `export.footer`, math, Mermaid or footnotes at the foot of the page, and it is not byte-for-byte reproducible.
+
 ## 1. The command
 
 - `daftar-cli export <note> [-o <file>] [--logo <file>] [--no-folder-logo]`, with the global `--vault`. The note is its vault path or its name, as the other commands take it. The PDF goes to `-o`, else `<title>.pdf` in the current folder; the command prints its path.

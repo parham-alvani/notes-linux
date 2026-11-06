@@ -1,6 +1,6 @@
 # Daftar properties: the front matter as a form
 
-Shared by Daftar for macOS (`notes-mac`, `Properties.swift` and `PropertiesView.swift`, commits `6694a38` and `4c26615`) and Linux (`notes-linux`, `properties.rs` and `properties_form.rs`). Android does not have it yet; it should be built against this text. The Mac's `PropertiesTests` and Linux's `properties::tests` are the same cases by the same names.
+Shared by Daftar for macOS (`notes-mac`, `Properties.swift` and `PropertiesView.swift`, commits `6694a38` and `4c26615`) and Linux (`notes-linux`, `properties.rs` and `properties_form.rs`). Android has it in notes-droid#28 (`Properties.kt` and the note's Properties sheet). The Mac's `PropertiesTests`, Linux's `properties::tests` and Android's `PropertiesTest` are the same cases by the same names.
 
 ## 1. Reading
 
