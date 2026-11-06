@@ -49,7 +49,7 @@ pub fn pdf(window: &gtk::Window, root: &Path, path: &str, notice: impl Fn(&str) 
 
 /// The `daftar-cli` beside this binary (both packages install the two
 /// together), else the one on $PATH.
-fn cli() -> Option<PathBuf> {
+pub fn cli() -> Option<PathBuf> {
     let beside = std::env::current_exe().ok()?.with_file_name("daftar-cli");
     if beside.is_file() {
         return Some(beside);

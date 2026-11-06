@@ -31,6 +31,7 @@ mod sync;
 mod task_edit;
 mod terminal;
 mod today;
+mod vault_check;
 mod vault_dialogs;
 mod vim_floats;
 mod vim_glide;
