@@ -135,6 +135,10 @@ impl Server {
                 let text = fs::read_to_string(root.join(&path)).unwrap_or_default();
                 return Ok(if text.is_empty() { format!("{path}\n\n(not written yet)") } else { format!("{path}\n\n{text}") });
             }
+            "doctor" => {
+                let found = crate::repository(root)?.doctor(1_048_576).map_err(|e| e.to_string())?;
+                found.iter().map(|d| format!("{}\t{}\t{}", d.level, d.code, d.message)).collect()
+            }
             "check_vault" => {
                 let options = check::Options {
                     strict: false,
@@ -182,6 +186,40 @@ impl Server {
                 };
                 vec![vault_commands::set_status(root, &path, at, &status, args.optional("reason"), Day::today())?]
             }
+            "edit_task" => {
+                let (path, at, _) = task_at(root, &index, args)?;
+                for key in ["start", "scheduled", "due"] {
+                    if let Some(value) = args.0.get(key).and_then(Value::as_str).map(str::trim)
+                        && !value.is_empty()
+                        && Day::parse(value).is_none()
+                    {
+                        return Err(format!("{key} {value} is not a day (YYYY-MM-DD)"));
+                    }
+                }
+                if let Some(value) = args.0.get("priority").and_then(Value::as_str)
+                    && priority(value).is_none()
+                    && !matches!(value.trim().to_lowercase().as_str(), "" | "none")
+                {
+                    return Err(format!("{value} is not a priority: highest, high, medium, low, lowest or none"));
+                }
+                VaultEdits::apply(&path, root, |text| {
+                    let raw = text.split('\n').nth(at).unwrap_or_default().trim_end_matches('\r');
+                    let before = TaskLine::fields(raw).ok_or(daftar_core::Failure::TaskMoved)?;
+                    let mut fields = before.clone();
+                    for (key, slot) in [("start", &mut fields.start), ("scheduled", &mut fields.scheduled), ("due", &mut fields.due)] {
+                        if let Some(value) = args.0.get(key).and_then(Value::as_str) {
+                            *slot = Some(value.trim()).filter(|v| !v.is_empty()).map(String::from);
+                        }
+                    }
+                    if let Some(value) = args.0.get("priority").and_then(Value::as_str) {
+                        fields.priority = priority(value);
+                    }
+                    VaultEdits::edit_task(text, at, &before, &fields)
+                })
+                .map_err(|e| e.to_string())?;
+                let after = fs::read_to_string(root.join(&path)).unwrap_or_default();
+                vec![format!("{path}:{}\t{}", at + 1, after.split('\n').nth(at).unwrap_or_default())]
+            }
             "postpone_task" => {
                 let (path, at, _) = task_at(root, &index, args)?;
                 vec![vault_commands::postpone(root, &path, at, args.optional("by").unwrap_or("day"), Day::today())?]
@@ -216,7 +254,20 @@ impl Server {
 }
 
 /// The tools that write to the vault, which `--read-only` leaves out.
-const WRITES: [&str; 6] = ["capture", "append_to_note", "create_note", "toggle_task", "set_task_status", "postpone_task"];
+const WRITES: [&str; 7] = ["capture", "append_to_note", "create_note", "toggle_task", "set_task_status", "postpone_task", "edit_task"];
+
+/// A priority's emoji from its name or its emoji; `None` for none or a word it does not know.
+fn priority(value: &str) -> Option<String> {
+    let emoji = match value.trim().to_lowercase().as_str() {
+        "highest" | "🔺" => "🔺",
+        "high" | "⏫" => "⏫",
+        "medium" | "🔼" => "🔼",
+        "low" | "🔽" => "🔽",
+        "lowest" | "⏬" => "⏬",
+        _ => return None,
+    };
+    Some(emoji.to_string())
+}
 
 /// The notes added, gone or changed between [old] and [new].
 fn changed_since(old: &VaultIndex, new: &VaultIndex) -> BTreeSet<String> {
@@ -643,6 +694,25 @@ fn tools(read_only: bool) -> Vec<Value> {
             true,
         ),
         tool(
+            "edit_task",
+            "Sets a task's start, scheduled or due date (YYYY-MM-DD; an empty string takes it away) and its priority (highest, high, medium, low, lowest or none), as the app's task form does; what is not given stays.",
+            task(json!({
+                "start": string("🛫, YYYY-MM-DD or empty"),
+                "scheduled": string("⏳, YYYY-MM-DD or empty"),
+                "due": string("📅, YYYY-MM-DD or empty"),
+                "priority": string("highest, high, medium, low, lowest or none"),
+            })),
+            &["note", "line", "text"],
+            true,
+        ),
+        tool(
+            "doctor",
+            "What stands in a sync's way in the vault's repository: an operation left open, conflicts, no upstream, commits not pushed or pulled, large untracked files.",
+            json!({}),
+            &[],
+            false,
+        ),
+        tool(
             "postpone_task",
             "Moves a task's due date (else scheduled, else start) on, as the Tasks plugin's Postpone does.",
             task(json!({ "by": string("day, 2days, 3days, week, 2weeks or month; day at first") })),
@@ -683,6 +753,26 @@ mod tests {
 
     fn server(root: &Path, read_only: bool) -> Server {
         Server { root: root.to_path_buf(), show_hidden: false, read_only, search: None }
+    }
+
+    #[test]
+    fn edit_task_sets_dates_and_priority_and_keeps_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("T.md"), "# T\n- [ ] Water plants ➕ 2026-11-01 📅 2026-11-06\n").unwrap();
+        let mut server = server(root.path(), false);
+        let task = |more: Value| {
+            let mut args = json!({ "note": "T", "line": 2, "text": "Water plants" });
+            args.as_object_mut().unwrap().extend(more.as_object().unwrap().clone());
+            args
+        };
+        let (said, error) = call(&mut server, "edit_task", task(json!({ "scheduled": "2026-11-07", "due": "", "priority": "high" })));
+        assert!(!error, "{said}");
+        assert_eq!(fs::read_to_string(root.path().join("T.md")).unwrap(), "# T\n- [ ] Water plants ⏫ ➕ 2026-11-01 ⏳ 2026-11-07\n");
+        assert!(call(&mut server, "edit_task", task(json!({ "due": "2026-13-01" }))).1);
+        assert!(call(&mut server, "edit_task", task(json!({ "priority": "urgent" }))).1);
+        let moved = json!({ "note": "T", "line": 2, "text": "Water", "due": "2026-12-01" });
+        assert!(call(&mut server, "edit_task", moved).1);
+        assert!(!fs::read_to_string(root.path().join("T.md")).unwrap().contains("2026-12-01"));
     }
 
     #[test]
