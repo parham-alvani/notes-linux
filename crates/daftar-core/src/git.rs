@@ -198,7 +198,30 @@ impl Git {
         if self.rebase_in_progress()? {
             return Err(SyncFailure::Stopped(Stopped { conflicts: self.conflicts()? }));
         }
+        // A merge, cherry-pick or revert left open by git itself, or files
+        // still marked as conflicted, would be committed with their marks.
+        if let Some(operation) = self.other_operation_in_progress()? {
+            return Err(Self::refused(format!("a {operation} is in progress: finish or abort it with git first")));
+        }
+        if !self.conflicts()?.is_empty() {
+            return Err(Self::refused("files have unresolved conflicts: resolve them first".into()));
+        }
         Ok(())
+    }
+
+    fn refused(output: String) -> SyncFailure {
+        SyncFailure::Git(GitFailure { arguments: vec!["sync".into()], status: None, output })
+    }
+
+    /// A merge, cherry-pick or revert that git left open, by its name.
+    pub fn other_operation_in_progress(&self) -> Result<Option<&'static str>, GitFailure> {
+        for (name, operation) in [("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert")] {
+            let path = self.run(&["rev-parse", "--path-format=absolute", "--git-path", name])?;
+            if std::path::Path::new(&path).exists() {
+                return Ok(Some(operation));
+            }
+        }
+        Ok(None)
     }
 
     /// The branch, how far it is from its upstream, and how many files changed.
@@ -224,8 +247,26 @@ impl Git {
 
     /// Paths with changes not yet committed.
     pub fn changes(&self) -> Result<Vec<String>, GitFailure> {
-        let out = self.run(&["status", "--porcelain=v1", "-z"])?;
-        Ok(out.split('\0').filter(|e| e.len() > 3).map(|e| e[3..].to_string()).collect())
+        Ok(Self::changed_paths(&self.run_raw(&["status", "--porcelain=v1", "-z"])?))
+    }
+
+    /// The paths of `git status --porcelain=v1 -z`: `XY path`, each record
+    /// whole (never trimmed, as its first column may be a space), and a
+    /// rename's or copy's source as a record of its own after it, skipped.
+    pub fn changed_paths(output: &str) -> Vec<String> {
+        let mut paths = Vec::new();
+        let mut records = output.split('\0');
+        while let Some(record) = records.next() {
+            let (Some(code), Some(path)) = (record.get(..2), record.get(3..)) else { continue };
+            if path.is_empty() {
+                continue;
+            }
+            paths.push(path.to_string());
+            if code.contains('R') || code.contains('C') {
+                records.next();
+            }
+        }
+        paths
     }
 
     /// Commits everything, pulls with a rebase, and pushes: the vault's own
@@ -455,6 +496,37 @@ mod tests {
     fn status_reads_porcelain_v2() {
         let text = "# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +2 -1\n1 .M N... 100644 100644 100644 a b Notes/Inbox.md\n? new.md\n";
         assert_eq!(Git::parse_status(text), GitStatus { branch: "main".into(), ahead: 2, behind: 1, changed: 2 });
+    }
+
+    #[test]
+    fn changed_paths_keep_a_first_letter_that_is_not_ascii() {
+        let output = " M یادداشت.md\0R  new name.md\0old name.md\0?? 🎉.md\0";
+        assert_eq!(Git::changed_paths(output), ["یادداشت.md", "new name.md", "🎉.md"]);
+    }
+
+    #[test]
+    fn sync_commits_a_note_whose_name_is_persian() {
+        let (_base, one, _two) = machines();
+        fs::write(one.root.join("یادداشت.md"), "# یادداشت\n").unwrap();
+        one.sync("add").unwrap();
+        // Unstaged, so git's first record starts with a space: ` M یادداشت.md`.
+        fs::write(one.root.join("یادداشت.md"), "# یادداشت\nتغییر\n").unwrap();
+        assert!(one.sync("update notes @ test").unwrap().committed);
+    }
+
+    #[test]
+    fn sync_refuses_an_open_merge() {
+        let (_base, one, two) = machines();
+        fs::write(one.root.join("a.md"), "# A\none\n").unwrap();
+        one.sync("one").unwrap();
+        fs::write(two.root.join("a.md"), "# A\ntwo\n").unwrap();
+        git(&two.root, &["commit", "-qam", "two"]);
+        let merged = Command::new("git").arg("-C").arg(&two.root).args(["-c", "pull.rebase=false", "pull", "-q"]).output().unwrap();
+        assert!(!merged.status.success());
+        assert_eq!(two.other_operation_in_progress().unwrap(), Some("merge"));
+        assert!(matches!(two.sync("over the merge"), Err(SyncFailure::Git(_))));
+        assert!(fs::read_to_string(two.root.join("a.md")).unwrap().contains("<<<<<<<"));
+        assert_eq!(subjects(&two)[0], "two");
     }
 
     fn git(dir: &Path, args: &[&str]) {
