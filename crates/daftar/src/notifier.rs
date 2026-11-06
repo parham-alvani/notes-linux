@@ -118,6 +118,13 @@ impl Notifier {
     }
 }
 
+impl Notifier {
+    /// No more alerts: the window that planned them closed.
+    pub fn clear(&self) {
+        self.pending.borrow_mut().clear();
+    }
+}
+
 impl Drop for Notifier {
     fn drop(&mut self) {
         // The source holds only the list, never the notifier, and never stops itself.

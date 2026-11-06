@@ -11,7 +11,7 @@
 //! rebase left open, by Daftar or in a terminal, is found at launch.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -19,6 +19,29 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use daftar_core::{Conflicted, Git, GitFailure, GitStatus, Resolution, SyncFailure, Synced};
+
+thread_local! {
+    /// The vaults a window is running git in now: every window has its own
+    /// `GitSync`, and two runs in one repository fail on `index.lock`.
+    static BUSY: RefCell<std::collections::BTreeSet<PathBuf>> = RefCell::default();
+}
+
+/// One window's turn to run git in a vault, given back when dropped.
+struct Claim(PathBuf);
+
+impl Claim {
+    fn take(root: &Path) -> Option<Claim> {
+        BUSY.with(|busy| busy.borrow_mut().insert(root.to_path_buf())).then(|| Claim(root.to_path_buf()))
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        BUSY.with(|busy| busy.borrow_mut().remove(&self.0));
+    }
+}
+
+const ANOTHER_WINDOW: &str = "Another window is syncing this vault; try again in a moment.";
 
 /// After an edit, how long to wait for more before syncing them together.
 const AFTER_EDIT: Duration = Duration::from_secs(20);
@@ -152,6 +175,10 @@ impl GitSync {
         if !self.rebasing.get() || self.syncing.replace(true) {
             return;
         }
+        let Some(claim) = Claim::take(&root) else {
+            self.syncing.set(false);
+            return done(Err(ANOTHER_WINDOW.into()));
+        };
         self.working(true);
         let this = self.clone();
         glib::spawn_future_local(async move {
@@ -163,6 +190,7 @@ impl GitSync {
                 (result, open, if open { git.conflicts().unwrap_or_default() } else { Vec::new() }, git.status().ok())
             })
             .await;
+            drop(claim);
             this.syncing.set(false);
             this.working(false);
             let Ok((result, open, conflicts, status)) = outcome else { return };
@@ -184,6 +212,10 @@ impl GitSync {
         if !self.rebasing.get() || self.syncing.replace(true) {
             return;
         }
+        let Some(claim) = Claim::take(&root) else {
+            self.syncing.set(false);
+            return done(Err(ANOTHER_WINDOW.into()));
+        };
         self.working(true);
         let this = self.clone();
         glib::spawn_future_local(async move {
@@ -195,6 +227,7 @@ impl GitSync {
                 (result, open, if open { git.conflicts().unwrap_or_default() } else { Vec::new() }, git.status().ok())
             })
             .await;
+            drop(claim);
             this.syncing.set(false);
             this.working(false);
             let Ok((result, open, conflicts, status)) = outcome else { return };
@@ -264,6 +297,13 @@ impl GitSync {
         if self.syncing.replace(true) {
             return;
         }
+        let Some(claim) = Claim::take(&root) else {
+            self.syncing.set(false);
+            if loud {
+                (self.notice)(ANOTHER_WINDOW);
+            }
+            return;
+        };
         self.working(true);
         let this = self.clone();
         glib::spawn_future_local(async move {
@@ -277,6 +317,7 @@ impl GitSync {
                 (done, git.status().ok())
             })
             .await;
+            drop(claim);
             this.syncing.set(false);
             this.working(false);
             if this.root.borrow().as_ref() != Some(&root) {
@@ -357,6 +398,12 @@ impl GitSync {
             None => glib::ControlFlow::Break,
         });
         *self.every.borrow_mut() = Some(id);
+    }
+
+    /// The window closed: no more syncs on a timer, nor after an edit.
+    pub fn detach(&self) {
+        self.stop_timers();
+        *self.root.borrow_mut() = None;
     }
 
     fn stop_timers(&self) {

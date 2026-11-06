@@ -319,6 +319,13 @@ impl Window {
                 let tabs = this.tabs.borrow().clone();
                 let unsaved: Vec<Rc<Tab>> = tabs.iter().filter(|tab| tab.editor.save().kept()).cloned().collect();
                 if unsaved.is_empty() {
+                    // What runs on its own, off the window's widgets, stops with
+                    // it: the watcher's loop holds the window (so `destroy` never
+                    // comes), and the timed syncs and alerts would go on for a
+                    // window no one sees.
+                    this.watcher.borrow_mut().take();
+                    this.git.detach();
+                    this.notifier.clear();
                     return glib::Propagation::Proceed;
                 }
                 this.ask_close_unsaved(unsaved);
