@@ -3,8 +3,11 @@
 //! after the note that shows them and their content's hash
 //! (`Note_1a2b3c4d.jpg`), and the notes are rewritten to the new names.
 //!
-//! A picture is kept when any note mentions its file name anywhere, even in
-//! a code block: a word too many keeps a picture, never removes one.
+//! A picture is kept when any note, canvas or base mentions its file name
+//! anywhere, even in a code block, in any case and percent-encoded or not: a
+//! word too many keeps a picture, never removes one. A picture is renamed
+//! only when every file that names it can be rewritten to the new name;
+//! else it is left as it is.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -49,12 +52,25 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
     out!("{} pictures in {}, {} notes", pictures.len(), uploads.display(), notes.len());
     let texts: Vec<(PathBuf, String)> =
         notes.into_iter().filter_map(|path| fs::read_to_string(&path).ok().map(|text| (path, text))).collect();
+    let lowered: Vec<String> = texts.iter().map(|(_, text)| text.to_lowercase()).collect();
+    let folder = folder_in(root, uploads);
 
-    let (mut used, mut unused) = (Vec::new(), Vec::new());
+    let (mut used, mut unused, mut fixed) = (Vec::new(), Vec::new(), Vec::new());
     for path in pictures {
         let name = file_name(&path);
-        let notes: Vec<PathBuf> = texts.iter().filter(|(_, text)| text.contains(&name)).map(|(note, _)| note.clone()).collect();
-        if notes.is_empty() { unused.push(path) } else { used.push(Picture { path, notes }) }
+        let naming: Vec<usize> = (0..texts.len()).filter(|&i| mentions(&lowered[i], &name)).collect();
+        if naming.is_empty() {
+            unused.push(path);
+            continue;
+        }
+        // A file whose mention `rewrite` would leave behind keeps the picture's name.
+        let stuck: Vec<String> = naming
+            .iter()
+            .filter(|&&i| !rewrites_every_mention(&texts[i].0, &texts[i].1, &folder, &name))
+            .map(|&i| file_name(&texts[i].0))
+            .collect();
+        let notes = naming.iter().map(|&i| texts[i].0.clone()).collect();
+        if stuck.is_empty() { used.push(Picture { path, notes }) } else { fixed.push((path, stuck)) }
     }
 
     out!("\n1. Pictures no note names");
@@ -72,6 +88,9 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
     out!("  {} pictures, {}", unused.len(), mb(freed));
 
     out!("\n2. Pictures notes show");
+    for (path, stuck) in &fixed {
+        out!("  kept {}: named in a way that cannot be rewritten in {}", file_name(path), stuck.join(", "));
+    }
     let mut moved = Vec::new();
     for picture in used {
         match optimize(&picture, options.dry_run) {
@@ -87,7 +106,7 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
         let (old, new) = (file_name(&item.from), file_name(&item.to));
         for note in &item.notes {
             let Ok(text) = fs::read_to_string(note) else { continue };
-            let Some(changed) = rewrite(&text, &old, &new) else { continue };
+            let Some(changed) = rewrite_in(&text, &folder, &old, &new) else { continue };
             references += 1;
             files.insert(note.clone());
             if options.dry_run {
@@ -235,26 +254,78 @@ pub fn hash(bytes: &[u8]) -> String {
 }
 
 /// [text] with [old] renamed to [new], in every way a note names a picture,
-/// or `None` when it does not name it.
-pub fn rewrite(text: &str, old: &str, new: &str) -> Option<String> {
+/// or `None` when it does not name it: `notes-cli`'s, whose tests these are.
+#[cfg(test)]
+fn rewrite(text: &str, old: &str, new: &str) -> Option<String> {
+    rewrite_in(text, "uploads", old, new)
+}
+
+/// [rewrite] for pictures in [folder], the vault path of their folder.
+pub fn rewrite_in(text: &str, folder: &str, old: &str, new: &str) -> Option<String> {
     if !text.contains(old) {
         return None;
     }
     let mut out = text.to_string();
     for (from, to) in [
-        (format!("uploads/{old}"), format!("uploads/{new}")),
-        (format!("./uploads/{old}"), format!("uploads/{new}")),
-        (format!("/uploads/{old}"), format!("/uploads/{new}")),
-        (format!("]({old})"), format!("](uploads/{new})")),
+        (format!("{folder}/{old}"), format!("{folder}/{new}")),
+        (format!("./{folder}/{old}"), format!("{folder}/{new}")),
+        (format!("/{folder}/{old}"), format!("/{folder}/{new}")),
+        (format!("]({old})"), format!("]({folder}/{new})")),
     ] {
         out = out.replace(&from, &to);
     }
     // `[[old|name]]` and `![[old]]`: the folder added, the name kept.
     let wiki = Regex::new(&format!(r"(!?\[\[){}(\|[^\]]+)?\]\]", regex::escape(old))).ok()?;
     out = wiki
-        .replace_all(&out, |c: &regex::Captures| format!("{}uploads/{new}{}]]", &c[1], c.get(2).map_or("", |m| m.as_str())))
+        .replace_all(&out, |c: &regex::Captures| format!("{}{folder}/{new}{}]]", &c[1], c.get(2).map_or("", |m| m.as_str())))
         .into_owned();
     (out != text).then_some(out)
+}
+
+/// Whether [lowered], a file's text in lower case, names the picture [name]:
+/// as it is or percent-encoded, in any case.
+fn mentions(lowered: &str, name: &str) -> bool {
+    spellings(name).iter().any(|spelling| lowered.contains(spelling.as_str()))
+}
+
+/// [name] in lower case as a file may write it: plain, with `%20` for its
+/// spaces, and percent-encoded whole.
+fn spellings(name: &str) -> Vec<String> {
+    let name = name.to_lowercase();
+    let mut out = vec![name.clone(), name.replace(' ', "%20"), percent_encoded(&name)];
+    out.dedup();
+    out
+}
+
+fn percent_encoded(text: &str) -> String {
+    text.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { char::from(b).to_string() } else { format!("%{b:02x}") })
+        .collect()
+}
+
+/// Whether renaming [name] in [path], a file whose text is [text], leaves no
+/// mention of it behind: only a note is rewritten, and only as `rewrite_in`
+/// knows how.
+fn rewrites_every_mention(path: &Path, text: &str, folder: &str, name: &str) -> bool {
+    if path.extension().is_none_or(|e| e != "md") {
+        return false;
+    }
+    // A name no other name contains, so what is left over is the old one.
+    let marker = "\u{0}daftar-renamed\u{0}";
+    let after = rewrite_in(text, folder, name, marker).unwrap_or_else(|| text.to_string());
+    !mentions(&after.replace(marker, "").to_lowercase(), name)
+}
+
+/// The vault path of [folder], `uploads` when it is not in [root].
+fn folder_in(root: &Path, folder: &Path) -> String {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let folder = folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf());
+    folder
+        .strip_prefix(&root)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "uploads".into())
 }
 
 fn pictures_in(folder: &Path) -> io::Result<Vec<PathBuf>> {
@@ -266,13 +337,13 @@ fn pictures_in(folder: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Every note in the vault, but in `.git`, `.obsidian` and the like.
+/// Every note, canvas and base in the vault, but in `.git`, `.obsidian` and the like.
 fn notes_in(root: &Path) -> Vec<PathBuf> {
     WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.') && e.file_name() != "node_modules")
         .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "md"))
+        .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "md" || x == "canvas" || x == "base"))
         .map(walkdir::DirEntry::into_path)
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -387,6 +458,32 @@ mod tests {
         let (bytes, quality) = compress(&clear);
         assert_eq!(quality, 95);
         assert!(bytes.starts_with(&[0xFF, 0xD8]));
+    }
+
+    #[test]
+    fn a_picture_named_in_any_spelling_is_kept() {
+        let root = tempfile::tempdir().unwrap();
+        let uploads = root.path().join("uploads");
+        fs::create_dir_all(&uploads).unwrap();
+        let picture = RgbImage::from_pixel(4, 4, Rgb([10, 200, 30]));
+        for name in ["My Pic.png", "photo.png", "board.png", "unused.png"] {
+            picture.save(uploads.join(name)).unwrap();
+        }
+        fs::write(root.path().join("A.md"), "![](uploads/My%20Pic.png)\n![[Photo.PNG]]\n").unwrap();
+        fs::write(root.path().join("B.canvas"), r#"{"nodes":[{"type":"file","file":"uploads/board.png"}]}"#).unwrap();
+        run(root.path(), &uploads, &Options { dry_run: false, keep_originals: false }).unwrap();
+        let mut left: Vec<String> = pictures_in(&uploads).unwrap().iter().map(|p| file_name(p)).collect();
+        left.sort();
+        assert_eq!(left, ["My Pic.png", "board.png", "photo.png"]);
+        assert_eq!(fs::read_to_string(root.path().join("A.md")).unwrap(), "![](uploads/My%20Pic.png)\n![[Photo.PNG]]\n");
+    }
+
+    #[test]
+    fn a_picture_in_another_folder_is_linked_there() {
+        assert_eq!(
+            rewrite_in("![](media/a.png) ![[a.png]]", "media", "a.png", "N_12345678.jpg").unwrap(),
+            "![](media/N_12345678.jpg) ![[media/N_12345678.jpg]]"
+        );
     }
 
     #[test]
