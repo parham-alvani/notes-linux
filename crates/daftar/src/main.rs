@@ -44,6 +44,12 @@ use gtk::glib;
 /// The same id as Daftar for macOS.
 const APP_ID: &str = "me.parham1995.notes";
 
+/// A toast showing [text] as it is: a git error's `<branch>` or a note's
+/// `&` is text, not Pango markup, which would show nothing.
+pub fn toast(text: &str) -> adw::Toast {
+    adw::Toast::builder().title(text).use_markup(false).build()
+}
+
 fn main() -> glib::ExitCode {
     // `daftar Notes/Inbox.md`, or `daftar Inbox`, opens that note, as
     // `daftar://open?path=` does on the Mac: for a keybinding in the

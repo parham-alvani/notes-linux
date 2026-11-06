@@ -178,7 +178,7 @@ impl Window {
     }
 
     fn notice(&self, text: &str) {
-        self.toasts.add_toast(adw::Toast::new(text));
+        self.toasts.add_toast(crate::toast(text));
     }
 
     /// Every tab's editor saved, so a file is read as it is on disk.
@@ -207,7 +207,7 @@ impl Window {
                 store.wrote();
                 Ok(())
             }),
-            notice: Box::new(move |text| toasts.add_toast(adw::Toast::new(text))),
+            notice: Box::new(move |text| toasts.add_toast(crate::toast(text))),
         };
         crate::history::present(&self.window, store.root.clone(), &path, hooks);
     }
@@ -227,7 +227,7 @@ impl Window {
                     edit.toggle_edit();
                 }
             }),
-            notice: Box::new(move |text| toasts.add_toast(adw::Toast::new(text))),
+            notice: Box::new(move |text| toasts.add_toast(crate::toast(text))),
         };
         crate::conflicts::present(&self.window, self.git.clone(), hooks);
     }
@@ -250,7 +250,7 @@ impl Window {
         }
         let text = store.text(&path).unwrap_or_default();
         let toasts = self.toasts.clone();
-        crate::read_aloud::toggle(&path, &tab.reader.view, text, move |text| toasts.add_toast(adw::Toast::new(text)));
+        crate::read_aloud::toggle(&path, &tab.reader.view, text, move |text| toasts.add_toast(crate::toast(text)));
     }
 
     /// Ctrl+Shift+E: the note on screen as an A4 PDF, by `daftar-cli export`.
@@ -271,7 +271,7 @@ impl Window {
         };
         let toasts = self.toasts.clone();
         crate::export::pdf(self.window.upcast_ref(), &store.root, &path, move |text| {
-            toasts.add_toast(adw::Toast::new(text));
+            toasts.add_toast(crate::toast(text));
         });
     }
 }

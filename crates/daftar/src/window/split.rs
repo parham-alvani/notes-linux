@@ -106,7 +106,7 @@ impl Window {
     fn close_split(&self, keep: &Rc<Tab>) {
         let Some(other) = self.other_pane(keep) else { return };
         if !self.leave_editor_in(&other) {
-            self.toasts.add_toast(adw::Toast::new("The other note changed on disk; the split stays so the text is not lost."));
+            self.toasts.add_toast(crate::toast("The other note changed on disk; the split stays so the text is not lost."));
             return;
         }
         crate::read_aloud::left(&other.reader.view, None);

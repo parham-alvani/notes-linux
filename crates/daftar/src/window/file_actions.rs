@@ -50,7 +50,7 @@ impl Window {
             "new-folder" => Action::NewFolder { parent: target.unwrap_or(folder_of_current) },
             _ => {
                 let Some(path) = target.or(current) else {
-                    self.toasts.add_toast(adw::Toast::new("Open a note first, or right-click a file in the sidebar."));
+                    self.toasts.add_toast(crate::toast("Open a note first, or right-click a file in the sidebar."));
                     return;
                 };
                 match name {
@@ -66,13 +66,7 @@ impl Window {
             return;
         }
         let (this, toasts) = (self.clone(), self.toasts.clone());
-        files::present(
-            &self.window,
-            action,
-            store,
-            move |done| this.files_done(done),
-            move |error| toasts.add_toast(adw::Toast::new(&error)),
-        );
+        files::present(&self.window, action, store, move |done| this.files_done(done), move |error| toasts.add_toast(crate::toast(&error)));
     }
 
     /// Ctrl+Alt+X: the editor's selection goes to a new note, in the open
@@ -81,13 +75,13 @@ impl Window {
         let Some(store) = self.store.borrow().clone() else { return };
         let tab = self.tab();
         let Some(path) = tab.editor.path().filter(|_| tab.editing()) else {
-            self.toasts.add_toast(adw::Toast::new("Extract works in the editor: select the text there first."));
+            self.toasts.add_toast(crate::toast("Extract works in the editor: select the text there first."));
             return;
         };
         let (range, text) = match tab.editor.extract_selection() {
             Ok(found) => found,
             Err(why) => {
-                self.toasts.add_toast(adw::Toast::new(why));
+                self.toasts.add_toast(crate::toast(why));
                 return;
             }
         };
@@ -102,11 +96,11 @@ impl Window {
                 if let Some(link) = &done.link
                     && !tab.editor.replace_extracted(range.clone(), &text, link)
                 {
-                    this.toasts.add_toast(adw::Toast::new("The note changed, so the link was not put in. The new note is made."));
+                    this.toasts.add_toast(crate::toast("The note changed, so the link was not put in. The new note is made."));
                 }
                 this.files_changed(done.changed);
             },
-            move |error| toasts.add_toast(adw::Toast::new(&error)),
+            move |error| toasts.add_toast(crate::toast(&error)),
         );
     }
 
@@ -143,13 +137,13 @@ impl Window {
                     all.changed.extend(done.changed);
                     all.moves.extend(done.moves);
                 }
-                Err(error) => self.toasts.add_toast(adw::Toast::new(&error.to_string())),
+                Err(error) => self.toasts.add_toast(crate::toast(&error.to_string())),
             }
         }
         store.wrote();
         let count = moving.len();
         self.files_done(all);
-        self.toasts.add_toast(adw::Toast::new(&if count == 1 {
+        self.toasts.add_toast(crate::toast(&if count == 1 {
             format!("Moved {} to {}", daftar_core::Vault::title(&moving[0]), if folder.is_empty() { "the top" } else { folder })
         } else {
             format!("Moved {count} files to {}", if folder.is_empty() { "the top" } else { folder })
@@ -177,7 +171,7 @@ impl Window {
             }
         }
         if done.moves.len() > 1 {
-            self.toasts.add_toast(adw::Toast::new(&format!("Moved {} files; the links to them follow.", done.moves.len())));
+            self.toasts.add_toast(crate::toast(&format!("Moved {} files; the links to them follow.", done.moves.len())));
         }
     }
 
@@ -188,14 +182,14 @@ impl Window {
         match files::toggle_bookmark(&store, &path) {
             Ok(on) => {
                 let title = daftar_core::Vault::title(&path);
-                self.toasts.add_toast(adw::Toast::new(&if on {
+                self.toasts.add_toast(crate::toast(&if on {
                     format!("Bookmarked {title}.")
                 } else {
                     format!("Removed the bookmark of {title}.")
                 }));
                 store.wrote();
             }
-            Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The bookmarks were not saved: {error}"))),
+            Err(error) => self.toasts.add_toast(crate::toast(&format!("The bookmarks were not saved: {error}"))),
         }
         self.refresh_marks();
     }

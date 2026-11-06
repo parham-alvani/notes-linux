@@ -76,7 +76,7 @@ impl Window {
         copy.connect_activate(move |_, target| {
             let text = target.and_then(glib::Variant::get::<String>).unwrap_or_default();
             this.window.clipboard().set_text(&text);
-            this.toasts.add_toast(adw::Toast::new(&format!("Copied {text}")));
+            this.toasts.add_toast(crate::toast(&format!("Copied {text}")));
         });
         self.window.add_action(&copy);
         let in_folder = gio::SimpleAction::new("replace-in-folder", Some(glib::VariantTy::STRING));
@@ -158,7 +158,7 @@ impl Window {
                 self.sidebar.set_tree(&store.tree());
                 self.open(&path, None);
             }
-            Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The note could not be made: {error}"))),
+            Err(error) => self.toasts.add_toast(crate::toast(&format!("The note could not be made: {error}"))),
         }
     }
 
@@ -175,7 +175,7 @@ impl Window {
                     self.toggle_edit();
                 }
             }
-            Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The scratchpad could not be made: {error}"))),
+            Err(error) => self.toasts.add_toast(crate::toast(&format!("The scratchpad could not be made: {error}"))),
         }
     }
 
@@ -188,9 +188,9 @@ impl Window {
         match found {
             Some(path) => self.open(&path, None),
             None if store.periodic.period_of(&current).is_none() => {
-                self.toasts.add_toast(adw::Toast::new("The open note is not a periodic note."));
+                self.toasts.add_toast(crate::toast("The open note is not a periodic note."));
             }
-            None => self.toasts.add_toast(adw::Toast::new(if step < 0 { "No note before this one." } else { "No note after this one." })),
+            None => self.toasts.add_toast(crate::toast(if step < 0 { "No note before this one." } else { "No note after this one." })),
         }
     }
 
@@ -201,15 +201,15 @@ impl Window {
         let tab = self.tab();
         if tab.editing() && !tab.editor.is_neovim() {
             if !tab.editor.sort_tasks() {
-                self.toasts.add_toast(adw::Toast::new("The tasks are in order already."));
+                self.toasts.add_toast(crate::toast("The tasks are in order already."));
             }
             return;
         }
         let Some(path) = self.note_to_write(&tab) else { return };
         match store.sort_tasks(&path) {
             Ok(true) => self.written(&tab),
-            Ok(false) => self.toasts.add_toast(adw::Toast::new("The tasks are in order already.")),
-            Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The tasks could not be sorted: {error}."))),
+            Ok(false) => self.toasts.add_toast(crate::toast("The tasks are in order already.")),
+            Err(error) => self.toasts.add_toast(crate::toast(&format!("The tasks could not be sorted: {error}."))),
         }
     }
 
@@ -222,7 +222,7 @@ impl Window {
         let tab = self.tab();
         if tab.editing() && !tab.editor.is_neovim() {
             if let Err(why) = tab.editor.sort_headings(index) {
-                self.toasts.add_toast(adw::Toast::new(&why));
+                self.toasts.add_toast(crate::toast(&why));
             }
             return;
         }
@@ -230,8 +230,8 @@ impl Window {
         let line = if tab.editing() { tab.editor.line() } else { store.places.get(&path).unwrap_or(0) };
         match store.sort_headings(&path, index, line) {
             Ok(None) => self.written(&tab),
-            Ok(Some(why)) => self.toasts.add_toast(adw::Toast::new(&why)),
-            Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The headings could not be sorted: {error}."))),
+            Ok(Some(why)) => self.toasts.add_toast(crate::toast(&why)),
+            Err(error) => self.toasts.add_toast(crate::toast(&format!("The headings could not be sorted: {error}."))),
         }
     }
 
@@ -242,7 +242,7 @@ impl Window {
         let tab = self.tab();
         let Some(path) = self.note_to_write(&tab) else { return };
         if let Err(why) = store.set_property(&path, edit) {
-            self.toasts.add_toast(adw::Toast::new(&why));
+            self.toasts.add_toast(crate::toast(&why));
         }
         self.written(&tab);
         self.refresh_inspector();
@@ -261,7 +261,7 @@ impl Window {
         match store.move_section(&path, index, position) {
             Ok(true) => self.written(&tab),
             Ok(false) => {}
-            Err(error) => self.toasts.add_toast(adw::Toast::new(&format!("The section could not be moved: {error}."))),
+            Err(error) => self.toasts.add_toast(crate::toast(&format!("The section could not be moved: {error}."))),
         }
     }
 
@@ -289,7 +289,7 @@ impl Window {
         }
         let this = self.clone();
         vault_dialogs::rename_tag(&self.window, store, tag, move |text| {
-            this.toasts.add_toast(adw::Toast::new(&text));
+            this.toasts.add_toast(crate::toast(&text));
             this.redraw_page();
         });
     }
@@ -303,7 +303,7 @@ impl Window {
         }
         let this = self.clone();
         vault_dialogs::replace_in_vault(&self.window, store, folder, "", move |text| {
-            this.toasts.add_toast(adw::Toast::new(&text));
+            this.toasts.add_toast(crate::toast(&text));
             this.redraw_page();
         });
     }
@@ -315,7 +315,7 @@ impl Window {
         let task = store.index().tasks().into_iter().find(|t| t.path == path && t.task.line == line);
         match task {
             Some(task) => self.move_task(&task, &BoardDrop::Postpone(amount)),
-            None => self.toasts.add_toast(adw::Toast::new("The task is not on that line any more.")),
+            None => self.toasts.add_toast(crate::toast("The task is not on that line any more.")),
         }
     }
 

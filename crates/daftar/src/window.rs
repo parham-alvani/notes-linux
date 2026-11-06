@@ -141,7 +141,7 @@ impl Window {
 
         let git = {
             let toasts = toasts.clone();
-            GitSync::new(move |text| toasts.add_toast(adw::Toast::new(text)))
+            GitSync::new(move |text| toasts.add_toast(crate::toast(text)))
         };
         let go_back =
             gtk::Button::builder().icon_name("go-previous-symbolic").tooltip_text("Back (Ctrl+[)").action_name("win.back").build();
@@ -165,7 +165,7 @@ impl Window {
                         window.open_line(path, line);
                     }
                 },
-                move |text| notices.add_toast(adw::Toast::new(text)),
+                move |text| notices.add_toast(crate::toast(text)),
                 move |tag| {
                     if let Some(window) = tags.borrow().as_ref() {
                         window.palette(Mode::Text, &format!("#{tag}"));
@@ -367,9 +367,9 @@ impl Window {
                 let (notices, conflicts, weak) = (self.toasts.clone(), self.toasts.clone(), weak.clone());
                 Editor::new(
                     self.settings.clone(),
-                    move |text| notices.add_toast(adw::Toast::new(text)),
+                    move |text| notices.add_toast(crate::toast(text)),
                     move |text| {
-                        let toast = adw::Toast::builder().title(text).button_label("Reload").timeout(0).build();
+                        let toast = adw::Toast::builder().title(text).use_markup(false).button_label("Reload").timeout(0).build();
                         let weak = weak.clone();
                         toast.connect_button_clicked(move |_| {
                             if let Some(tab) = weak.upgrade() {
@@ -463,7 +463,7 @@ impl Window {
         }
         {
             let toasts = self.toasts.clone();
-            tab.reader.connect_notice(move |text| toasts.add_toast(adw::Toast::new(text)));
+            tab.reader.connect_notice(move |text| toasts.add_toast(crate::toast(text)));
         }
         {
             let this = self.clone();
@@ -494,7 +494,7 @@ impl Window {
                             this.toggle_edit();
                         }
                     }
-                    Err(error) => this.toasts.add_toast(adw::Toast::new(&format!("The note was not made: {error}"))),
+                    Err(error) => this.toasts.add_toast(crate::toast(&format!("The note was not made: {error}"))),
                 }
             });
         }
@@ -595,7 +595,7 @@ impl Window {
         let panes = self.panes_of(&group);
         if panes.iter().any(|tab| tab.editing() && tab.editor.close().kept()) {
             self.tab_view.close_page_finish(page, false);
-            self.toasts.add_toast(adw::Toast::new("The note was not saved; the tab stays open so the text is not lost."));
+            self.toasts.add_toast(crate::toast("The note was not saved; the tab stays open so the text is not lost."));
             return glib::Propagation::Stop;
         }
         self.tabs.borrow_mut().retain(|other| !Rc::ptr_eq(&other.group, &group));
@@ -669,7 +669,7 @@ impl Window {
         dialog.select_folder(Some(&self.window), gio::Cancellable::NONE, move |result| {
             let Some(path) = result.ok().and_then(|folder| folder.path()) else { return };
             if let Err(error) = this.settings.borrow_mut().set("vault", Value::String(path.to_string_lossy().into_owned())) {
-                this.toasts.add_toast(adw::Toast::new(&format!("The settings were not saved: {error}")));
+                this.toasts.add_toast(crate::toast(&format!("The settings were not saved: {error}")));
             }
             this.load(path, None);
         });
@@ -682,7 +682,7 @@ impl Window {
             for tab in &tabs {
                 tab.stack.set_visible_child_name("choose");
             }
-            self.toasts.add_toast(adw::Toast::new(&format!("{} is not a folder.", root.display())));
+            self.toasts.add_toast(crate::toast(&format!("{} is not a folder.", root.display())));
             return;
         }
         if !tabs.iter().all(|tab| self.leave_editor_in(tab)) {
@@ -713,7 +713,7 @@ impl Window {
             };
             match watcher {
                 Ok(watcher) => *this.watcher.borrow_mut() = Some(watcher),
-                Err(error) => this.toasts.add_toast(adw::Toast::new(&format!("Changes on disk are not followed: {error}"))),
+                Err(error) => this.toasts.add_toast(crate::toast(&format!("Changes on disk are not followed: {error}"))),
             }
             this.recent.borrow_mut().clear();
             this.sidebar.set_tree(&store.tree());
@@ -890,7 +890,7 @@ impl Window {
         }
         let Some(shown) = tab.reader.shown().filter(|_| tab.showing().as_deref() == Some("reader")) else { return };
         if !Vault::is_note(&shown.path) {
-            self.toasts.add_toast(adw::Toast::new("Only a note can be edited here."));
+            self.toasts.add_toast(crate::toast("Only a note can be edited here."));
             return;
         }
         // `editor.neovide`: Ctrl+E edits in Neovide's own window instead.
@@ -902,7 +902,7 @@ impl Window {
             return;
         }
         if !tab.editor.load(&store.root, &shown.path, shown.line) {
-            self.toasts.add_toast(adw::Toast::new(&format!("{} could not be read.", shown.path)));
+            self.toasts.add_toast(crate::toast(&format!("{} could not be read.", shown.path)));
             return;
         }
         tab.stack.set_visible_child_name("editor");
@@ -951,7 +951,7 @@ impl Window {
     fn toggle_task(&self, path: &str, line: usize, status: char) {
         let Some(store) = self.store.borrow().clone() else { return };
         if let Err(failure) = store.toggle_task(path, line, status) {
-            self.toasts.add_toast(adw::Toast::new(&failure.to_string()));
+            self.toasts.add_toast(crate::toast(&failure.to_string()));
         }
         self.redraw_page();
     }
@@ -971,7 +971,7 @@ impl Window {
         let Some(store) = self.store.borrow().clone() else { return };
         if store.move_task(task, drop).is_err() {
             let text = crate::today::plain(&task.task.text);
-            self.toasts.add_toast(adw::Toast::new(&format!("“{text}” changed in its note before the move. Nothing was written.")));
+            self.toasts.add_toast(crate::toast(&format!("“{text}” changed in its note before the move. Nothing was written.")));
         }
         self.redraw_page();
     }
@@ -1183,7 +1183,7 @@ impl Window {
         let show = !self.hidden_settings().1;
         let result = self.settings.borrow_mut().set("files.show_hidden", Value::Bool(show));
         if let Err(error) = result {
-            self.toasts.add_toast(adw::Toast::new(&format!("The settings were not saved: {error}")));
+            self.toasts.add_toast(crate::toast(&format!("The settings were not saved: {error}")));
         }
         self.refresh_hidden();
     }
@@ -1210,7 +1210,7 @@ impl Window {
     fn text_size(&self, step: i64) {
         let next = if step == 0 { 14 } else { (self.settings.borrow().text_size() + step).clamp(10, 28) };
         if let Err(error) = self.settings.borrow_mut().set("appearance.text_size", Value::Int(next)) {
-            self.toasts.add_toast(adw::Toast::new(&format!("The settings were not saved: {error}")));
+            self.toasts.add_toast(crate::toast(&format!("The settings were not saved: {error}")));
         }
         self.reload_readers();
     }
@@ -1382,7 +1382,7 @@ impl Window {
             }),
             notice: Box::new({
                 let toasts = self.toasts.clone();
-                move |text| toasts.add_toast(adw::Toast::new(text))
+                move |text| toasts.add_toast(crate::toast(text))
             }),
         };
         let root = self.store.borrow().as_ref().map(|store| store.root.clone());
