@@ -453,6 +453,7 @@ impl Window {
                 title: RefCell::new(("Home".into(), String::new())),
                 crumb: RefCell::new(None),
                 group: group.clone(),
+                pending: RefCell::new(None),
             }
         });
         {
@@ -588,6 +589,12 @@ impl Window {
             return;
         }
         let tab = self.tab();
+        for pane in self.panes_of(&tab.group) {
+            let pending = pane.pending.borrow_mut().take();
+            if let Some(path) = pending {
+                self.go_in(&pane, &path, None, None, false);
+            }
+        }
         let (title, subtitle) = tab.title.borrow().clone();
         self.title.set(&title, crumb_path(&tab).as_deref());
         self.title.set_subtitle(&subtitle);
@@ -1026,6 +1033,7 @@ impl Window {
 
     fn go_in(&self, tab: &Rc<Tab>, path: &str, anchor: Option<&str>, line: Option<usize>, record: bool) {
         let Some(store) = self.store.borrow().clone() else { return };
+        tab.pending.borrow_mut().take();
         if !self.leave_editor_in(tab) {
             return;
         }
@@ -1526,7 +1534,7 @@ impl Window {
         let Some(store) = self.store.borrow().clone() else { return };
         let tabs = self.tabs_in_order();
         let chosen = self.tab();
-        let note = |tab: &Rc<Tab>| tab.current().unwrap_or_default();
+        let note = |tab: &Rc<Tab>| tab.current().or_else(|| tab.pending.borrow().clone()).unwrap_or_default();
         let paths: Vec<String> = tabs.iter().map(|panes| note(&panes[0])).collect();
         let splits: Vec<Option<String>> = tabs.iter().map(|panes| panes.get(1).map(note)).collect();
         let focused: Vec<usize> = tabs.iter().map(|panes| panes.iter().position(|tab| tab.group.is_focused(tab)).unwrap_or(0)).collect();
@@ -1549,15 +1557,25 @@ impl Window {
             .unwrap_or_default();
         let chosen = saved.get("chosen").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
         let at_index = |key: &str, at: usize| saved.get(key).and_then(|list| list.get(at)).cloned();
+        // The chosen tab is drawn now; the others when they are first chosen.
+        let show = |tab: &Rc<Tab>, path: &str, now: bool| {
+            if now {
+                self.go_in(tab, path, None, None, false);
+            } else {
+                *tab.pending.borrow_mut() = Some(path.to_string());
+                let name = path.rsplit('/').next().unwrap_or(path);
+                self.set_titles(tab, name.strip_suffix(".md").unwrap_or(name), path);
+            }
+        };
         for (at, path) in paths.iter().enumerate().take(20) {
             let tab = if at == 0 { self.tab() } else { self.new_tab() };
             if store.index().files.contains(path) {
-                self.go_in(&tab, path, None, None, false);
+                show(&tab, path, at == chosen);
             }
             let Some(right) = at_index("splits", at).and_then(|split| split.as_str().map(String::from)) else { continue };
             let other = self.split_pane(&tab);
             if store.index().files.contains(&right) {
-                self.go_in(&other, &right, None, None, false);
+                show(&other, &right, at == chosen);
             } else {
                 self.show_home(&other);
             }

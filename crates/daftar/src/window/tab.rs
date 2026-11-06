@@ -68,6 +68,10 @@ pub(crate) struct Tab {
     pub crumb: RefCell<Option<String>>,
     /// The tab the pane is in.
     pub group: Rc<Group>,
+    /// A note the pane was restored with and has not drawn yet: it is
+    /// drawn the first time its tab is chosen, so a window with many tabs
+    /// opens as fast as one with one.
+    pub pending: RefCell<Option<String>>,
 }
 
 impl Tab {
