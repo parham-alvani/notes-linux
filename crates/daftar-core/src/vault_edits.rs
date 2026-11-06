@@ -4,7 +4,7 @@
 
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
@@ -82,7 +82,9 @@ impl VaultEdits {
     /// Applies [edit] to the file at [path] in [root], written in place
     /// through a temporary file, so a crash never leaves half a note.
     pub fn apply(path: &str, root: &Path, edit: impl FnOnce(&str) -> Result<String, Failure>) -> Result<(), Failure> {
-        let file = root.join(path);
+        // A symlinked note is written where it points, so it stays a link,
+        // and only while that is in the vault.
+        let file = Self::within(root, path).ok_or_else(|| Failure::Unwritable(format!("{path} is outside the vault")))?;
         let text = fs::read_to_string(&file).map_err(|_| Failure::Unreadable)?;
         let result = edit(&text)?;
         if result == text {
@@ -91,10 +93,38 @@ impl VaultEdits {
         let temporary =
             file.with_file_name(format!(".{}.daftar-{}", file.file_name().and_then(|n| n.to_str()).unwrap_or("note"), std::process::id()));
         fs::write(&temporary, result).map_err(|e| Failure::Unwritable(e.to_string()))?;
+        // The note keeps who may read it.
+        if let Ok(metadata) = fs::metadata(&file) {
+            let _ = fs::set_permissions(&temporary, metadata.permissions());
+        }
         fs::rename(&temporary, &file).map_err(|e| {
             let _ = fs::remove_file(&temporary);
             Failure::Unwritable(e.to_string())
         })
+    }
+
+    /// The file [path] names in the vault at [root], its links followed as
+    /// far as the file or folder that is there; `None` when that leads out
+    /// of the vault. A file not made yet is under the folder it would be in.
+    pub fn within(root: &Path, path: &str) -> Option<PathBuf> {
+        let root = root.canonicalize().ok()?;
+        let mut there = root.join(path);
+        let mut rest = Vec::new();
+        while fs::symlink_metadata(&there).is_err() {
+            rest.push(there.file_name()?.to_owned());
+            there = there.parent()?.to_path_buf();
+        }
+        let mut resolved = there.canonicalize().ok()?;
+        if !resolved.starts_with(&root) {
+            return None;
+        }
+        for part in rest.iter().rev() {
+            if part == ".." {
+                return None;
+            }
+            resolved.push(part);
+        }
+        Some(resolved)
     }
 
     /// [edit] applied to each of [paths], several files at a time: a tag
@@ -119,6 +149,39 @@ impl VaultEdits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_vault_is_never_written() {
+        let base = tempfile::tempdir().unwrap();
+        let (vault, outside) = (base.path().join("vault"), base.path().join("outside"));
+        fs::create_dir_all(&vault).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("n.md"), "- [ ] a\n").unwrap();
+        std::os::unix::fs::symlink(&outside, vault.join("linked")).unwrap();
+        std::os::unix::fs::symlink(outside.join("n.md"), vault.join("n.md")).unwrap();
+        assert_eq!(VaultEdits::within(&vault, "linked/new.md"), None);
+        assert_eq!(VaultEdits::within(&vault, "n.md"), None);
+        assert!(VaultEdits::within(&vault, "Notes/new.md").is_some_and(|p| p.ends_with("Notes/new.md")));
+        let toggle = |text: &str| VaultEdits::toggle_task(text, 0, ' ', None, day("2026-10-05"));
+        assert!(matches!(VaultEdits::apply("linked/n.md", &vault, toggle), Err(Failure::Unwritable(_))));
+        assert_eq!(fs::read_to_string(outside.join("n.md")).unwrap(), "- [ ] a\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_note_keeps_its_permissions_and_its_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("real")).unwrap();
+        fs::write(root.path().join("real/a.md"), "- [ ] a\n").unwrap();
+        fs::set_permissions(root.path().join("real/a.md"), fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink("real/a.md", root.path().join("a.md")).unwrap();
+        VaultEdits::apply("a.md", root.path(), |text| VaultEdits::toggle_task(text, 0, ' ', None, day("2026-10-05"))).unwrap();
+        assert!(fs::symlink_metadata(root.path().join("a.md")).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(root.path().join("real/a.md")).unwrap(), "- [x] a ✅ 2026-10-05\n");
+        assert_eq!(fs::metadata(root.path().join("real/a.md")).unwrap().permissions().mode() & 0o777, 0o600);
+    }
 
     fn day(text: &str) -> Day {
         Day::parse(text).unwrap()

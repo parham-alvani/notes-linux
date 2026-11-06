@@ -400,7 +400,7 @@ fn create_note(root: &Path, path: &str, text: &str) -> Result<String, String> {
     if path.starts_with('/') || path.split('/').any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.')) {
         return Err(format!("{path} is not a note in the vault"));
     }
-    let file = root.join(&path);
+    let file = VaultEdits::within(root, &path).ok_or_else(|| format!("{path} is outside the vault"))?;
     if let Some(folder) = file.parent() {
         fs::create_dir_all(folder).map_err(|e| format!("{path}: {e}"))?;
     }

@@ -85,7 +85,7 @@ impl QuickCapture {
         {
             path.clone_from(found);
         }
-        let file = root.join(&path);
+        let file = VaultEdits::within(root, &path).ok_or_else(|| format!("{path} is outside the vault."))?;
         if !file.exists() {
             let first = if is_daily(target) { first_text(root, &Vault::title(&path), day, clock) } else { String::new() };
             if let Some(folder) = file.parent() {
