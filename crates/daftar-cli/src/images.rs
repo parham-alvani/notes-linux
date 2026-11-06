@@ -1,7 +1,9 @@
 //! The picture cleanup of `notes-cli`, ported: pictures in `uploads/` that
 //! no note names are removed; the others become JPEGs under 1 MB, named
 //! after the note that shows them and their content's hash
-//! (`Note_1a2b3c4d.jpg`), and the notes are rewritten to the new names.
+//! (`Note_1a2b3c4d.jpg`), and the notes are rewritten to the new names. A
+//! picture under 1 MB whose JPEG would weigh as much or more (a screenshot,
+//! a diagram) keeps its format and is only renamed (`Note_1a2b3c4d.png`).
 //!
 //! A picture is kept when any note, canvas or base mentions its file name
 //! anywhere, even in a code block, in any case and percent-encoded or not: a
@@ -44,6 +46,8 @@ struct Moved {
     from: PathBuf,
     to: PathBuf,
     notes: Vec<PathBuf>,
+    /// Made anew, so the original is left to remove; else only renamed.
+    converted: bool,
 }
 
 pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
@@ -106,7 +110,7 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
     let mut moved = Vec::new();
     for picture in used {
         match optimize(&picture, options.dry_run) {
-            Ok(Some(to)) => moved.push(Moved { from: picture.path, to, notes: picture.notes }),
+            Ok(Some((to, converted))) => moved.push(Moved { from: picture.path, to, notes: picture.notes, converted }),
             Ok(None) => {}
             Err(error) => out!("  {}: {error}", file_name(&picture.path)),
         }
@@ -136,7 +140,7 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
         out!("  kept (--keep-originals)");
     } else {
         let mut freed = 0;
-        for item in moved.iter().filter(|m| m.from != m.to && m.from.exists() && (options.dry_run || m.to.exists())) {
+        for item in moved.iter().filter(|m| m.converted && m.from != m.to && m.from.exists() && (options.dry_run || m.to.exists())) {
             freed += fs::metadata(&item.from)?.len();
             if options.dry_run {
                 out!("  would remove {}", file_name(&item.from));
@@ -150,13 +154,13 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
     Ok(())
 }
 
-/// The new file of [picture], written unless [dry_run], or `None` when it
-/// could not be made.
-fn optimize(picture: &Picture, dry_run: bool) -> io::Result<Option<PathBuf>> {
+/// The new file of [picture], written unless [dry_run], and whether it was
+/// made anew rather than renamed; `None` when it could not be made.
+fn optimize(picture: &Picture, dry_run: bool) -> io::Result<Option<(PathBuf, bool)>> {
     let path = &picture.path;
     if is_optimized(path)? {
         out!("  {} is done", file_name(path));
-        return Ok(Some(path.clone()));
+        return Ok(Some((path.clone(), false)));
     }
     let size = fs::metadata(path)?.len();
     let base = base_name(path, &picture.notes);
@@ -170,7 +174,7 @@ fn optimize(picture: &Picture, dry_run: bool) -> io::Result<Option<PathBuf>> {
             fs::rename(path, &to)?;
             out!("  renamed {} → {} ({})", file_name(path), file_name(&to), kb(size));
         }
-        return Ok(Some(to));
+        return Ok(Some((to, false)));
     }
     let image = match ImageReader::open(path)?.with_guessed_format()?.decode() {
         Ok(image) => image,
@@ -180,6 +184,17 @@ fn optimize(picture: &Picture, dry_run: bool) -> io::Result<Option<PathBuf>> {
         }
     };
     let (bytes, quality) = compress(&image);
+    if !jpeg && size <= TARGET_SIZE && bytes.len() as u64 >= size {
+        // A JPEG would weigh more: the picture keeps its format, renamed.
+        let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let to = path.with_file_name(format!("{base}_{}.{extension}", hash(&fs::read(path)?)));
+        let verb = if dry_run { "would rename" } else { "renamed" };
+        if !dry_run {
+            fs::rename(path, &to)?;
+        }
+        out!("  {verb} {} → {} ({}, smaller than its JPEG of {})", file_name(path), file_name(&to), kb(size), kb(bytes.len() as u64));
+        return Ok(Some((to, false)));
+    }
     // Named by the hash of what is written, so the next run finds it done.
     let to = path.with_file_name(format!("{base}_{}.jpg", hash(&bytes)));
     let verb = if dry_run { "would make" } else { "made" };
@@ -188,7 +203,7 @@ fn optimize(picture: &Picture, dry_run: bool) -> io::Result<Option<PathBuf>> {
     }
     let warning = if bytes.len() as u64 > TARGET_SIZE { ", still over 1 MB" } else { "" };
     out!("  {verb} {} → {} (quality {quality}, {} → {}{warning})", file_name(path), file_name(&to), kb(size), kb(bytes.len() as u64));
-    Ok(Some(to))
+    Ok(Some((to, true)))
 }
 
 /// The name before the hash: the one a picture already has as `{name}_{hash}`,
@@ -247,8 +262,10 @@ fn on_white(image: &DynamicImage) -> RgbImage {
 }
 
 /// A JPEG under 1 MB named `{name}_{hash}.jpg` by its own content's hash.
+/// Under 1 MB and named by its own content's hash: a JPEG this cleanup made,
+/// or a picture it kept in its format because the JPEG weighed more.
 fn is_optimized(path: &Path) -> io::Result<bool> {
-    if !is_jpeg(path) || fs::metadata(path)?.len() > TARGET_SIZE {
+    if fs::metadata(path)?.len() > TARGET_SIZE {
         return Ok(false);
     }
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -545,14 +562,34 @@ mod tests {
     }
 
     #[test]
+    fn a_picture_smaller_than_its_jpeg_keeps_its_format() {
+        let root = tempfile::tempdir().unwrap();
+        let uploads = root.path().join("uploads");
+        fs::create_dir_all(&uploads).unwrap();
+        // One color compresses far better as a PNG than as a JPEG.
+        RgbImage::from_pixel(200, 200, Rgb([10, 200, 30])).save(uploads.join("shot.png")).unwrap();
+        fs::write(root.path().join("My Note.md"), "![[shot.png]]\n").unwrap();
+        let options = Options { dry_run: false, keep_originals: false, trash: false };
+        run(root.path(), &uploads, &options).unwrap();
+        let left: Vec<String> = pictures_in(&uploads).unwrap().iter().map(|p| file_name(p)).collect();
+        assert_eq!(left.len(), 1);
+        assert!(left[0].starts_with("MyNote_") && left[0].ends_with(".png"), "{left:?}");
+        assert_eq!(fs::read_to_string(root.path().join("My Note.md")).unwrap(), format!("![[uploads/{}]]\n", left[0]));
+        run(root.path(), &uploads, &options).unwrap();
+        let again: Vec<String> = pictures_in(&uploads).unwrap().iter().map(|p| file_name(p)).collect();
+        assert_eq!(again, left);
+    }
+
+    #[test]
     fn a_run_cleans_up_and_a_second_run_changes_nothing() {
         let root = tempfile::tempdir().unwrap();
         let uploads = root.path().join("uploads");
         fs::create_dir_all(&uploads).unwrap();
-        let picture = RgbImage::from_pixel(4, 4, Rgb([10, 200, 30]));
-        picture.save(uploads.join("shown.png")).unwrap();
-        picture.save(uploads.join("unused.png")).unwrap();
-        fs::write(root.path().join("My Note.md"), "# Note\n![[shown.png]]\n").unwrap();
+        // A BMP, which its JPEG beats.
+        let picture = RgbImage::from_pixel(200, 200, Rgb([10, 200, 30]));
+        picture.save(uploads.join("shown.bmp")).unwrap();
+        picture.save(uploads.join("unused.bmp")).unwrap();
+        fs::write(root.path().join("My Note.md"), "# Note\n![[shown.bmp]]\n").unwrap();
         let options = Options { dry_run: false, keep_originals: false, trash: false };
         run(root.path(), &uploads, &options).unwrap();
         let left: Vec<String> = pictures_in(&uploads).unwrap().iter().map(|p| file_name(p)).collect();
