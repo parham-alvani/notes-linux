@@ -58,6 +58,8 @@ pub struct Options {
     pub fix: bool,
     /// With [fix], prints the changes and writes nothing.
     pub dry_run: bool,
+    /// The memory warnings (`memory.rs`), with the vault's conventions.
+    pub memory: Option<crate::memory::Rules>,
 }
 
 pub struct Outcome {
@@ -496,6 +498,11 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
         }
         let source = fs::read_to_string(root.join(path.as_str())).unwrap_or_default();
         let source_lines: Vec<&str> = source.lines().collect();
+        if let Some(rules) = &options.memory {
+            for (line, rule, what) in crate::memory::problems(path, &source, rules, chrono::Local::now().naive_local()) {
+                found.insert(((*path).clone(), line, false, rule, what));
+            }
+        }
         for link in &note.parsed.links {
             // `[[#Heading]]` is a heading of this note.
             if (link.target.is_empty() && link.anchor.as_deref().is_none_or(str::is_empty)) || link.target.contains("://") {
@@ -911,6 +918,7 @@ mod tests {
             github: false,
             fix: false,
             dry_run: false,
+            memory: None,
         }
     }
 

@@ -18,6 +18,7 @@ mod fmt;
 mod images;
 mod lint;
 mod mcp;
+mod memory;
 mod report;
 mod review;
 mod tui;
@@ -389,6 +390,23 @@ enum Command {
         /// With --fix, prints the changes and writes nothing.
         #[arg(long, requires = "fix")]
         dry_run: bool,
+        /// Warns of what makes a note stale as an agent's memory: a
+        /// `**Where it stands (YYYY-MM-DD):**` paragraph older than the
+        /// note's newest `**YYYY-MM-DD` history entry
+        /// (memory-stale-status), "today", "next week" and the like in such
+        /// a note (memory-relative-date), an --event-property that has
+        /// passed (memory-past-event), and a dated call in a --prep-note
+        /// with no `> [!done]` callout (memory-prep-held).
+        #[arg(long)]
+        memory: bool,
+        /// With --memory, a property that holds a booked event's date or
+        /// time, as `job_next`.
+        #[arg(long = "event-property", requires = "memory")]
+        event_property: Vec<String>,
+        /// With --memory, the name of a preparation note, as `Interview
+        /// Preparation`.
+        #[arg(long = "prep-note", requires = "memory")]
+        prep_note: Vec<String>,
     },
     /// The week before a day as a note: tasks done and cancelled, overdue,
     /// due in the week ahead and in progress, the meetings of the week
@@ -818,7 +836,21 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{} of {} notes are not formatted; run daftar-cli fmt", outcome.changed, outcome.checked));
             }
         }
-        Command::Check { strict, no_h1, callout, urls, unreachable, skip_url, archive, figures, fix, dry_run } => {
+        Command::Check {
+            strict,
+            no_h1,
+            callout,
+            urls,
+            unreachable,
+            skip_url,
+            archive,
+            figures,
+            fix,
+            dry_run,
+            memory,
+            event_property,
+            prep_note,
+        } => {
             let github_token = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).ok();
             let options = check::Options {
                 strict,
@@ -833,6 +865,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 github: report::github(),
                 fix,
                 dry_run,
+                memory: memory.then_some(memory::Rules { event_properties: event_property, prep_notes: prep_note }),
             };
             let outcome = check::run(&root, |path| hidden.contains(path), &options, |line| out!("{line}"));
             if fix {

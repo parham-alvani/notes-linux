@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use daftar_core::properties::{PropertyEdit, PropertySheet, PropertyValue};
+
 use daftar_core::{
     Clock, ConfigFile, Day, ExcludedFiles, ParsedTask, QueryTask, QuickCapture, SearchIndex, Sections, TaskLine, TaskStatuses, TaskType,
     TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
@@ -29,7 +31,11 @@ which holds their work, companies, tasks, plans, journal and life. Read before y
 properties, outline, links and backlinks, `tasks` and `query_tasks` list tasks (Tasks plugin syntax). \
 Before writing, read the vault's rules: `read_note` on `CLAUDE.md` (and the CLAUDE.md of the folder you \
 write in). A task is changed by its note, line and text as `tasks` printed them; a line that moved is \
-refused, so list the tasks again. Nothing here commits or pushes.";
+refused, so list the tasks again. `note_context` reads a note with everything that holds its state \
+elsewhere (tasks and lines that link to it, its last commits) in one call. To change what a note says, \
+`set_property` sets its front matter, `replace_in_note` swaps one exact passage and `replace_section` \
+rewrites the text under a heading; each reads the file again and refuses when it changed. `commit` \
+commits the files named with a message, then pulls with a rebase and pushes, as the vault's workflow does.";
 
 /// What the server keeps between calls: the full-text index, which takes a
 /// second to build on a large vault, and the notes it was built from.
@@ -153,6 +159,10 @@ impl Server {
                     github: false,
                     fix: false,
                     dry_run: false,
+                    memory: args.flag("memory").then(|| crate::memory::Rules {
+                        event_properties: args.list("event_properties"),
+                        prep_notes: args.list("prep_notes"),
+                    }),
                 };
                 let mut found = Vec::new();
                 let outcome = check::run(root, |path| hidden.contains(path), &options, |line| found.push(line));
@@ -171,6 +181,19 @@ impl Server {
                 vec![format!("{}\t{line}", QuickCapture::capture(root, &target, heading, &line, Day::today(), Clock::now())?)]
             }
             "create_note" => vec![create_note(root, args.text("path")?, args.text("text")?)?],
+            "note_context" => return note_context(root, &index, &hidden, args.text("note")?),
+            "set_property" => vec![set_property(root, &index, args)?],
+            "replace_in_note" => {
+                let new = args.0.get("new").and_then(Value::as_str).ok_or("new is needed (empty to delete)")?;
+                vec![replace_in_note(root, &index, args.text("note")?, args.text("old")?, new)?]
+            }
+            "replace_section" => {
+                let text = args.0.get("text").and_then(Value::as_str).ok_or("text is needed (empty to clear the section)")?;
+                vec![replace_section(root, &index, args.text("note")?, args.text("heading")?, text)?]
+            }
+            "commit" => {
+                commit(root, args.text("message")?, &args.list("paths"), args.0.get("push").and_then(Value::as_bool).is_none_or(|p| p))?
+            }
             "toggle_task" => {
                 let (path, at, task) = task_at(root, &index, args)?;
                 VaultEdits::apply(&path, root, |text| VaultEdits::toggle_task(text, at, task.status, Some(&task.text), Day::today()))
@@ -254,7 +277,19 @@ impl Server {
 }
 
 /// The tools that write to the vault, which `--read-only` leaves out.
-const WRITES: [&str; 7] = ["capture", "append_to_note", "create_note", "toggle_task", "set_task_status", "postpone_task", "edit_task"];
+const WRITES: [&str; 11] = [
+    "capture",
+    "append_to_note",
+    "create_note",
+    "toggle_task",
+    "set_task_status",
+    "postpone_task",
+    "edit_task",
+    "set_property",
+    "replace_in_note",
+    "replace_section",
+    "commit",
+];
 
 /// A priority's emoji from its name or its emoji; `None` for none or a word it does not know.
 fn priority(value: &str) -> Option<String> {
@@ -441,6 +476,181 @@ fn recent_changes(root: &Path, days: usize) -> Result<Vec<String>, String> {
         .run(&["log", &since, "--name-status", "--format=%x00%h\t%ad\t%s", "--date=format:%Y-%m-%d %H:%M"])
         .map_err(|e| e.to_string())?;
     Ok(log.lines().filter(|l| !l.is_empty()).map(|l| l.strip_prefix('\0').map_or_else(|| format!("  {l}"), str::to_string)).collect())
+}
+
+/// A note with what holds its state elsewhere: its text, what the index
+/// knows of it, each line of another note that links to it (a task line
+/// first), and its last commits.
+fn note_context(root: &Path, index: &VaultIndex, hidden: &ExcludedFiles, note: &str) -> Result<String, String> {
+    let text = read_note(root, index, note, None)?;
+    let path = crate::note_path(index, note)?;
+    let mut out = vec![text, "--- what the index knows".to_string()];
+    out.extend(note_info(index, hidden, note)?);
+    let mut tasks = Vec::new();
+    let mut lines = Vec::new();
+    let backlinks: Vec<_> = index.backlinks(&path).iter().filter(|b| !hidden.contains(&b.source) && b.source != path).collect();
+    for backlink in backlinks {
+        let Ok(source) = fs::read_to_string(root.join(&backlink.source)) else { continue };
+        let Some(raw) = source.split('\n').nth(backlink.line) else { continue };
+        let row = format!("{}:{}\t{}", backlink.source, backlink.line + 1, raw.trim_end_matches('\r').trim());
+        if TaskLine::parse(raw.trim_end_matches('\r'), backlink.line, "").is_some() { tasks.push(row) } else { lines.push(row) }
+    }
+    tasks.dedup();
+    lines.dedup();
+    out.push("--- tasks that link to it".to_string());
+    out.extend(if tasks.is_empty() { vec!["(none)".to_string()] } else { tasks });
+    out.push("--- other lines that link to it".to_string());
+    out.extend(if lines.is_empty() { vec!["(none)".to_string()] } else { lines });
+    out.push("--- its last commits".to_string());
+    match crate::repository(root).and_then(|git| git.history(&path, 5).map_err(|e| e.to_string())) {
+        Ok(revisions) if !revisions.is_empty() => out.extend(
+            revisions
+                .into_iter()
+                .map(|r| format!("{}\t{}\t{}", &r.hash[..12.min(r.hash.len())], r.date.format("%Y-%m-%d %H:%M"), r.subject)),
+        ),
+        Ok(_) => out.push("(not committed yet)".to_string()),
+        Err(error) => out.push(format!("(no history: {error})")),
+    }
+    Ok(out.join("\n"))
+}
+
+/// Sets, or with `remove` takes away, one property of a note's front
+/// matter, keeping every other line as it was written; the front matter is
+/// made when the note has none.
+fn set_property(root: &Path, index: &VaultIndex, args: &Arguments) -> Result<String, String> {
+    let path = crate::note_path(index, args.text("note")?)?;
+    let key = args.text("key")?.trim().to_string();
+    let value = if args.flag("remove") {
+        None
+    } else if let Some(items) = args.0.get("value").and_then(Value::as_array) {
+        Some(PropertyValue::List(items.iter().filter_map(Value::as_str).map(str::to_string).collect()))
+    } else {
+        match args.0.get("value").and_then(Value::as_str) {
+            Some("") => Some(PropertyValue::Empty),
+            Some(text) => Some(PropertyValue::Text(text.to_string())),
+            None => return Err("value is needed: a string, a list of strings, or `remove`".into()),
+        }
+    };
+    let mut why = None;
+    VaultEdits::apply(&path, root, |text| {
+        // A key the note has is set; a new one is added after the others.
+        let has = PropertySheet::read(text).sheet().is_some_and(|sheet| sheet.value(&key).is_some());
+        let edit = match value.clone() {
+            None => PropertyEdit::Remove(key.clone()),
+            Some(value) if has => PropertyEdit::Set(key.clone(), value),
+            Some(value) => PropertyEdit::Add(key.clone(), value),
+        };
+        PropertySheet::edit(text, &edit).or_else(|reason| {
+            why = Some(reason);
+            Ok(text.to_string())
+        })
+    })
+    .map_err(|e| format!("{path}: {e}"))?;
+    if let Some(why) = why {
+        return Err(format!("{path}: {why}"));
+    }
+    let text = fs::read_to_string(root.join(&path)).unwrap_or_default();
+    let shown = match PropertySheet::read(&text).sheet().and_then(|sheet| sheet.value(&key).cloned()) {
+        Some(value) => format!("{key}: {}", value.items().join(", ")),
+        None => format!("{key} removed"),
+    };
+    Ok(format!("{path}\t{shown}"))
+}
+
+/// Puts [new] in place of [old], which must be in the note exactly once.
+fn replace_in_note(root: &Path, index: &VaultIndex, note: &str, old: &str, new: &str) -> Result<String, String> {
+    let path = crate::note_path(index, note)?;
+    let mut line = 0;
+    VaultEdits::apply(&path, root, |text| {
+        let found = text.matches(old).count();
+        if found != 1 {
+            return Err(daftar_core::Failure::Unwritable(if found == 0 {
+                "the old text is not in the note (read it again)".to_string()
+            } else {
+                format!("the old text is in the note {found} times; give more of it so it is there once")
+            }));
+        }
+        let at = text.find(old).unwrap_or_default();
+        line = text[..at].matches('\n').count() + 1;
+        Ok(text.replacen(old, new, 1))
+    })
+    .map_err(|e| format!("{path}: {e}"))?;
+    Ok(format!("{path}:{line}\treplaced"))
+}
+
+/// Puts [body] in place of a heading's own text: from the line after the
+/// heading to the next heading of any level, so the headings under it stay.
+fn replace_section(root: &Path, index: &VaultIndex, note: &str, heading: &str, body: &str) -> Result<String, String> {
+    let path = crate::note_path(index, note)?;
+    let wanted = heading.trim_start_matches('#').trim().to_string();
+    let mut place = (0, 0);
+    VaultEdits::apply(&path, root, |text| {
+        let headings = Sections::headings(text);
+        let matching: Vec<usize> = headings.iter().enumerate().filter(|(_, h)| h.text == wanted).map(|(i, _)| i).collect();
+        let at = match matching.as_slice() {
+            [at] => *at,
+            [] => {
+                let names: Vec<&str> = headings.iter().map(|h| h.text.as_str()).collect();
+                return Err(daftar_core::Failure::Unwritable(format!("no heading “{wanted}”; it has: {}", names.join(" | "))));
+            }
+            _ => return Err(daftar_core::Failure::Unwritable(format!("{} headings are “{wanted}”", matching.len()))),
+        };
+        let lines: Vec<&str> = text.split('\n').collect();
+        let start = headings[at].line + 1;
+        let end = headings.get(at + 1).map_or(lines.len(), |next| next.line);
+        let mut middle = vec![""];
+        let trimmed = body.trim_matches('\n');
+        if !trimmed.is_empty() {
+            middle.extend(trimmed.split('\n'));
+            middle.push("");
+        }
+        // The note's last line keeps its newline, and no blank line is left at the end.
+        if end == lines.len() {
+            while middle.len() > 1 && middle.last() == Some(&"") {
+                middle.pop();
+            }
+            middle.push("");
+        }
+        place = (start + 1, start + middle.len());
+        Ok([&lines[..start], &middle[..], &lines[end..]].concat().join("\n"))
+    })
+    .map_err(|e| format!("{path}: {e}"))?;
+    Ok(format!("{path}#{wanted}\tlines {}-{} written", place.0, place.1))
+}
+
+/// Commits [paths] (every change when none is named) with [message], then
+/// pulls with a rebase and pushes when [push]; refused while `doctor` finds
+/// what would stop a sync.
+fn commit(root: &Path, message: &str, paths: &[String], push: bool) -> Result<Vec<String>, String> {
+    for path in paths {
+        if path.starts_with('/') || path.split('/').any(|part| part == "..") || VaultEdits::within(root, path).is_none() {
+            return Err(format!("{path} is not in the vault"));
+        }
+    }
+    let git = crate::repository(root)?;
+    let stops: Vec<String> =
+        git.doctor(u64::MAX).map_err(|e| e.to_string())?.into_iter().filter(|d| d.level == "error").map(|d| d.message).collect();
+    if !stops.is_empty() {
+        return Err(format!("not committed: {}", stops.join("; ")));
+    }
+    let mut add = vec!["add", "-A", "--"];
+    add.extend(if paths.is_empty() { vec!["."] } else { paths.iter().map(String::as_str).collect() });
+    git.run(&add).map_err(|e| e.to_string())?;
+    if git.run(&["diff", "--cached", "--quiet"]).is_ok() {
+        return Err("nothing to commit in the files named".into());
+    }
+    let mut commit = vec!["commit", "-m", message, "--"];
+    if !paths.is_empty() {
+        commit.extend(paths.iter().map(String::as_str));
+    }
+    git.run(&commit).map_err(|e| e.to_string())?;
+    let mut out = vec![format!("committed\t{}", git.run(&["log", "-1", "--format=%h %s"]).map_err(|e| e.to_string())?)];
+    if push {
+        git.pull().map_err(|e| format!("committed, but the pull failed: {e}"))?;
+        let pushed = git.push_if_ahead().map_err(|e| format!("committed and pulled, but the push failed: {e}"))?;
+        out.push(if pushed { "pulled and pushed".into() } else { "pulled; nothing to push".into() });
+    }
+    Ok(out)
 }
 
 /// Makes a note at [path] with [text]; never over a file that is there,
@@ -649,6 +859,9 @@ fn tools(read_only: bool) -> Vec<Value> {
             json!({
                 "callouts": { "type": "array", "items": { "type": "string" }, "description": "Callout types the vault adds, as `--callout`" },
                 "no_h1": { "type": "array", "items": { "type": "string" }, "description": "Folders whose notes must have no H1, as `--no-h1`" },
+                "memory": boolean("Also the memory warnings, as `--memory`: stale current-state paragraphs, relative dates, booked events that passed, held calls with no callout"),
+                "event_properties": { "type": "array", "items": { "type": "string" }, "description": "With memory: properties holding a booked event's date, as `--event-property`" },
+                "prep_notes": { "type": "array", "items": { "type": "string" }, "description": "With memory: names of preparation notes, as `--prep-note`" },
             }),
             &[],
             false,
@@ -703,6 +916,50 @@ fn tools(read_only: bool) -> Vec<Value> {
                 "priority": string("highest, high, medium, low, lowest or none"),
             })),
             &["note", "line", "text"],
+            true,
+        ),
+        tool(
+            "note_context",
+            "A note and everything that holds its state elsewhere, in one call: its text, its properties, outline, links and backlinks, each task line and each other line that links to it, and its last five commits. Read this before changing a note, so its introduction, properties and the task lines about it are changed together.",
+            json!({ "note": string(note) }),
+            &["note"],
+            false,
+        ),
+        tool(
+            "set_property",
+            "Sets one front matter property, keeping every other line as written (the front matter is made when there is none), or takes it away with `remove`. Refused when the front matter is one the app's form cannot edit safely.",
+            json!({
+                "note": string(note),
+                "key": string("The property's name"),
+                "value": { "description": "A string (empty for `key:` with nothing after it), or a list of strings", "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+                "remove": boolean("Take the property away"),
+            }),
+            &["note", "key"],
+            true,
+        ),
+        tool(
+            "replace_in_note",
+            "Puts `new` in place of `old`, a passage copied exactly from the note as `read_note` gave it, which must be in the note exactly once. Use it to rewrite a sentence or paragraph that stopped being true (the introduction's current state), never to append.",
+            json!({ "note": string(note), "old": string("The exact text to replace, found once"), "new": string("Its replacement; empty deletes it") }),
+            &["note", "old", "new"],
+            true,
+        ),
+        tool(
+            "replace_section",
+            "Rewrites the text right under a heading, up to the next heading of any level (the headings under it and their text stay). The heading must be in the note once.",
+            json!({ "note": string(note), "heading": string("The heading's text"), "text": string("The section's new Markdown, without the heading; empty clears it") }),
+            &["note", "heading", "text"],
+            true,
+        ),
+        tool(
+            "commit",
+            "Commits the files named (every change when none is named) with the message, then pulls with a rebase and pushes. Refused while an operation, a rebase or a conflict is open (`doctor`). One logical change per commit, its subject naming the subject and the event.",
+            json!({
+                "message": string("The commit message"),
+                "paths": { "type": "array", "items": { "type": "string" }, "description": "Vault paths to commit; all changes when left out" },
+                "push": boolean("Pull and push after committing; true at first"),
+            }),
+            &["message"],
             true,
         ),
         tool(
@@ -877,5 +1134,75 @@ mod tests {
         assert!(error);
         let (_, error) = call(&mut server, "create_note", json!({ "path": ".obsidian/app", "text": "x" }));
         assert!(error);
+    }
+    #[test]
+    fn a_note_is_changed_in_place_and_only_where_it_was_read() {
+        let root = vault();
+        let mut server = server(root.path(), false);
+        let (said, error) = call(&mut server, "set_property", json!({ "note": "Plants", "key": "stage", "value": "growing" }));
+        assert!(!error, "{said}");
+        assert_eq!(said, "Garden/Plants.md\tstage: growing");
+        let (said, error) = call(&mut server, "set_property", json!({ "note": "Plants", "key": "beds", "value": ["north", "south"] }));
+        assert!(!error, "{said}");
+        let plants = fs::read_to_string(root.path().join("Garden/Plants.md")).unwrap();
+        assert!(plants.starts_with("---\ntags: [garden]\nstage: growing\nbeds:\n"), "{plants}");
+        assert!(!call(&mut server, "set_property", json!({ "note": "Plants", "key": "stage", "remove": true })).1);
+        assert!(!fs::read_to_string(root.path().join("Garden/Plants.md")).unwrap().contains("stage"));
+        assert!(!call(&mut server, "set_property", json!({ "note": "Seeds", "key": "kind", "value": "tomato" })).1);
+        assert!(fs::read_to_string(root.path().join("Seeds.md")).unwrap().starts_with("---\nkind: tomato\n---\n# Seeds"));
+
+        let (said, error) =
+            call(&mut server, "replace_in_note", json!({ "note": "Plants", "old": "Needs sun.", "new": "Needs sun and water." }));
+        assert!(!error && said == "Garden/Plants.md:13\treplaced", "{said}");
+        let (said, error) = call(&mut server, "replace_in_note", json!({ "note": "Plants", "old": "Needs shade.", "new": "x" }));
+        assert!(error && said.contains("not in the note"), "{said}");
+        let (said, error) = call(&mut server, "replace_in_note", json!({ "note": "Plants", "old": "## ", "new": "### " }));
+        assert!(error && said.contains("times"), "{said}");
+
+        let (said, error) =
+            call(&mut server, "replace_section", json!({ "note": "Plants", "heading": "Basil", "text": "Sun, water.\n\nPick often." }));
+        assert!(!error, "{said}");
+        let plants = fs::read_to_string(root.path().join("Garden/Plants.md")).unwrap();
+        assert!(plants.contains("## Basil\n\nSun, water.\n\nPick often.\n\n## Mint\n\n- [ ] Water the mint"), "{plants}");
+        assert!(!call(&mut server, "replace_section", json!({ "note": "Plants", "heading": "Mint", "text": "Gone." })).1);
+        assert!(fs::read_to_string(root.path().join("Garden/Plants.md")).unwrap().ends_with("## Mint\n\nGone.\n"));
+        assert!(call(&mut server, "replace_section", json!({ "note": "Plants", "heading": "Rose", "text": "x" })).1);
+    }
+
+    #[test]
+    fn the_context_of_a_note_has_the_tasks_and_lines_about_it() {
+        let root = vault();
+        fs::write(root.path().join("Tasks.md"), "# Tasks\n\n- [ ] Sow [[Seeds]] 📅 2026-03-01\n").unwrap();
+        let mut server = server(root.path(), false);
+        let (said, error) = call(&mut server, "note_context", json!({ "note": "Seeds" }));
+        assert!(!error, "{said}");
+        assert!(said.starts_with("Seeds.md\n\n# Seeds"), "{said}");
+        assert!(said.contains("--- tasks that link to it\nTasks.md:3\t- [ ] Sow [[Seeds]] 📅 2026-03-01\n"), "{said}");
+        assert!(said.contains("--- other lines that link to it\nGarden/Plants.md:6\tSee [[Seeds]].\n"), "{said}");
+    }
+
+    #[test]
+    fn commit_commits_the_files_named_and_nothing_else() {
+        let root = vault();
+        let git = daftar_core::Git::new(root.path());
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "T"],
+            vec!["add", "-A"],
+            vec!["commit", "-qm", "start"],
+        ] {
+            git.run(&args).unwrap();
+        }
+        fs::write(root.path().join("Seeds.md"), "# Seeds\n\nChanged.\n").unwrap();
+        fs::write(root.path().join("Other.md"), "Not this one.\n").unwrap();
+        let mut server = server(root.path(), false);
+        let (said, error) = call(&mut server, "commit", json!({ "message": "seeds: changed", "paths": ["Seeds.md"], "push": false }));
+        assert!(!error, "{said}");
+        assert!(said.starts_with("committed\t") && said.ends_with("seeds: changed"), "{said}");
+        assert_eq!(git.run(&["show", "--name-only", "--format=", "HEAD"]).unwrap(), "Seeds.md");
+        assert!(git.run(&["status", "--porcelain"]).unwrap().contains("Other.md"));
+        assert!(call(&mut server, "commit", json!({ "message": "x", "paths": ["Seeds.md"], "push": false })).1);
+        assert!(call(&mut server, "commit", json!({ "message": "x", "paths": ["../out.md"], "push": false })).1);
     }
 }
