@@ -265,6 +265,21 @@ impl Vault {
         Self::is_note(path) || Self::is_base(path) || crate::canvas::Canvas::is_canvas(path)
     }
 
+    /// A file a link may hand to the app the system gives it to: a document,
+    /// a picture, a sound, a film or an archive, which the system opens in a
+    /// viewer. Anything else (a script, a `.desktop` file, a program) could
+    /// run, so a click only shows it in its folder.
+    pub fn opens_outside(path: &str) -> bool {
+        const DOCUMENTS: [&str; 52] = [
+            "pdf", "epub", "djvu", "txt", "csv", "tsv", "rtf", "doc", "docx", "odt", "xls", "xlsx", "ods", "ppt", "pptx", "odp", "key",
+            "pages", "numbers", "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic", "heif", "tif", "tiff", "ico", "mp3",
+            "m4a", "wav", "ogg", "oga", "flac", "opus", "aac", "mp4", "m4v", "mov", "webm", "mkv", "avi", "ogv", "zip", "tar", "gz", "7z",
+            "xz",
+        ];
+        let name = path.rsplit('/').next().unwrap_or(path);
+        name.rsplit_once('.').is_some_and(|(stem, extension)| !stem.is_empty() && DOCUMENTS.contains(&extension.to_lowercase().as_str()))
+    }
+
     /// Whether a vault path is one the app reads at all.
     pub fn counts(path: &str) -> bool {
         !path.split('/').any(|part| part.starts_with('.') || SKIPPED.contains(&part))
@@ -652,6 +667,16 @@ impl Vault {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_documents_open_outside() {
+        for path in ["Books/a.pdf", "uploads/Photo.JPG", "talk.mp4", "Sheets/x.xlsx", "a.tar.gz"] {
+            assert!(Vault::opens_outside(path), "{path}");
+        }
+        for path in ["tools/x.sh", "x.desktop", "run.AppImage", "a.command", "Makefile", ".pdf", "x.py", "x.exe", "x.jar"] {
+            assert!(!Vault::opens_outside(path), "{path}");
+        }
+    }
 
     // Every fixture here is made up. The repository is public; the vault is not.
 

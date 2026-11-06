@@ -1009,8 +1009,15 @@ impl Window {
         // `Books/` is the folder's overview, shown as a base.
         let overview = path.ends_with('/');
         if !overview && !Vault::opens_in_app(path) {
-            let file = gio::File::for_path(store.root.join(path));
-            gtk::FileLauncher::new(Some(&file)).launch(Some(&self.window), gio::Cancellable::NONE, |_| {});
+            let Some(file) = crate::store::file_in(path, &store.root) else { return };
+            let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(file)));
+            if Vault::opens_outside(path) {
+                launcher.launch(Some(&self.window), gio::Cancellable::NONE, |_| {});
+            } else {
+                // A script or a program is never run from a link.
+                launcher.open_containing_folder(Some(&self.window), gio::Cancellable::NONE, |_| {});
+                self.toasts.add_toast(crate::toast(&format!("{path} could be a program, so it is shown in its folder, not opened.")));
+            }
             return;
         }
         {
