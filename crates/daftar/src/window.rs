@@ -66,6 +66,8 @@ pub struct Window {
     inspector_split: adw::OverlaySplitView,
     store: Rc<RefCell<Option<Rc<VaultStore>>>>,
     watcher: Rc<RefCell<Option<FileWatcher>>>,
+    /// `config.toml`, followed so a change made outside the window applies.
+    config_monitor: Rc<RefCell<Option<gio::FileMonitor>>>,
     /// The notes opened lately in any tab, the last first.
     recent: Rc<RefCell<Vec<String>>>,
     /// On a periodic note: the earlier and later notes of the series, and a
@@ -218,6 +220,7 @@ impl Window {
             inspector_split: inspector_split.clone(),
             store,
             watcher: Rc::new(RefCell::new(None)),
+            config_monitor: Rc::default(),
             recent: Rc::new(RefCell::new(Vec::new())),
             periodic_nav: periodic_nav.clone(),
             recent_commands: Rc::new(RefCell::new(Vec::new())),
@@ -328,6 +331,9 @@ impl Window {
                     // comes), and the timed syncs and alerts would go on for a
                     // window no one sees.
                     this.watcher.borrow_mut().take();
+                    if let Some(monitor) = this.config_monitor.borrow_mut().take() {
+                        monitor.cancel();
+                    }
                     this.git.detach();
                     this.notifier.clear();
                     return glib::Propagation::Proceed;
@@ -337,6 +343,7 @@ impl Window {
             });
         }
         this.add_actions();
+        this.follow_config();
         let first = this.new_tab();
         window.present();
 
@@ -1209,6 +1216,43 @@ impl Window {
             self.toasts.add_toast(crate::toast(&format!("The settings were not saved: {error}")));
         }
         self.refresh_hidden();
+    }
+
+    /// Follows `config.toml` where it really is (a dotfiles link is followed),
+    /// and applies a change made outside the window as Settings would.
+    fn follow_config(&self) {
+        let path = self.settings.borrow().path.clone();
+        let real = std::fs::canonicalize(&path).unwrap_or(path);
+        let Ok(monitor) = gio::File::for_path(real).monitor_file(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE) else {
+            return;
+        };
+        monitor.set_rate_limit(300);
+        let this = self.clone();
+        monitor.connect_changed(move |_, _, _, event| {
+            if !matches!(
+                event,
+                gio::FileMonitorEvent::ChangesDoneHint
+                    | gio::FileMonitorEvent::Created
+                    | gio::FileMonitorEvent::MovedIn
+                    | gio::FileMonitorEvent::Renamed
+            ) {
+                return;
+            }
+            if !this.settings.borrow_mut().reload() {
+                return;
+            }
+            let (theme, interval) = {
+                let settings = this.settings.borrow();
+                (settings.theme(), settings.file.int("git.sync_interval").unwrap_or(0).max(0) as u32)
+            };
+            apply_theme(&theme);
+            this.git.reconfigure(interval);
+            this.refresh_hidden();
+            this.reload_readers();
+            this.refresh_homes();
+            this.plan_notifications();
+        });
+        *self.config_monitor.borrow_mut() = Some(monitor);
     }
 
     fn reload_readers(&self) {

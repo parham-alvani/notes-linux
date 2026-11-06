@@ -66,6 +66,19 @@ impl AppSettings {
         settings
     }
 
+    /// The file read again when it changed on disk, by hand, by the Mac's
+    /// app through a dotfiles pull, or by another window; true when its text
+    /// is not the one this window holds.
+    pub fn reload(&mut self) -> bool {
+        let Ok(text) = fs::read_to_string(&self.path) else { return false };
+        if text == self.file.text() {
+            return false;
+        }
+        self.file = ConfigFile::new(text);
+        self.publish();
+        true
+    }
+
     /// The settings the pages read without holding them.
     fn publish(&self) {
         PERSIAN_CALENDAR.store(self.file.bool("appearance.persian_calendar").unwrap_or(false), Ordering::Relaxed);
