@@ -27,6 +27,28 @@ impl fmt::Display for GitFailure {
 
 impl std::error::Error for GitFailure {}
 
+/// One thing `Git::doctor` found: how much it matters, a short code, and what to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnosis {
+    pub level: &'static str,
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl Diagnosis {
+    fn error(code: &'static str, message: &str) -> Diagnosis {
+        Diagnosis { level: "error", code, message: message.to_string() }
+    }
+
+    fn warning(code: &'static str, message: &str) -> Diagnosis {
+        Diagnosis { level: "warning", code, message: message.to_string() }
+    }
+
+    fn info(code: &'static str, message: &str) -> Diagnosis {
+        Diagnosis { level: "info", code, message: message.to_string() }
+    }
+}
+
 /// Why a sync or a pull did not happen: git failed, or the pull's rebase
 /// stopped on a conflict and is still open.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,6 +265,63 @@ impl Git {
             }
         }
         status
+    }
+
+    /// What stands in a sync's way, or will: an operation left open, files in
+    /// conflict, no branch or no upstream, commits not yet pushed or pulled,
+    /// changes not committed, and untracked files over [large] bytes.
+    pub fn doctor(&self, large: u64) -> Result<Vec<Diagnosis>, GitFailure> {
+        let mut found = Vec::new();
+        if self.rebase_in_progress()? {
+            found.push(Diagnosis::error(
+                "rebase-open",
+                "a pull's rebase stopped on a conflict: resolve it in the app, or `git rebase --abort`",
+            ));
+        }
+        if let Some(operation) = self.other_operation_in_progress()? {
+            found.push(Diagnosis::error("operation-open", &format!("a {operation} is in progress: finish it, or abort it with git")));
+        }
+        let conflicts = self.conflicts()?;
+        if !conflicts.is_empty() {
+            let paths: Vec<&str> = conflicts.iter().map(|c| c.path.as_str()).collect();
+            found.push(Diagnosis::error("conflicts", &format!("{} files in conflict: {}", paths.len(), paths.join(", "))));
+        }
+        found.extend(Self::diagnose_status(&self.run(&["status", "--porcelain=v2", "--branch"])?));
+        let untracked = self.run_raw(&["ls-files", "--others", "--exclude-standard", "-z"])?;
+        for path in untracked.split('\0').filter(|p| !p.is_empty()) {
+            let size = std::fs::metadata(self.root.join(path)).map_or(0, |m| m.len());
+            if size > large {
+                found.push(Diagnosis::warning(
+                    "large-file",
+                    &format!("{path} is {:.1} MB and not committed yet", size as f64 / 1_048_576.0),
+                ));
+            }
+        }
+        Ok(found)
+    }
+
+    /// What `git status --porcelain=v2 --branch` says about the branch.
+    pub fn diagnose_status(text: &str) -> Vec<Diagnosis> {
+        let mut found = Vec::new();
+        let status = Self::parse_status(text);
+        if status.branch == "(detached)" {
+            found.push(Diagnosis::warning("detached", "HEAD is on no branch: a sync commits nowhere it can push"));
+        } else if !text.lines().any(|line| line.starts_with("# branch.upstream ")) {
+            found.push(Diagnosis::warning(
+                "no-upstream",
+                &format!("{} has no upstream: `git branch --set-upstream-to=origin/{}`", status.branch, status.branch),
+            ));
+        }
+        if status.ahead > 0 {
+            found.push(Diagnosis::info("ahead", &format!("{} commits not pushed yet", status.ahead)));
+        }
+        if status.behind > 0 {
+            found.push(Diagnosis::info("behind", &format!("{} commits on the remote not pulled yet", status.behind)));
+        }
+        if status.changed > 0 {
+            found.push(Diagnosis::info("changed", &format!("{} files changed and not committed", status.changed)));
+        }
+        found
     }
 
     /// Paths with changes not yet committed.
@@ -496,6 +575,29 @@ mod tests {
     fn status_reads_porcelain_v2() {
         let text = "# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +2 -1\n1 .M N... 100644 100644 100644 a b Notes/Inbox.md\n? new.md\n";
         assert_eq!(Git::parse_status(text), GitStatus { branch: "main".into(), ahead: 2, behind: 1, changed: 2 });
+    }
+
+    #[test]
+    fn the_branch_is_diagnosed_from_status() {
+        let codes = |text: &str| Git::diagnose_status(text).iter().map(|d| d.code).collect::<Vec<_>>();
+        assert_eq!(codes("# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -0\n"), [] as [&str; 0]);
+        assert_eq!(codes("# branch.head main\n# branch.upstream origin/main\n# branch.ab +2 -1\n? a.md\n"), ["ahead", "behind", "changed"]);
+        assert_eq!(codes("# branch.head main\n"), ["no-upstream"]);
+        assert_eq!(codes("# branch.head (detached)\n"), ["detached"]);
+    }
+
+    #[test]
+    fn the_doctor_finds_an_open_merge_and_its_conflict() {
+        let (_base, one, two) = machines();
+        fs::write(one.root.join("a.md"), "# A\none\n").unwrap();
+        one.sync("one").unwrap();
+        fs::write(two.root.join("a.md"), "# A\ntwo\n").unwrap();
+        git(&two.root, &["commit", "-qam", "two"]);
+        let _ = Command::new("git").arg("-C").arg(&two.root).args(["-c", "pull.rebase=false", "pull", "-q"]).output();
+        fs::write(two.root.join("big.bin"), vec![0; 2048]).unwrap();
+        let codes: Vec<&str> = two.doctor(1024).unwrap().iter().map(|d| d.code).collect();
+        assert!(codes.starts_with(&["operation-open", "conflicts"]), "{codes:?}");
+        assert!(codes.contains(&"large-file"), "{codes:?}");
     }
 
     #[test]

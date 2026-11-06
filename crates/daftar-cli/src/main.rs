@@ -197,6 +197,14 @@ enum Command {
     },
     /// The branch, how far it is from its remote, and how many files changed.
     Status,
+    /// What stands in a sync's way: an operation left open, conflicts, no
+    /// upstream, commits not pushed or pulled, large untracked files. Fails
+    /// when anything would stop a sync.
+    Doctor {
+        /// The size in MB over which an untracked file is named.
+        #[arg(long, default_value_t = 1)]
+        large: u64,
+    },
     /// Renames a tag and the tags under it (`#old/sub`) in every note, in the
     /// text and in the `tags` property; code and links are left alone.
     RenameTag {
@@ -705,6 +713,18 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Status => {
             let status = repository(&root)?.status().map_err(|e| e.to_string())?;
             out!("{}\tahead {}\tbehind {}\tchanged {}", status.branch, status.ahead, status.behind, status.changed);
+        }
+        Command::Doctor { large } => {
+            let found = repository(&root)?.doctor(large * 1_048_576).map_err(|e| e.to_string())?;
+            for diagnosis in &found {
+                out!("{}\t{}\t{}", diagnosis.level, diagnosis.code, diagnosis.message);
+            }
+            if found.is_empty() {
+                out!("info\tclean\tnothing in a sync's way");
+            }
+            if found.iter().any(|d| d.level == "error") {
+                return Err("the vault's repository needs a hand before it syncs".into());
+            }
         }
         Command::RenameTag { old, new, dry_run } => {
             let index = Vault::index(&root, None);

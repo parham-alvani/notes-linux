@@ -81,7 +81,7 @@ pub use detected::{Detected, DetectedItem, DetectedKind};
 pub use editor_commands::{EditorCommands, Return, Snippet, TextEdit};
 pub use folder_overview::FolderOverview;
 pub use fuzzy::{Fuzzy, Match};
-pub use git::{Conflicted, Git, GitFailure, GitStatus, Resolution, Revision, Side, Stopped, SyncFailure, Synced};
+pub use git::{Conflicted, Diagnosis, Git, GitFailure, GitStatus, Resolution, Revision, Side, Stopped, SyncFailure, Synced};
 pub use home::{Beautitab, Quote};
 pub use html_markdown::HtmlMarkdown;
 pub use iconic::{Icon, Iconic};

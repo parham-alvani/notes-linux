@@ -93,6 +93,7 @@ daftar-cli postpone Inbox 12 week # moves its date on, as the Tasks plugin's Pos
 daftar-cli cancel Inbox 12 --reason 'no budget left'  # cancels it, saying why
 daftar-cli set-status Inbox 12 r --reason 'waiting on review'  # any status the vault has
 daftar-cli statuses               # the vault's task statuses, from the Tasks plugin's settings
+daftar-cli doctor                 # what stands in a sync's way: an open merge, conflicts, no upstream, big untracked files
 daftar-cli events --year 2027     # the holidays and feasts of calendar.place, with their notes
 daftar-cli sort-tasks Inbox       # done and cancelled tasks first in each section
 daftar-cli sort-headings Inbox Plan  # the headings right under “Plan” by name, each with its section
