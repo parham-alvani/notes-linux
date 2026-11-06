@@ -353,7 +353,7 @@ enum Command {
         /// A folder whose notes must not have an H1.
         #[arg(long = "no-h1")]
         no_h1: Vec<String>,
-        /// A callout type beyond the standard ones.
+        /// A callout type beyond Obsidian's and Daftar's `figure` and `read`.
         #[arg(long)]
         callout: Vec<String>,
         /// Asks every web address the notes link to whether it is still

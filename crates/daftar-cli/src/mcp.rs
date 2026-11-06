@@ -887,9 +887,9 @@ fn tools(read_only: bool) -> Vec<Value> {
         ),
         tool(
             "check_vault",
-            "The vault's audit, as `daftar-cli check`: broken links and embeds, missing headings, ambiguous links, broken callouts, unused pictures, and tasks whose status and dates disagree. Pass the options the vault's `just check` passes (its justfile), or its own callouts are errors.",
+            "The vault's audit, as `daftar-cli check`: broken links and embeds, missing headings, ambiguous links, broken callouts, unused pictures, and tasks whose status and dates disagree. Pass the options the vault's `just check` passes (its justfile).",
             json!({
-                "callouts": { "type": "array", "items": { "type": "string" }, "description": "Callout types the vault adds, as `--callout`" },
+                "callouts": { "type": "array", "items": { "type": "string" }, "description": "Callout types the vault adds beyond Obsidian's and Daftar's `figure` and `read`, as `--callout`" },
                 "no_h1": { "type": "array", "items": { "type": "string" }, "description": "Folders whose notes must have no H1, as `--no-h1`" },
                 "memory": boolean("Also the memory warnings, as `--memory`: stale current-state paragraphs, relative dates, booked events that passed, held calls with no callout"),
                 "event_properties": { "type": "array", "items": { "type": "string" }, "description": "With memory: properties holding a booked event's date, as `--event-property`" },

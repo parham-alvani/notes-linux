@@ -69,8 +69,10 @@ pub struct Outcome {
     pub notes: usize,
 }
 
-/// The callout types Obsidian and Daftar's reader know.
-const CALLOUTS: [&str; 27] = [
+/// The callout types Obsidian and Daftar's reader know: Obsidian's, and
+/// `figure` and `read`, which `web/src/reader.css` colors. Keep the two lists
+/// together.
+const CALLOUTS: [&str; 29] = [
     "note",
     "warning",
     "important",
@@ -98,6 +100,8 @@ const CALLOUTS: [&str; 27] = [
     "help",
     "missing",
     "fail",
+    "figure",
+    "read",
 ];
 
 const PICTURES: [&str; 12] = ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "avif", "heic", "tif", "tiff", "ico"];
@@ -908,7 +912,7 @@ mod tests {
         Options {
             strict: false,
             no_h1: vec!["Learning".into()],
-            callouts: vec!["read".into()],
+            callouts: vec!["recipe".into()],
             urls: false,
             unreachable: false,
             github_token: None,
@@ -927,7 +931,10 @@ mod tests {
         let dir = vault(&[
             ("D.md", "[[C#No such]] [[C#^nope]] [[Learning/B#Title]] [[C#^here]] [[E#`code` heading]]\n"),
             ("E.md", "## `code` heading\n"),
-            ("A.md", "See [[Nowhere]] and ![[gone.png]].\n\n> [!read] Book\n> glued\n\n> [!nope]\n"),
+            (
+                "A.md",
+                "See [[Nowhere]] and ![[gone.png]].\n\n> [!read] Book\n> glued\n\n> [!nope]\n\n> [!recipe]\n>\n> Soup.\n\n> [!figure] Map\n>\n> ![[used.png]]\n",
+            ),
             ("Learning/B.md", "# Title\n\nUse `[[Learning/B]]` here.\n"),
             ("uploads/used.png", ""),
             ("uploads/lost.png", ""),
