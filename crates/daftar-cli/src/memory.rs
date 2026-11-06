@@ -6,6 +6,9 @@
 //! `**Where it stands (YYYY-MM-DD):**` must be no older than the newest
 //! history entry (`**YYYY-MM-DD …**` at the start of a line); and a
 //! preparation note's call that has been held gets a `> [!done]` callout.
+//! With `quiet_days`, a note whose state property says it is still going
+//! (`job_stage: applied`) warns when nothing in it is dated within that
+//! many days: the process went quiet, and the note should say so.
 
 use std::sync::LazyLock;
 
@@ -20,6 +23,19 @@ pub struct Rules {
     /// The names of preparation notes (`Interview Preparation`), whose
     /// dated call headings must say when the call was held.
     pub prep_notes: Vec<String>,
+    /// `key=value` pairs (`job_stage=applied`): a note with one of them is
+    /// still going, and [quiet_days] applies to it.
+    pub active: Vec<(String, String)>,
+    /// How many days a going note may have nothing newer dated in it.
+    pub quiet_days: Option<i64>,
+}
+
+impl Rules {
+    /// `key=value` from the command line; `None` when it has no `=`.
+    pub fn active_pair(text: &str) -> Option<(String, String)> {
+        let (key, value) = text.split_once('=')?;
+        Some((key.trim().to_string(), value.trim().to_string()))
+    }
 }
 
 static STATUS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\*\*Where it stands \((\d{4}-\d{2}-\d{2})\):?\*\*").unwrap());
@@ -52,6 +68,9 @@ pub fn problems(path: &str, text: &str, rules: &Rules, now: NaiveDateTime) -> Ve
         }
         relative_dates(&lines, body, &mut found);
     }
+    if let Some(days) = rules.quiet_days {
+        quiet(&lines, body, rules, days, now.date(), &mut found);
+    }
     let stem = path.rsplit('/').next().unwrap_or(path).trim_end_matches(".md");
     if rules.prep_notes.iter().any(|name| name.trim_end_matches(".md") == stem) {
         held_calls(&lines, body, now.date(), &mut found);
@@ -83,6 +102,40 @@ fn past_events(front: &[&str], rules: &Rules, now: NaiveDateTime, found: &mut Ve
         if when.is_some_and(|when| when <= now) {
             found.push((i + 1, "memory-past-event", format!("{key} {value} has passed: remove it, or set the next booked event")));
         }
+    }
+}
+
+/// A going note whose newest date (a property that is a date, the state
+/// paragraph's, a history entry's) is more than [days] before [today].
+fn quiet(lines: &[&str], body: usize, rules: &Rules, days: i64, today: NaiveDate, found: &mut Vec<(usize, &'static str, String)>) {
+    let mut going = None;
+    let mut newest: Option<NaiveDate> = None;
+    let mut see = |text: &str| {
+        if let Ok(day) = NaiveDate::parse_from_str(text.get(..10).unwrap_or(""), "%Y-%m-%d") {
+            newest = newest.max(Some(day));
+        }
+    };
+    for (i, line) in lines[..body].iter().enumerate() {
+        let Some((key, value)) = line.split_once(':') else { continue };
+        let (key, value) = (key.trim(), value.trim().trim_matches(['"', '\'']));
+        if rules.active.iter().any(|(k, v)| k == key && v == value) {
+            going = Some((i, format!("{key}: {value}")));
+        }
+        see(value);
+    }
+    for line in &lines[body..] {
+        if let Some(c) = STATUS.captures(line).or_else(|| ENTRY.captures(line)) {
+            see(&c[1]);
+        }
+    }
+    let (Some((at, state)), Some(newest)) = (going, newest) else { return };
+    let age = (today - newest).num_days();
+    if age > days {
+        found.push((
+            at + 1,
+            "memory-quiet",
+            format!("{state}, and nothing in the note is dated after {newest} ({age} days): record what happened, or close it"),
+        ));
     }
 }
 
@@ -143,7 +196,12 @@ mod tests {
     }
 
     fn rules() -> Rules {
-        Rules { event_properties: vec!["job_next".into()], prep_notes: vec!["Interview Preparation".into()] }
+        Rules {
+            event_properties: vec!["job_next".into()],
+            prep_notes: vec!["Interview Preparation".into()],
+            active: Vec::new(),
+            quiet_days: None,
+        }
     }
 
     fn kinds(path: &str, text: &str) -> Vec<(usize, &'static str)> {
@@ -184,5 +242,19 @@ mod tests {
         let text = "Prep.\n\n## Round 1 — call, Wed 2026-10-28\n\n- When: 12:30\n\n### Questions\n\n- One\n\n## Round 2 — call, Tue 2026-11-10\n\n- When: 10:00\n\n## Call with Ana — 2026-11-02\n\n> [!done] Held on 2026-11-02\n>\n> Outcome in [[A]].\n\n## Outcome — rejected 2026-11-03\n";
         assert_eq!(kinds("Co/Interview Preparation.md", text), [(3, "memory-prep-held")]);
         assert!(kinds("Co/Notes.md", text).is_empty());
+    }
+
+    #[test]
+    fn a_going_note_with_nothing_new_is_quiet() {
+        let rules = Rules { active: vec![("job_stage".into(), "applied".into())], quiet_days: Some(30), ..rules() };
+        let found = |text: &str| problems("A.md", text, &rules, now()).into_iter().map(|(l, r, _)| (l, r)).collect::<Vec<_>>();
+        let quiet = "---\njob_stage: applied\njob_applied: 2026-09-01\n---\n**2026-09-20:** No answer.\n";
+        assert_eq!(found(quiet), [(2, "memory-quiet")]);
+        // A recent entry, or a stage that is over, is not quiet.
+        assert!(found(&quiet.replace("**2026-09-20:**", "**2026-10-20:**")).is_empty());
+        assert!(found(&quiet.replace("applied\n", "rejected\n")).is_empty());
+        // Nothing dated at all says nothing.
+        assert!(found("---\njob_stage: applied\n---\nText\n").is_empty());
+        assert_eq!(Rules::active_pair("job_stage = screening"), Some(("job_stage".into(), "screening".into())));
     }
 }

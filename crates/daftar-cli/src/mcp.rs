@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 use daftar_core::properties::{PropertyEdit, PropertySheet, PropertyValue};
 
 use daftar_core::{
-    Clock, ConfigFile, Day, ExcludedFiles, ParsedTask, QueryTask, QuickCapture, SearchIndex, Sections, TaskLine, TaskStatuses, TaskType,
-    TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
+    Bookmarks, Clock, ConfigFile, Day, ExcludedFiles, ParsedTask, QueryTask, QuickCapture, SearchIndex, Sections, TaskLine, TaskStatuses,
+    TaskType, TasksQuery, Vault, VaultEdits, VaultIndex, VaultMoves, VaultTask,
 };
 
 use crate::{check, vault_commands};
@@ -162,6 +162,8 @@ impl Server {
                     memory: args.flag("memory").then(|| crate::memory::Rules {
                         event_properties: args.list("event_properties"),
                         prep_notes: args.list("prep_notes"),
+                        active: args.list("active").iter().filter_map(|a| crate::memory::Rules::active_pair(a)).collect(),
+                        quiet_days: args.0.get("quiet_days").and_then(Value::as_i64),
                     }),
                 };
                 let mut found = Vec::new();
@@ -182,6 +184,7 @@ impl Server {
             }
             "create_note" => vec![create_note(root, args.text("path")?, args.text("text")?)?],
             "note_context" => return note_context(root, &index, &hidden, args.text("note")?),
+            "move_note" => move_note(root, &index, args.text("note")?, args.text("to")?)?,
             "set_property" => vec![set_property(root, &index, args)?],
             "replace_in_note" => {
                 let new = args.0.get("new").and_then(Value::as_str).ok_or("new is needed (empty to delete)")?;
@@ -277,7 +280,7 @@ impl Server {
 }
 
 /// The tools that write to the vault, which `--read-only` leaves out.
-const WRITES: [&str; 11] = [
+const WRITES: [&str; 12] = [
     "capture",
     "append_to_note",
     "create_note",
@@ -289,6 +292,7 @@ const WRITES: [&str; 11] = [
     "replace_in_note",
     "replace_section",
     "commit",
+    "move_note",
 ];
 
 /// A priority's emoji from its name or its emoji; `None` for none or a word it does not know.
@@ -512,6 +516,34 @@ fn note_context(root: &Path, index: &VaultIndex, hidden: &ExcludedFiles, note: &
         Err(error) => out.push(format!("(no history: {error})")),
     }
     Ok(out.join("\n"))
+}
+
+/// Renames or moves a note to [to], a vault path (`.md` is added to a name
+/// without an extension), and rewrites every link to it in the vault, as the
+/// app's Rename and Move do; the vault's bookmarks follow it.
+fn move_note(root: &Path, index: &VaultIndex, note: &str, to: &str) -> Result<Vec<String>, String> {
+    let from = crate::note_path(index, note)
+        .or_else(|_| if index.files.contains(note) { Ok(note.to_string()) } else { Err(format!("no note {note}")) })?;
+    let to = to.trim().trim_start_matches("./");
+    let (folder, name) = to.rsplit_once('/').map_or(("", to), |(f, n)| (f, n));
+    let to = if folder.is_empty() { VaultMoves::note_name(name) } else { format!("{folder}/{}", VaultMoves::note_name(name)) };
+    if to.starts_with('/') || to.split('/').any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.')) {
+        return Err(format!("{to} is not a path in the vault"));
+    }
+    if VaultEdits::within(root, &from).is_none() || VaultEdits::within(root, &to).is_none() {
+        return Err(format!("{to} is outside the vault"));
+    }
+    let moves = VaultMoves::plan(&from, &to, &index.files).map_err(|e| e.to_string())?;
+    // The notes whose links change, by their path after the move.
+    let relinked = VaultMoves::relinked(index, &moves, |path| fs::read_to_string(root.join(path)).ok());
+    VaultMoves::perform(&from, &to, index, root).map_err(|e| e.to_string())?;
+    let mut bookmarks = Bookmarks::load(root);
+    if bookmarks.follow(&moves, None) {
+        bookmarks.save(root).map_err(|e| format!("moved, but the bookmarks were not saved: {e}"))?;
+    }
+    let mut out = vec![format!("moved\t{from} → {to}")];
+    out.extend(relinked.into_keys().filter(|p| *p != to).map(|p| format!("links rewritten\t{p}")));
+    Ok(out)
 }
 
 /// Sets, or with `remove` takes away, one property of a note's front
@@ -862,6 +894,8 @@ fn tools(read_only: bool) -> Vec<Value> {
                 "memory": boolean("Also the memory warnings, as `--memory`: stale current-state paragraphs, relative dates, booked events that passed, held calls with no callout"),
                 "event_properties": { "type": "array", "items": { "type": "string" }, "description": "With memory: properties holding a booked event's date, as `--event-property`" },
                 "prep_notes": { "type": "array", "items": { "type": "string" }, "description": "With memory: names of preparation notes, as `--prep-note`" },
+                "active": { "type": "array", "items": { "type": "string" }, "description": "With memory: `key=value` pairs marking a note as still going (`job_stage=applied`), as `--active`" },
+                "quiet_days": integer("With memory and active: warn of a going note with nothing dated within this many days, as `--quiet-days`"),
             }),
             &[],
             false,
@@ -949,6 +983,13 @@ fn tools(read_only: bool) -> Vec<Value> {
             "Rewrites the text right under a heading, up to the next heading of any level (the headings under it and their text stay). The heading must be in the note once.",
             json!({ "note": string(note), "heading": string("The heading's text"), "text": string("The section's new Markdown, without the heading; empty clears it") }),
             &["note", "heading", "text"],
+            true,
+        ),
+        tool(
+            "move_note",
+            "Renames or moves a note (or a base or canvas) to a new vault path and rewrites every link to it in the vault, as the app's Rename and Move do. Refused when a file is there. Commit the moved note and every note it lists together.",
+            json!({ "note": string(note), "to": string("The new vault path, as `Companies/Acme/Acme.md`; `.md` is added to a name without one") }),
+            &["note", "to"],
             true,
         ),
         tool(
@@ -1204,5 +1245,19 @@ mod tests {
         assert!(git.run(&["status", "--porcelain"]).unwrap().contains("Other.md"));
         assert!(call(&mut server, "commit", json!({ "message": "x", "paths": ["Seeds.md"], "push": false })).1);
         assert!(call(&mut server, "commit", json!({ "message": "x", "paths": ["../out.md"], "push": false })).1);
+    }
+    #[test]
+    fn a_note_moves_with_every_link_to_it() {
+        let root = vault();
+        let mut server = server(root.path(), false);
+        let (said, error) = call(&mut server, "move_note", json!({ "note": "Seeds", "to": "Garden/Seed Bank" }));
+        assert!(!error, "{said}");
+        assert!(said.starts_with("moved\tSeeds.md → Garden/Seed Bank.md"), "{said}");
+        assert!(said.contains("links rewritten\tGarden/Plants.md"), "{said}");
+        assert!(root.path().join("Garden/Seed Bank.md").exists() && !root.path().join("Seeds.md").exists());
+        let plants = fs::read_to_string(root.path().join("Garden/Plants.md")).unwrap();
+        assert!(plants.contains("[[Seed Bank]]") || plants.contains("[[Garden/Seed Bank]]"), "{plants}");
+        assert!(call(&mut server, "move_note", json!({ "note": "Plants", "to": "Garden/Seed Bank.md" })).1);
+        assert!(call(&mut server, "move_note", json!({ "note": "Plants", "to": "../Out" })).1);
     }
 }

@@ -407,6 +407,14 @@ enum Command {
         /// Preparation`.
         #[arg(long = "prep-note", requires = "memory")]
         prep_note: Vec<String>,
+        /// With --memory, a `key=value` (as `job_stage=applied`) that marks
+        /// a note as still going, for --quiet-days.
+        #[arg(long, requires = "memory")]
+        active: Vec<String>,
+        /// With --memory and --active, warns of a going note with nothing in
+        /// it dated within this many days (memory-quiet).
+        #[arg(long = "quiet-days", requires = "active")]
+        quiet_days: Option<i64>,
     },
     /// The week before a day as a note: tasks done and cancelled, overdue,
     /// due in the week ahead and in progress, the meetings of the week
@@ -850,6 +858,8 @@ fn run(cli: Cli) -> Result<(), String> {
             memory,
             event_property,
             prep_note,
+            active,
+            quiet_days,
         } => {
             let github_token = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).ok();
             let options = check::Options {
@@ -865,7 +875,12 @@ fn run(cli: Cli) -> Result<(), String> {
                 github: report::github(),
                 fix,
                 dry_run,
-                memory: memory.then_some(memory::Rules { event_properties: event_property, prep_notes: prep_note }),
+                memory: memory.then_some(memory::Rules {
+                    event_properties: event_property,
+                    prep_notes: prep_note,
+                    active: active.iter().filter_map(|a| memory::Rules::active_pair(a)).collect(),
+                    quiet_days,
+                }),
             };
             let outcome = check::run(&root, |path| hidden.contains(path), &options, |line| out!("{line}"));
             if fix {
