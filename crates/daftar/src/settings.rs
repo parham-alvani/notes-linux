@@ -73,11 +73,22 @@ impl AppSettings {
         PLACE.store(place.and_then(|p| PLACES.iter().position(|q| *q == p)).map_or(0, |i| i as u8 + 1), Ordering::Relaxed);
     }
 
-    /// Writes one value back, keeping the rest of the file as it is.
+    /// Writes one value back, keeping the rest of the file as it is: as it
+    /// is on disk now, so a change another window, the Mac's app or a
+    /// dotfiles pull made is kept, not written over with what was read at
+    /// launch. A linked file is written where it points, and stays a link.
     pub fn set(&mut self, key: &str, value: Value) -> io::Result<()> {
+        if let Ok(text) = fs::read_to_string(&self.path) {
+            self.file = ConfigFile::new(text);
+        }
         self.file.set(key, value);
         self.publish();
-        fs::write(&self.path, self.file.text())
+        let target = fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
+        let temporary = target.with_extension("toml.daftar");
+        fs::write(&temporary, self.file.text())?;
+        fs::rename(&temporary, &target).inspect_err(|_| {
+            let _ = fs::remove_file(&temporary);
+        })
     }
 
     /// The vault's folder, with `~` for the home folder.
@@ -118,5 +129,26 @@ impl AppSettings {
             _ => format!("\"{code}\", monospace"),
         };
         (format!("{text}, \"Persian Fallback\", sans-serif"), format!("{mono}, \"Persian Fallback\", monospace"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_setting_keeps_what_changed_on_disk_and_the_link() {
+        let folder = tempfile::tempdir().unwrap();
+        let real = folder.path().join("dotfiles.toml");
+        fs::write(&real, "[appearance]\ntheme = \"system\"\ntext_size = 14\n").unwrap();
+        let path = folder.path().join("config.toml");
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        let mut settings = AppSettings { file: ConfigFile::new(fs::read_to_string(&path).unwrap()), path: path.clone() };
+        // Another window, or the Mac's app through a dotfiles pull.
+        fs::write(&real, "[appearance]\ntheme = \"dark\"\ntext_size = 14\n").unwrap();
+        settings.set("appearance.text_size", Value::Int(16)).unwrap();
+        assert_eq!(fs::read_to_string(&real).unwrap(), "[appearance]\ntheme = \"dark\"\ntext_size = 16\n");
+        assert!(fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
     }
 }
