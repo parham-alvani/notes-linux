@@ -1,6 +1,7 @@
 //! Meeting alerts and the morning task digest, as the Mac's `Notifier` sends
 //! them, through the desktop's notifications. Unlike the Mac's, which the
-//! system holds while the app is closed, these are timers: they ring while
+//! system holds while the app is closed, these are checked against the
+//! clock every few seconds: they ring while
 //! Daftar runs. They are planned again whenever the vault changes.
 
 use std::cell::RefCell;
@@ -82,44 +83,57 @@ pub fn plan(meetings: &[Meeting], groups: impl Fn(Day) -> TaskGroups, now: DateT
     out
 }
 
-/// The timers of the alerts planned last. A timer that rang empties its
-/// slot: glib has dropped its source, and removing it again panics.
-#[derive(Default)]
+/// The alerts planned last, rung by the wall clock: a check every
+/// [TICK] seconds sends what is due. One glib timer per alert would wait
+/// on the monotonic clock, which stops while the computer sleeps, so a
+/// reminder planned before a night's sleep would ring hours late.
 pub struct Notifier {
-    timers: RefCell<Vec<Rc<RefCell<Option<glib::SourceId>>>>>,
+    pending: Rc<RefCell<Vec<Alert>>>,
+    tick: RefCell<Option<glib::SourceId>>,
 }
+
+/// Seconds between two looks at the clock.
+const TICK: u32 = 20;
 
 impl Notifier {
     pub fn new() -> Rc<Notifier> {
-        Rc::new(Notifier::default())
+        let pending: Rc<RefCell<Vec<Alert>>> = Rc::default();
+        let due = pending.clone();
+        let tick = glib::timeout_add_seconds_local(TICK, move || {
+            let ready = take_due(&mut due.borrow_mut(), Local::now());
+            for alert in &ready {
+                send(alert);
+            }
+            glib::ControlFlow::Continue
+        });
+        Rc::new(Notifier { pending, tick: RefCell::new(Some(tick)) })
     }
 
-    /// Replaces every timer with the ones the vault calls for now.
+    /// Replaces the alerts with the ones the vault calls for now.
     pub fn plan(&self, store: &VaultStore, wanted: &Wanted) {
-        for slot in self.timers.borrow_mut().drain(..) {
-            if let Some(id) = slot.take() {
-                id.remove();
-            }
-        }
         let meetings: Vec<Meeting> = store.calendar_days(Day::today(), 3).into_iter().flat_map(|day| day.meetings).collect();
         let tasks = store.index().tasks();
         let alerts = plan(&meetings, |day| TaskGroups::new(tasks.clone(), day, 0), Local::now(), wanted);
-        for alert in alerts {
-            let wait = (alert.at - Local::now()).to_std().unwrap_or_default();
-            // A timer far ahead is planned again before then: the vault changes.
-            if wait > std::time::Duration::from_hours(36) {
-                continue;
-            }
-            let slot = Rc::new(RefCell::new(None));
-            let rang = slot.clone();
-            let id = glib::timeout_add_local_once(wait, move || {
-                rang.take();
-                send(&alert);
-            });
-            slot.replace(Some(id));
-            self.timers.borrow_mut().push(slot);
+        *self.pending.borrow_mut() = alerts;
+    }
+}
+
+impl Drop for Notifier {
+    fn drop(&mut self) {
+        // The source holds only the list, never the notifier, and never stops itself.
+        if let Some(tick) = self.tick.take() {
+            tick.remove();
         }
     }
+}
+
+/// The alerts of [pending] whose time has come at [now], taken out of it.
+/// One more than ten minutes late, after the computer slept through it, is
+/// dropped unsent: a meeting that began long ago is no reminder.
+pub fn take_due(pending: &mut Vec<Alert>, now: DateTime<Local>) -> Vec<Alert> {
+    let (due, ahead): (Vec<Alert>, Vec<Alert>) = std::mem::take(pending).into_iter().partition(|alert| alert.at <= now);
+    *pending = ahead;
+    due.into_iter().filter(|alert| now - alert.at <= Duration::minutes(10)).collect()
 }
 
 fn send(alert: &Alert) {
@@ -169,6 +183,17 @@ fn meeting(title: &str, start: DateTime<Utc>, join: Option<&str>) -> Meeting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_alert_rings_by_the_wall_clock_and_not_long_after() {
+        let at = |h: u32, m: u32| Local.with_ymd_and_hms(2026, 11, 6, h, m, 0).unwrap();
+        let alert = |id: &str, when| Alert { id: id.into(), at: when, title: id.into(), body: String::new(), join: None };
+        let mut pending = vec![alert("soon", at(9, 55)), alert("slept", at(2, 0)), alert("later", at(18, 0))];
+        let due = take_due(&mut pending, at(9, 56));
+        assert_eq!(due.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["soon"]);
+        assert_eq!(pending.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["later"]);
+        assert!(take_due(&mut pending, at(9, 57)).is_empty());
+    }
     use daftar_core::{TaskLine, VaultTask};
 
     #[test]
