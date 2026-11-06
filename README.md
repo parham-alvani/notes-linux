@@ -85,7 +85,10 @@ daftar-cli search "backup plan"   # the text of every note
 daftar-cli tasks --due today      # open tasks due or scheduled by today, as path:line
 daftar-cli query 'not done' 'due before next week' 'group by filename'
 daftar-cli query --note Tasks/Tasks.md  # the note's tasks blocks, as the app draws them
+daftar-cli tasks --json           # the same as one JSON array, for scripts; query takes --json and --strict too
 daftar-cli toggle Inbox 12        # ticks the task on line 12 of Inbox, as a click does
+daftar-cli toggle Inbox 12 --expect 'Water plants'  # only while line 12 is still that task
+daftar-cli repeat 'every jalali month' --from 2026-12-31  # the next days a 🔁 rule gives
 daftar-cli postpone Inbox 12 week # moves its date on, as the Tasks plugin's Postpone does
 daftar-cli cancel Inbox 12 --reason 'no budget left'  # cancels it, saying why
 daftar-cli set-status Inbox 12 r --reason 'waiting on review'  # any status the vault has
@@ -107,7 +110,7 @@ daftar-cli capture -t Call Sara   # a task in today's daily note, as quick captu
 daftar-cli clip https://example.com/post --folder Reading  # a web page as a note, its pictures saved
 daftar-cli --hidden find claude   # the hidden files too: excluded files and files.hidden
 daftar-cli tui                    # the vault in the terminal; `daftar-cli` alone does the same
-daftar-cli images --dry-run       # the picture cleanup of notes-cli
+daftar-cli images --dry-run       # the picture cleanup of notes-cli; --trash moves into .trash/
 daftar-cli lint --fix --ignore task-sorter  # markdownlint's rules on every note, fixed where it can
 daftar-cli fmt                    # every note formatted as Prettier formats it; --check only lists them, --diff shows how
 daftar-cli check --no-h1 Learning # missing embeds, dangling links and headings, bad URLs, broken callouts, unused pictures
@@ -124,7 +127,7 @@ The command line and the TUI leave out the files the app hides: Obsidian's exclu
 
 `clip` is a web clipper: it fetches the page, keeps its main text (the `<article>` or `<main>`, else the largest block of paragraphs, without the menus, scripts, sidebars, headers and footers) as Markdown, saves its pictures in the vault's attachment folder (`attachmentFolderPath` in `.obsidian/app.json`) and embeds them, and writes a new note named after the page's title (or `--title`) in `Clippings/` (or `--folder`), with `source` and `clipped` in its front matter. It never writes over a file: a name that is taken gets a number. It prints the new note's path; a picture it could not fetch stays a web link, and is said on stderr.
 
-`images` is [notes-cli](https://github.com/parham-alvani/notes-cli) in Rust: it removes the pictures in `uploads/` that no note names, makes the others JPEGs under 1 MB named after their note and their content's hash, and rewrites the notes to the new names. Unlike notes-cli, a converted picture is named by the hash of the JPEG it became, and a picture already named `{name}_{hash}` keeps its name when its hash is corrected, so a second run changes nothing.
+`images` is [notes-cli](https://github.com/parham-alvani/notes-cli) in Rust: it removes the pictures in `uploads/` that no note, canvas or base names (in any case, plain or percent-encoded), makes the others JPEGs under 1 MB named after their note and their content's hash, and rewrites the notes to the new names. Unlike notes-cli, a converted picture is named by the hash of the JPEG it became, and a picture already named `{name}_{hash}` keeps its name when its hash is corrected, so a second run changes nothing.
 
 `lint` checks the notes with [markdownlint](https://github.com/DavidAnson/markdownlint)'s rules, as `markdownlint-cli2` does with no Node.js: it reads the vault's `.markdownlint.jsonc` (or `.markdownlint.json`) and skips the paths `.markdownlintignore` names, prints each problem as `path:line:column MD001/rule-name Description [detail]` and exits non-zero when it finds any, so it fits a pre-commit hook or CI. `--fix` fixes what markdownlint fixes (spaces, blank lines, list marks and numbers, emphasis style, …) and lists what is left, and `--ignore` leaves out folders. Paths limit it to some notes or folders. Its findings are tested against markdownlint-cli2 0.23 on fuzzed real notes, with Obsidian's wikilinks, embeds, callouts, tags and `$…$` math taken as Obsidian has them. Past markdownlint's own rules (MD001 to MD059, and MD028, MD033, MD036, MD051 link fragments, MD052 and MD053 reference links, MD055 and MD056 table pipes and cells, MD059 link text among them) it has a few of [rumdl](https://github.com/rvben/rumdl)'s, by rumdl's numbers and names, for what a vault synced by git and written on a phone gets wrong: MD066 a footnote cited and not defined or defined and not cited, MD068 an empty footnote, MD069 `- - text` left by a paste, MD086 a `<!--` or Obsidian `%%` comment never closed, MD092 git's merge conflict markers, MD094 a file that is not UTF-8, and MD084, off unless the config turns it on, invisible characters (a zero width space, a soft hyphen, bidi controls; never the ZWNJ and ZWJ Persian is written with). In GitHub Actions each problem is an annotation, on its line in the pull request.
 

@@ -28,6 +28,8 @@ const FORMATS: [&str; 7] = ["png", "jpg", "jpeg", "bmp", "webp", "tiff", "tif"];
 pub struct Options {
     pub dry_run: bool,
     pub keep_originals: bool,
+    /// Into the vault's `.trash/` rather than removed.
+    pub trash: bool,
 }
 
 /// One picture and the notes that name it.
@@ -81,7 +83,7 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
         if options.dry_run {
             out!("  would remove {} ({})", file_name(path), kb(size));
         } else {
-            fs::remove_file(path)?;
+            discard(root, path, options.trash)?;
             out!("  removed {} ({})", file_name(path), kb(size));
         }
     }
@@ -129,7 +131,7 @@ pub fn run(root: &Path, uploads: &Path, options: &Options) -> io::Result<()> {
             if options.dry_run {
                 out!("  would remove {}", file_name(&item.from));
             } else {
-                fs::remove_file(&item.from)?;
+                discard(root, &item.from, options.trash)?;
                 out!("  removed {}", file_name(&item.from));
             }
         }
@@ -350,6 +352,25 @@ fn notes_in(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Removes [path], or with [trash] moves it into [root]'s `.trash/`, under a
+/// name of its own when one is there already.
+fn discard(root: &Path, path: &Path, trash: bool) -> io::Result<()> {
+    if !trash {
+        return fs::remove_file(path);
+    }
+    let bin = root.join(".trash");
+    fs::create_dir_all(&bin)?;
+    let name = file_name(path);
+    let mut to = bin.join(&name);
+    let mut n = 1;
+    while to.exists() {
+        let (stem, extension) = name.rsplit_once('.').unwrap_or((&name, ""));
+        to = bin.join(format!("{stem} {n}.{extension}"));
+        n += 1;
+    }
+    fs::rename(path, to)
+}
+
 /// Through a temporary file and a rename, so a crash never leaves half a note.
 fn write_in_place(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temporary = path.with_file_name(format!(".{}.daftar-{}", file_name(path), std::process::id()));
@@ -471,11 +492,25 @@ mod tests {
         }
         fs::write(root.path().join("A.md"), "![](uploads/My%20Pic.png)\n![[Photo.PNG]]\n").unwrap();
         fs::write(root.path().join("B.canvas"), r#"{"nodes":[{"type":"file","file":"uploads/board.png"}]}"#).unwrap();
-        run(root.path(), &uploads, &Options { dry_run: false, keep_originals: false }).unwrap();
+        run(root.path(), &uploads, &Options { dry_run: false, keep_originals: false, trash: false }).unwrap();
         let mut left: Vec<String> = pictures_in(&uploads).unwrap().iter().map(|p| file_name(p)).collect();
         left.sort();
         assert_eq!(left, ["My Pic.png", "board.png", "photo.png"]);
         assert_eq!(fs::read_to_string(root.path().join("A.md")).unwrap(), "![](uploads/My%20Pic.png)\n![[Photo.PNG]]\n");
+    }
+
+    #[test]
+    fn a_picture_no_file_names_goes_to_the_trash_when_asked() {
+        let root = tempfile::tempdir().unwrap();
+        let uploads = root.path().join("uploads");
+        fs::create_dir_all(root.path().join(".trash")).unwrap();
+        fs::create_dir_all(&uploads).unwrap();
+        fs::write(root.path().join(".trash/unused.png"), b"older").unwrap();
+        RgbImage::from_pixel(4, 4, Rgb([1, 2, 3])).save(uploads.join("unused.png")).unwrap();
+        run(root.path(), &uploads, &Options { dry_run: false, keep_originals: false, trash: true }).unwrap();
+        assert!(!uploads.join("unused.png").exists());
+        assert_eq!(fs::read(root.path().join(".trash/unused.png")).unwrap(), b"older");
+        assert!(root.path().join(".trash/unused 1.png").exists());
     }
 
     #[test]
@@ -495,7 +530,7 @@ mod tests {
         picture.save(uploads.join("shown.png")).unwrap();
         picture.save(uploads.join("unused.png")).unwrap();
         fs::write(root.path().join("My Note.md"), "# Note\n![[shown.png]]\n").unwrap();
-        let options = Options { dry_run: false, keep_originals: false };
+        let options = Options { dry_run: false, keep_originals: false, trash: false };
         run(root.path(), &uploads, &options).unwrap();
         let left: Vec<String> = pictures_in(&uploads).unwrap().iter().map(|p| file_name(p)).collect();
         assert_eq!(left.len(), 1);

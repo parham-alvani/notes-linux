@@ -80,6 +80,10 @@ enum Command {
         /// Closed tasks too.
         #[arg(long)]
         all: bool,
+        /// One JSON array, each task with its path, line, status, dates and
+        /// text (what `toggle --expect` takes).
+        #[arg(long)]
+        json: bool,
     },
     /// A Tasks plugin query, as a ` ```tasks ` block in a note runs it:
     /// `daftar-cli query 'not done' 'due before tomorrow' 'group by filename'`.
@@ -91,6 +95,24 @@ enum Command {
         /// others stand for.
         #[arg(long)]
         note: Option<String>,
+        /// One JSON array, each task with the groups it is under.
+        #[arg(long)]
+        json: bool,
+        /// Fail on a line the query language does not understand, as the Tasks
+        /// plugin does, instead of running the query without it.
+        #[arg(long)]
+        strict: bool,
+    },
+    /// The days a `🔁` rule repeats on, as a tick works them out:
+    /// `daftar-cli repeat 'every jalali month' --from 2026-12-31 --count 4`.
+    Repeat {
+        rule: String,
+        /// The task's leading date (YYYY-MM-DD); today when not given.
+        #[arg(long)]
+        from: Option<String>,
+        /// How many days to list.
+        #[arg(long, default_value_t = 5)]
+        count: usize,
     },
     /// Ticks or opens the task on a line of a note, as a click in the app does.
     Toggle {
@@ -397,6 +419,10 @@ enum Command {
         /// Keeps the pictures that were converted.
         #[arg(long)]
         keep_originals: bool,
+        /// Moves what it would remove into the vault's `.trash/`, as Obsidian's
+        /// own deletes do, instead of removing it.
+        #[arg(long)]
+        trash: bool,
     },
 }
 
@@ -439,7 +465,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 out!("{}\t{}", hit.path, snippet(&hit.snippet, terminal));
             }
         }
-        Command::Tasks { due, path, all } => {
+        Command::Tasks { due, path, all, json } => {
             let index = Vault::index(&root, None);
             let by = match due.as_deref() {
                 None => None,
@@ -458,11 +484,16 @@ fn run(cli: Cli) -> Result<(), String> {
                 let day = |t: &VaultTask| t.task.due.clone().or_else(|| t.task.scheduled.clone()).unwrap_or_else(|| "9999".into());
                 day(a).cmp(&day(b)).then(a.path.cmp(&b.path)).then(a.task.line.cmp(&b.task.line))
             });
+            if json {
+                let rows: Vec<serde_json::Value> = tasks.iter().map(|task| task_json(task, None)).collect();
+                out!("{}", serde_json::Value::Array(rows));
+                return Ok(());
+            }
             for task in tasks {
                 out!("{}", task_line(&task));
             }
         }
-        Command::Query { lines, note } => {
+        Command::Query { lines, note, json, strict } => {
             let index = Vault::index(&root, None);
             let file = note.as_deref().map(|n| note_path(&index, n)).transpose()?;
             let sources = if !lines.is_empty() {
@@ -479,10 +510,20 @@ fn run(cli: Cli) -> Result<(), String> {
             };
             let mut tasks = hidden.tasks(&index);
             tasks.sort_by(|a, b| (&a.path, a.task.line).cmp(&(&b.path, b.task.line)));
+            let mut rows = Vec::new();
             for source in sources {
                 let query = TasksQuery::parse(&source, file.as_deref());
                 for line in &query.not_understood {
                     eprintln!("daftar-cli: not understood, so not applied: {line}");
+                }
+                if strict && !query.not_understood.is_empty() {
+                    return Err(format!("{} lines of the query not understood", query.not_understood.len()));
+                }
+                if json {
+                    for task in query.run(tasks.clone(), Day::today(), |t| QueryTask::from(t)) {
+                        rows.push(task_json(&task, Some(query.groups(&QueryTask::from(&task)))));
+                    }
+                    continue;
                 }
                 // A group's name on its own line, `#` once per level, when it changes.
                 let mut open: Vec<String> = Vec::new();
@@ -500,6 +541,28 @@ fn run(cli: Cli) -> Result<(), String> {
                     }
                     out!("{}", task_line(&task));
                 }
+            }
+            if json {
+                out!("{}", serde_json::Value::Array(rows));
+            }
+        }
+        Command::Repeat { rule, from, count } => {
+            let recurrence = daftar_core::Recurrence::parse(&rule).ok_or_else(|| {
+                format!("“{rule}” is not repeated by Daftar: a tick completes the task with no next one (rules such as every 2 weeks or every jalali month are)")
+            })?;
+            let mut day = match from.as_deref() {
+                None => Day::today(),
+                Some(text) => Day::parse(text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,
+            };
+            for _ in 0..count {
+                // Each step from the day the last reached, as ticking it each time would.
+                let Some(next) = recurrence.next(day, day) else {
+                    out!("(no next day: the rule runs off the calendar)");
+                    break;
+                };
+                let jalali = daftar_core::jalali::Jalali::from_day(next);
+                out!("{next}\t{}-{:02}-{:02}", jalali.year, jalali.month, jalali.day);
+                day = next;
             }
         }
         Command::Toggle { note, line, expect } => {
@@ -795,12 +858,12 @@ fn run(cli: Cli) -> Result<(), String> {
             }
         }
         Command::Mcp { read_only } => mcp::run(root, cli.hidden, read_only)?,
-        Command::Images { folder, dry_run, keep_originals } => {
+        Command::Images { folder, dry_run, keep_originals, trash } => {
             let folder = if folder.is_absolute() { folder } else { root.join(folder) };
             if !folder.is_dir() {
                 return Err(format!("{} is not a folder", folder.display()));
             }
-            images::run(&root, &folder, &images::Options { dry_run, keep_originals }).map_err(|e| e.to_string())?;
+            images::run(&root, &folder, &images::Options { dry_run, keep_originals, trash }).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
@@ -903,6 +966,23 @@ fn task_line(task: &VaultTask) -> String {
         line.push_str(&format!(" 💬 {reason}"));
     }
     line
+}
+
+/// [task] for a script: `line` counts from 1, as `toggle` takes it, and
+/// `text` is what `toggle --expect` and the MCP tools check the line against.
+fn task_json(task: &VaultTask, groups: Option<Vec<String>>) -> serde_json::Value {
+    let t = &task.task;
+    let mut row = serde_json::json!({
+        "path": task.path, "line": t.line + 1, "status": t.status.to_string(),
+        "closed": TaskLine::is_closed(t.status), "text": t.text, "section": t.section,
+        "created": t.created, "start": t.start, "scheduled": t.scheduled, "due": t.due,
+        "done": t.done, "cancelled": t.cancelled, "recurring": t.recurring,
+        "priority": t.priority, "reason": t.reason,
+    });
+    if let Some(groups) = groups {
+        row["groups"] = groups.into();
+    }
+    row
 }
 
 /// The bodies of a note's ` ```tasks ` blocks, in a callout or a quote too.
