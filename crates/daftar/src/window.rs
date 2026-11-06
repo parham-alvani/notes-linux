@@ -1268,6 +1268,19 @@ impl Window {
             Some("reader") => {
                 let Some(shown) = tab.reader.shown() else { return };
                 let index = store.index();
+                // `Books/` is a folder's overview: drawn again when a file in
+                // it changed, and gone with the folder's last file.
+                if shown.path.ends_with('/') || shown.path.is_empty() {
+                    let prefix = shown.path.trim_start_matches('/');
+                    let there = prefix.is_empty() || index.files.iter().any(|file| file.starts_with(prefix));
+                    drop(index);
+                    if !there {
+                        self.show_home(tab);
+                    } else if changed.iter().any(|path| path.starts_with(prefix)) {
+                        tab.reader.reload();
+                    }
+                    return;
+                }
                 if !index.files.contains(&shown.path) {
                     drop(index);
                     self.show_home(tab);
