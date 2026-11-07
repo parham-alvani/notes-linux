@@ -30,6 +30,20 @@
 // A wiki link or a link inside the vault: its text, in the link color.
 #let internal(body) = text(fill: teal, body)
 
+// `==text==`, and Obsidian's coloured marks (`==🔴 text==`), each in a pale
+// wash of the reader's color for it; the plain mark is gold.
+#let marked(color, body) = {
+  let base = (
+    red: red,
+    orange: rgb("#c86400"),
+    yellow: gold,
+    green: green,
+    blue: blue,
+    purple: purple,
+  ).at(color, default: gold)
+  highlight(fill: base.lighten(78%), body)
+}
+
 // A note or a file embedded that is not a picture: its name.
 #let embedded(body) = text(fill: muted, style: "italic")[↪ #body]
 

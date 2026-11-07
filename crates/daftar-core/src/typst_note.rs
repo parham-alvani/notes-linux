@@ -41,7 +41,6 @@ const TASK_SIGNS: [(&str, &str); 14] = [
 ];
 
 static WIKI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(!?)\[\[([^\]\n]+?)\]\]").unwrap());
-static HIGHLIGHT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"==([^=\n]+)==").unwrap());
 static EMOJI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\p{Extended_Pictographic}\u{FE0F}\u{200D}]").unwrap());
 static CALLOUT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[!([A-Za-z-]+)\][+-]?[ \t]*").unwrap());
 static STATUS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[(.)\] ").unwrap());
@@ -336,16 +335,53 @@ impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
         out.push_str("\n\n");
     }
 
+    /// [nodes], with `==marks==` found across them: a mark can hold code,
+    /// emphasis or a link, as the reader's does, so its `==` are in the text
+    /// on either side of those nodes.
     fn inlines(&mut self, nodes: &[Node], out: &mut String) {
-        // Text nodes side by side are one run: a wiki link can span them.
-        let mut run = String::new();
+        let mut pieces = Vec::new();
         for node in nodes {
             if let Node::Text(text) = node {
-                run.push_str(&text.value);
-                continue;
+                let mut parts = text.value.split("==");
+                pieces.push(Piece::Text(parts.next().unwrap_or_default().to_string()));
+                for part in parts {
+                    pieces.push(Piece::Mark);
+                    pieces.push(Piece::Text(part.to_string()));
+                }
+            } else {
+                pieces.push(Piece::Node(node));
             }
-            self.text(&std::mem::take(&mut run), out);
-            self.inline(node, out);
+        }
+        self.pieces(&pieces, out);
+    }
+
+    fn pieces(&mut self, pieces: &[Piece<'_>], out: &mut String) {
+        // Text side by side is one run: a wiki link can span text nodes.
+        let mut run = String::new();
+        let mut at = 0;
+        while at < pieces.len() {
+            match &pieces[at] {
+                Piece::Text(text) => run.push_str(text),
+                Piece::Node(node) => {
+                    self.text(&std::mem::take(&mut run), out);
+                    self.inline(node, out);
+                }
+                Piece::Mark => {
+                    let close = pieces[at + 1..].iter().position(|p| matches!(p, Piece::Mark)).map(|p| at + 1 + p);
+                    if let Some(close) = close.filter(|&close| markable(&pieces[at + 1..close])) {
+                        self.text(&std::mem::take(&mut run), out);
+                        let mut inner = pieces[at + 1..close].to_vec();
+                        let color = swatch(&mut inner);
+                        let _ = write!(out, "#marked({})[", TypstNote::string(color));
+                        self.pieces(&inner, out);
+                        out.push(']');
+                        at = close;
+                    } else {
+                        run.push_str("==");
+                    }
+                }
+            }
+            at += 1;
         }
         self.text(&run, out);
     }
@@ -407,12 +443,12 @@ impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
         let _ = write!(out, "#{function}[{inner}]");
     }
 
-    /// A run of text: wiki links and embeds, `==marks==`, the rest as strings.
+    /// A run of text: wiki links and embeds, the rest as strings.
     fn text(&mut self, text: &str, out: &mut String) {
         let mut at = 0;
         for found in WIKI.captures_iter(text) {
             let whole = found.get(0).expect("a match has its whole");
-            self.marked(&text[at..whole.start()], out);
+            plain_text(&text[at..whole.start()], out);
             at = whole.end();
             let inside = &found[2];
             let (target, alias) = match inside.split_once('|') {
@@ -443,19 +479,6 @@ impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
             );
             let _ = write!(out, "#internal[#{}]", TypstNote::string(&shown));
         }
-        self.marked(&text[at..], out);
-    }
-
-    fn marked(&mut self, text: &str, out: &mut String) {
-        let mut at = 0;
-        for found in HIGHLIGHT.captures_iter(text) {
-            let whole = found.get(0).expect("a match has its whole");
-            plain_text(&text[at..whole.start()], out);
-            let _ = write!(out, "#highlight[");
-            plain_text(&found[1], out);
-            out.push(']');
-            at = whole.end();
-        }
         plain_text(&text[at..], out);
     }
 
@@ -476,6 +499,42 @@ impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
         true
     }
 }
+
+/// A paragraph's inline content, with the `==` of its text apart.
+#[derive(Clone)]
+enum Piece<'a> {
+    Text(String),
+    Mark,
+    Node(&'a Node),
+}
+
+/// Whether [inner], what lies between two `==`, is a mark, as the reader
+/// has it: something, on one line, with no space just inside the `==`.
+fn markable(inner: &[Piece<'_>]) -> bool {
+    let words: String = inner
+        .iter()
+        .map(|piece| match piece {
+            Piece::Text(text) => text.as_str(),
+            // A node is never space at either end.
+            _ => "x",
+        })
+        .collect();
+    !words.is_empty() && !words.contains('\n') && !words.starts_with(char::is_whitespace) && !words.ends_with(char::is_whitespace)
+}
+
+/// The color a mark's first circle names (`==🔴 text==` is red), taking
+/// the circle and a space after it off; `""` for the plain mark.
+fn swatch(inner: &mut [Piece<'_>]) -> &'static str {
+    let Some(Piece::Text(first)) = inner.first_mut() else { return "" };
+    let Some(&(circle, color)) = HIGHLIGHT_COLORS.iter().find(|(circle, _)| first.starts_with(circle)) else { return "" };
+    let rest = &first[circle.len()..];
+    *first = rest.strip_prefix(char::is_whitespace).unwrap_or(rest).to_string();
+    color
+}
+
+/// Obsidian's coloured highlights, as the reader colors them.
+const HIGHLIGHT_COLORS: [(&str, &str); 6] =
+    [("🔴", "red"), ("🟠", "orange"), ("🟡", "yellow"), ("🟢", "green"), ("🔵", "blue"), ("🟣", "purple")];
 
 /// [text] with Typst's strings, the Tasks signs as words and other emoji out.
 fn plain_text(text: &str, out: &mut String) {
@@ -681,8 +740,33 @@ mod tests {
     #[test]
     fn highlights_tables_and_footnotes() {
         let note = typst("A ==marked== word.[^1]\n\n| a | b |\n|:--|--:|\n| 1 | 2 |\n\n[^1]: The note.\n");
-        assert!(note.markup.starts_with("#\"A \"#highlight[#\"marked\"]#\" word.\"#footnote[#\"The note.\"]"));
+        assert!(note.markup.starts_with("#\"A \"#marked(\"\")[#\"marked\"]#\" word.\"#footnote[#\"The note.\"]"));
         assert!(note.markup.contains("#table(columns: 2, align: (left, right,), table.header([#\"a\"], [#\"b\"]), [#\"1\"], [#\"2\"])"));
+    }
+
+    #[test]
+    fn a_mark_holds_code_and_emphasis() {
+        let note = typst("Delayed ==NAKs count against `MaxAckPending`.== Then ==a *soft* word== and [[Plan]].");
+        assert_eq!(
+            note.markup,
+            "#\"Delayed \"#marked(\"\")[#\"NAKs count against \"#raw(\"MaxAckPending\")#\".\"]#\" Then \"#marked(\"\")[#\"a \"#emph[#\"soft\"]#\" word\"]#\" and \"#internal[#\"Plan\"]#\".\"\n\n"
+        );
+    }
+
+    #[test]
+    fn a_mark_takes_the_color_of_its_circle() {
+        let note = typst("==🔴Never do it== and ==🟠 true today== and ==🔵`x` is not y==.");
+        assert_eq!(
+            note.markup,
+            "#marked(\"red\")[#\"Never do it\"]#\" and \"#marked(\"orange\")[#\"true today\"]#\" and \"#marked(\"blue\")[#raw(\"x\")#\" is not y\"]#\".\"\n\n"
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_mark_keeps_its_equals_signs() {
+        assert_eq!(typst("a == b and c == d").markup, "#\"a == b and c == d\"\n\n");
+        assert_eq!(typst("x ==== y").markup, "#\"x ==== y\"\n\n");
+        assert_eq!(typst("only ==one").markup, "#\"only ==one\"\n\n");
     }
 
     #[test]

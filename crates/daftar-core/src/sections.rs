@@ -147,6 +147,42 @@ impl Sections {
         Some(text)
     }
 
+    /// Only the sections of the headings named [names] (each with the
+    /// headings under it), in the note's order, for exporting a part of a
+    /// note. A name is a heading's text, in any case. A section inside
+    /// another named one is not said twice. What to say instead when a name
+    /// is no heading of the note, or is two of them.
+    pub fn only(text: &str, names: &[String]) -> Result<String, String> {
+        let (lines, _) = Self::lines(text);
+        let headings = Self::headings(text);
+        let mut ranges = Vec::new();
+        for name in names {
+            let wanted = name.trim().trim_start_matches('#').trim();
+            let found: Vec<usize> = (0..headings.len()).filter(|i| headings[*i].text.trim().eq_ignore_ascii_case(wanted)).collect();
+            match found.as_slice() {
+                [index] => ranges.push((headings[*index].line, Self::end(*index, &headings, lines.len()))),
+                [] => {
+                    let all: Vec<&str> = headings.iter().map(|h| h.text.as_str()).collect();
+                    return Err(format!("no heading is named “{wanted}”; the headings are: {}", all.join(", ")));
+                }
+                many => {
+                    let at: Vec<String> = many.iter().map(|i| (headings[*i].line + 1).to_string()).collect();
+                    return Err(format!("{} headings are named “{wanted}”, on lines {}", many.len(), at.join(", ")));
+                }
+            }
+        }
+        ranges.sort_unstable();
+        let mut kept: Vec<(usize, usize)> = Vec::new();
+        for (start, end) in ranges {
+            match kept.last_mut() {
+                Some(last) if start < last.1 => last.1 = last.1.max(end),
+                _ => kept.push((start, end)),
+            }
+        }
+        let parts: Vec<String> = kept.iter().map(|(start, end)| lines[*start..*end].join("\n").trim_end().to_string()).collect();
+        Ok(parts.join("\n\n") + "\n")
+    }
+
     /// "Sort Headings Under This" on heading [index], or on the heading of
     /// the section [line] is in: the sorted text, or what to say instead.
     pub fn sort_headings(text: &str, index: Option<usize>, line: usize) -> Result<String, String> {
@@ -212,6 +248,21 @@ mod tests {
 
     fn closed(keys: &[&str]) -> Vec<String> {
         keys.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn only_the_named_sections_in_the_notes_order() {
+        let text =
+            "Intro.\n\n## RabbitMQ\n\nRabbit.\n\n### Plugin\n\nOld.\n\n## NATS\n\nNats.\n\n### Schedules\n\nNew.\n\n## Redis\n\nRedis.\n";
+        let names = |n: &[&str]| n.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(Sections::only(text, &names(&["nats"])).unwrap(), "## NATS\n\nNats.\n\n### Schedules\n\nNew.\n");
+        assert_eq!(Sections::only(text, &names(&["Redis", "## Plugin"])).unwrap(), "### Plugin\n\nOld.\n\n## Redis\n\nRedis.\n");
+        // A section inside a named one is not said twice.
+        assert_eq!(Sections::only(text, &names(&["Schedules", "NATS"])).unwrap(), "## NATS\n\nNats.\n\n### Schedules\n\nNew.\n");
+        let missing = Sections::only(text, &names(&["Kafka"])).unwrap_err();
+        assert!(missing.contains("“Kafka”") && missing.contains("RabbitMQ, Plugin, NATS, Schedules, Redis"), "{missing}");
+        let twice = Sections::only("## Example\n\nA\n\n## Example\n\nB\n", &names(&["Example"])).unwrap_err();
+        assert_eq!(twice, "2 headings are named “Example”, on lines 1, 5");
     }
 
     #[test]

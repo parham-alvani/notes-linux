@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::Datelike;
 use daftar_core::typst_note::right_to_left;
-use daftar_core::{ConfigFile, Git, TypstNote, Vault, VaultIndex};
+use daftar_core::{ConfigFile, Git, Sections, TypstNote, Vault, VaultIndex};
 use typst::diag::{FileError, FileResult};
 use typst::foundations::{Bytes, Datetime, Duration};
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
@@ -76,9 +76,13 @@ fn export_day(source_date_epoch: Option<&str>) -> chrono::NaiveDate {
         .map_or_else(|| chrono::Local::now().date_naive(), |time| time.date_naive())
 }
 
-/// The note at [path] as a PDF at [output].
-pub fn run(root: &Path, index: &VaultIndex, path: &str, output: &Path, look: &Look) -> Result<(), String> {
-    let text = fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+/// The note at [path] as a PDF at [output]: the whole note, or only the
+/// sections of the headings [sections] names.
+pub fn run(root: &Path, index: &VaultIndex, path: &str, output: &Path, look: &Look, sections: &[String]) -> Result<(), String> {
+    let mut text = fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+    if !sections.is_empty() {
+        text = Sections::only(&text, sections).map_err(|e| format!("{path}: {e}"))?;
+    }
     let note = TypstNote::new(&text, path, |target, source| index.resolve(target, source));
     let title = Vault::title(path);
     // The head has the title: a first heading that says it again goes.
@@ -332,11 +336,11 @@ mod tests {
         let output = root.join("out/Queue.pdf");
         fs::create_dir_all(output.parent().unwrap()).unwrap();
         let look = Look { logo: Some(root.join("me.svg")), folder_logo: true, footer: "A footer".to_string(), day: DAY };
-        run(root, &index, "Companies/Acme/Platform/Queue.md", &output, &look).unwrap();
+        run(root, &index, "Companies/Acme/Platform/Queue.md", &output, &look, &[]).unwrap();
         let pdf = fs::read(&output).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
         // No date in the file: the same note makes the same PDF.
-        run(root, &index, "Companies/Acme/Platform/Queue.md", &root.join("out/again.pdf"), &look).unwrap();
+        run(root, &index, "Companies/Acme/Platform/Queue.md", &root.join("out/again.pdf"), &look, &[]).unwrap();
         assert_eq!(fs::read(root.join("out/again.pdf")).unwrap(), pdf);
     }
 
@@ -348,10 +352,10 @@ mod tests {
         fs::write(root.join("Sums.md"), note).unwrap();
         let index = Vault::index(root, None);
         let look = Look { logo: None, folder_logo: false, footer: String::new(), day: DAY };
-        run(root, &index, "Sums.md", &root.join("Sums.pdf"), &look).unwrap();
+        run(root, &index, "Sums.md", &root.join("Sums.pdf"), &look, &[]).unwrap();
         let pdf = fs::read(root.join("Sums.pdf")).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
-        run(root, &index, "Sums.md", &root.join("again.pdf"), &look).unwrap();
+        run(root, &index, "Sums.md", &root.join("again.pdf"), &look, &[]).unwrap();
         assert_eq!(fs::read(root.join("again.pdf")).unwrap(), pdf);
         assert!(diagram("graph TD\n  A --> B").is_some_and(|svg| svg.contains("Vazirmatn") && !svg.contains(DIAGRAM_FONT)));
         assert_eq!(diagram("not a diagram at all"), None);
@@ -368,7 +372,7 @@ mod tests {
         fs::write(root.join("Note.md"), "Text.\n").unwrap();
         let index = Vault::index(root, None);
         let look = Look { logo: Some(root.join("missing.svg")), folder_logo: true, footer: String::new(), day: DAY };
-        let error = run(root, &index, "Note.md", &root.join("Note.pdf"), &look).unwrap_err();
+        let error = run(root, &index, "Note.md", &root.join("Note.pdf"), &look, &[]).unwrap_err();
         assert!(error.starts_with("export.logo: "), "{error}");
         assert!(!root.join("Note.pdf").exists());
     }

@@ -296,6 +296,10 @@ enum Command {
         /// Leaves the folder's logo out.
         #[arg(long)]
         no_folder_logo: bool,
+        /// Only the section of this heading, with the headings under it;
+        /// again for more, set in the note's order.
+        #[arg(long = "section", value_name = "HEADING")]
+        sections: Vec<String>,
     },
     /// A web page as a new note: its main text as Markdown, its pictures in
     /// the attachment folder, and `source` and `clipped` in its front matter.
@@ -892,7 +896,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err("check failed".to_string());
             }
         }
-        Command::Export { note, output, logo, no_folder_logo } => {
+        Command::Export { note, output, logo, no_folder_logo, sections } => {
             let index = Vault::index(&root, None);
             let path = note_path(&index, &note)?;
             let mut look = export::Look::from_config(&config());
@@ -901,7 +905,7 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             look.folder_logo = !no_folder_logo;
             let output = output.unwrap_or_else(|| PathBuf::from(format!("{}.pdf", Vault::title(&path))));
-            export::run(&root, &index, &path, &output, &look)?;
+            export::run(&root, &index, &path, &output, &look, &sections)?;
             out!("{}", output.display());
         }
         Command::Clip { url, folder, title } => {
