@@ -51,7 +51,7 @@ pub fn heartbeat(config: &ConfigFile, root: &Path, path: &str, write: bool) {
     let now = Instant::now();
     let recent = LAST.with(|last| {
         let last = last.borrow();
-        last.as_ref().is_some_and(|(entity, at)| *entity == file && now.duration_since(*at) < Duration::from_secs(120))
+        last.as_ref().is_some_and(|(entity, at)| *entity == file && now.duration_since(*at) < Duration::from_mins(2))
     });
     if !write && recent {
         return;
