@@ -17,6 +17,10 @@ pub fn handle(app: &mut App, key: KeyEvent) {
             app.overlay = None;
             return;
         }
+        Some(Overlay::Drill(_)) => {
+            drill_key(app, key);
+            return;
+        }
         Some(Overlay::Picker(picker)) => {
             let typing = picker.query.is_some();
             let kind = picker.kind;
@@ -37,6 +41,7 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         KeyCode::Char('b') => app.open_backlinks(),
         KeyCode::Char('o') => app.open_outline(),
         KeyCode::Char('#') => app.open_tags(),
+        KeyCode::Char('D') => app.open_drill(),
         KeyCode::Char('?') => app.overlay = Some(Overlay::Help),
         KeyCode::Char('e') => app.edit(),
         KeyCode::Char('s') => app.start_sync(),
@@ -103,6 +108,26 @@ fn home_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('G') | KeyCode::End => app.home_move(isize::MAX / 2),
         KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.home_activate(),
         KeyCode::Char('h') | KeyCode::Left => app.focus = Focus::Sidebar,
+        _ => {}
+    }
+}
+
+/// The drill: Enter or Space shows the answer, 1-4 rates it.
+fn drill_key(app: &mut App, key: KeyEvent) {
+    let Some(Overlay::Drill(view)) = &mut app.overlay else { return };
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.overlay = None,
+        KeyCode::Enter | KeyCode::Char(' ') if view.card.is_none() => app.overlay = None,
+        KeyCode::Enter | KeyCode::Char(' ') => view.reveal(),
+        KeyCode::Char(c @ '1'..='4') => {
+            if let Some(rating) = daftar_core::Rating::parse(&c.to_string()) {
+                view.rate(rating, daftar_core::Day::today());
+            }
+        }
+        KeyCode::Char('j') | KeyCode::Down => view.scroll_by(1),
+        KeyCode::Char('k') | KeyCode::Up => view.scroll_by(-1),
+        KeyCode::PageDown => view.scroll_by(10),
+        KeyCode::PageUp => view.scroll_by(-10),
         _ => {}
     }
 }

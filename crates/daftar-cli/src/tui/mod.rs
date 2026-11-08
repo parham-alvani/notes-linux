@@ -7,6 +7,7 @@
 //! rows; `theme.rs` has the colors of `web/src/reader.css`.
 
 mod app;
+mod drill;
 mod keys;
 mod markdown;
 mod mouse;
@@ -708,5 +709,48 @@ mod tests {
         typed(&mut app, "backup");
         screen(&mut app);
         eprintln!("drew {} notes", paths.len());
+    }
+
+    #[test]
+    fn d_drills_the_open_notes_questions_and_saves_each_rating() {
+        let dir = vault();
+        fs::write(
+            dir.path().join("Go Questions.md"),
+            "# Go Questions\n\n## Q1. What is a goroutine?\n\nA function run on its own.\n\n## Q2. What is a channel?\n\nA typed pipe.\n",
+        )
+        .unwrap();
+        let mut app = app(&dir);
+        app.open("Go Questions.md", None, true);
+        press(&mut app, KeyCode::Char('D'));
+        let state = dir.path().join(".drill.json");
+        let Some(Overlay::Drill(view)) = &mut app.overlay else { panic!("no drill") };
+        view.file = state.clone();
+        view.state = daftar_core::DrillState::default();
+        let shown = screen(&mut app);
+        assert!(shown.contains("Drill · Go Questions"), "{shown}");
+        assert!(shown.contains("Go Questions › Go Questions"), "{shown}");
+        assert!(shown.contains("Q1. What is a goroutine?"), "{shown}");
+        assert!(!shown.contains("run on its own"), "{shown}");
+        // A rating before the answer shows does nothing.
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Enter);
+        let shown = screen(&mut app);
+        assert!(shown.contains("A function run on its own."), "{shown}");
+        press(&mut app, KeyCode::Char('1'));
+        assert!(screen(&mut app).contains("Q2. What is a channel?"));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('3'));
+        // Q1 comes back once, and that rating is not kept.
+        let shown = screen(&mut app);
+        assert!(shown.contains("again") && shown.contains("Q1. What is a goroutine?"), "{shown}");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('4'));
+        assert!(screen(&mut app).contains("Done: 2 cards rated."));
+        let saved = daftar_core::DrillState::load(&state);
+        assert_eq!(saved.reviews.len(), 2);
+        assert_eq!(saved.reviews["Go Questions.md#Go Questions#Q1. What is a goroutine?"].lapses, 1);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.overlay.is_none());
+        assert!(fs::read_to_string(dir.path().join("Go Questions.md")).unwrap().contains("A typed pipe."));
     }
 }

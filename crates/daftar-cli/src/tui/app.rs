@@ -19,6 +19,9 @@ use daftar_core::{
     reading_places,
 };
 
+use daftar_core::{Drill, DrillState};
+
+use super::drill::DrillView;
 use super::markdown::{self, Block, Row};
 use super::theme::Theme;
 
@@ -107,6 +110,7 @@ pub struct Picker {
 pub enum Overlay {
     Picker(Picker),
     Help,
+    Drill(Box<DrillView>),
 }
 
 /// The note pane with no note, as the app's home page in text: the time, a
@@ -1178,6 +1182,22 @@ impl App {
         } else if let Some(path) = item.path {
             self.open(&path, item.at, true);
         }
+    }
+
+    /// `D`: a drill on the open note's cards, else on the interview
+    /// preparation folder's: the ones due, then a few new ones.
+    pub fn open_drill(&mut self) {
+        let open: Vec<String> = self.note.iter().map(|n| n.path.clone()).collect();
+        let mut deck = Drill::deck(&self.root, &open);
+        let mut title = open.first().map(|p| Vault::title(p)).unwrap_or_default();
+        if deck.is_empty() {
+            deck = Drill::deck(&self.root, &Drill::notes_in(&self.index, Drill::FOLDER, |p| self.hidden.contains(p)));
+            title = Drill::FOLDER.to_string();
+        }
+        let file = DrillState::file(&self.root);
+        let state = DrillState::load(&file);
+        let due = Drill::due(&deck, &state, Day::today(), Drill::NEW_CARDS, usize::MAX).into_iter().cloned().collect();
+        self.overlay = Some(Overlay::Drill(Box::new(DrillView::new(title, due, state, file))));
     }
 
     /// Space on the tasks list.

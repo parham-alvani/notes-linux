@@ -25,6 +25,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let (picker, list, list_items) = match &mut app.overlay {
         Some(Overlay::Picker(picker)) => draw_picker(frame, &theme, picker, area),
         Some(Overlay::Help) => (draw_help(frame, &theme, area), Rect::default(), Vec::new()),
+        Some(Overlay::Drill(view)) => (super::drill::draw(frame, &theme, view, area), Rect::default(), Vec::new()),
         None => (Rect::default(), Rect::default(), Vec::new()),
     };
     app.areas.picker = picker;
@@ -415,13 +416,14 @@ fn draw_picker(frame: &mut Frame, theme: &Theme, picker: &mut Picker, area: Rect
     (rect, list, items)
 }
 
-pub const KEYS: [(&str, &str); 28] = [
+pub const KEYS: [(&str, &str); 29] = [
     ("Ctrl+P  p", "open a note by name"),
     ("/  Ctrl+F", "search the text of every note"),
     ("t", "tasks: the note's queries, else every open task"),
     ("b", "notes that link to this one"),
     ("o", "outline: Enter goes, Space closes or opens, s sorts under"),
     ("#", "tags, then the notes with one"),
+    ("D", "drill the note's questions, else interview prep"),
     ("Tab", "the tree or the note"),
     ("j k  ↓ ↑", "move"),
     ("Ctrl+D  Ctrl+U", "half a page down, up"),
