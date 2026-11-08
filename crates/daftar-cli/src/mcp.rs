@@ -146,10 +146,12 @@ impl Server {
                 found.iter().map(|d| format!("{}\t{}\t{}", d.level, d.code, d.message)).collect()
             }
             "check_vault" => {
+                let vault = check::VaultOptions::read(root, args.optional("profile"))?;
+                let memory = args.flag("memory") || vault.memory;
                 let options = check::Options {
                     strict: false,
-                    no_h1: args.list("no_h1"),
-                    callouts: args.list("callouts"),
+                    no_h1: check::joined(vault.no_h1, args.list("no_h1")),
+                    callouts: check::joined(vault.callouts, args.list("callouts")),
                     urls: false,
                     unreachable: false,
                     github_token: None,
@@ -159,11 +161,14 @@ impl Server {
                     github: false,
                     fix: false,
                     dry_run: false,
-                    memory: args.flag("memory").then(|| crate::memory::Rules {
-                        event_properties: args.list("event_properties"),
-                        prep_notes: args.list("prep_notes"),
-                        active: args.list("active").iter().filter_map(|a| crate::memory::Rules::active_pair(a)).collect(),
-                        quiet_days: args.0.get("quiet_days").and_then(Value::as_i64),
+                    memory: memory.then(|| crate::memory::Rules {
+                        event_properties: check::joined(vault.event_properties, args.list("event_properties")),
+                        prep_notes: check::joined(vault.prep_notes, args.list("prep_notes")),
+                        active: check::joined(vault.active, args.list("active"))
+                            .iter()
+                            .filter_map(|a| crate::memory::Rules::active_pair(a))
+                            .collect(),
+                        quiet_days: args.0.get("quiet_days").and_then(Value::as_i64).or(vault.quiet_days),
                     }),
                 };
                 let mut found = Vec::new();
@@ -887,8 +892,9 @@ fn tools(read_only: bool) -> Vec<Value> {
         ),
         tool(
             "check_vault",
-            "The vault's audit, as `daftar-cli check`: broken links and embeds, missing headings, ambiguous links, broken callouts, unused pictures, and tasks whose status and dates disagree. Pass the options the vault's `just check` passes (its justfile).",
+            "The vault's audit, as `daftar-cli check`: broken links and embeds, missing headings, ambiguous links, broken callouts, unused pictures, and tasks whose status and dates disagree. The vault's own options are read from its `.daftar.toml` (`[check]`, and a `profile` such as `audit` on top); pass more only to add to them.",
             json!({
+                "profile": { "type": "string", "description": "A section of the vault's `.daftar.toml` added to its `[check]`, as `audit`" },
                 "callouts": { "type": "array", "items": { "type": "string" }, "description": "Callout types the vault adds beyond Obsidian's and Daftar's `figure` and `read`, as `--callout`" },
                 "no_h1": { "type": "array", "items": { "type": "string" }, "description": "Folders whose notes must have no H1, as `--no-h1`" },
                 "memory": boolean("Also the memory warnings, as `--memory`: stale current-state paragraphs, relative dates, booked events that passed, held calls with no callout"),

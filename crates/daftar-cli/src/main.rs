@@ -419,6 +419,11 @@ enum Command {
         /// it dated within this many days (memory-quiet).
         #[arg(long = "quiet-days", requires = "active")]
         quiet_days: Option<i64>,
+        /// A section of the vault's `.daftar.toml` to add to its `[check]`,
+        /// as `audit`. The file's options are read first and the flags add
+        /// to them.
+        #[arg(long)]
+        profile: Option<String>,
     },
     /// The week before a day as a note: tasks done and cancelled, overdue,
     /// due in the week ahead and in progress, the meetings of the week
@@ -864,7 +869,16 @@ fn run(cli: Cli) -> Result<(), String> {
             prep_note,
             active,
             quiet_days,
+            profile,
         } => {
+            let vault = check::VaultOptions::read(&root, profile.as_deref())?;
+            let memory = memory || vault.memory;
+            let event_property = check::joined(vault.event_properties, event_property);
+            let prep_note = check::joined(vault.prep_notes, prep_note);
+            let active = check::joined(vault.active, active);
+            let quiet_days = quiet_days.or(vault.quiet_days);
+            let no_h1 = check::joined(vault.no_h1, no_h1);
+            let callout = check::joined(vault.callouts, callout);
             let github_token = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).ok();
             let options = check::Options {
                 strict,

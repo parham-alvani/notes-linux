@@ -28,6 +28,76 @@ use regex::Regex;
 
 use crate::{figures, report};
 
+/// The vault's own options for `check`, in `.daftar.toml` at its root, so
+/// the command line, the MCP server and the vault's CI run the same audit
+/// with no flags to copy. `[check]` is every run's; a profile (`[audit]`)
+/// adds to it: its lists are added, its `memory` and `quiet_days` win.
+///
+/// ```toml
+/// [check]
+/// no_h1 = ["Learning"]
+/// memory = true
+/// event_properties = ["job_next"]
+///
+/// [audit]
+/// active = ["job_stage=applied"]
+/// quiet_days = 30
+/// ```
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct VaultOptions {
+    pub no_h1: Vec<String>,
+    pub callouts: Vec<String>,
+    pub memory: bool,
+    pub event_properties: Vec<String>,
+    pub prep_notes: Vec<String>,
+    pub active: Vec<String>,
+    pub quiet_days: Option<i64>,
+}
+
+impl VaultOptions {
+    pub const FILE: &'static str = ".daftar.toml";
+
+    /// The options of `[check]` and of `profile` on top, or none when the
+    /// vault has no such file.
+    pub fn read(root: &Path, profile: Option<&str>) -> Result<VaultOptions, String> {
+        let Ok(text) = fs::read_to_string(root.join(Self::FILE)) else {
+            return Ok(VaultOptions::default());
+        };
+        let file = daftar_core::ConfigFile::new(text);
+        let mut options = VaultOptions::default();
+        for section in std::iter::once("check").chain(profile) {
+            let list = |key: &str| file.strings(&format!("{section}.{key}")).unwrap_or_default();
+            options.no_h1.extend(list("no_h1"));
+            options.callouts.extend(list("callouts"));
+            options.event_properties.extend(list("event_properties"));
+            options.prep_notes.extend(list("prep_notes"));
+            options.active.extend(list("active"));
+            if let Some(memory) = file.bool(&format!("{section}.memory")) {
+                options.memory = memory;
+            }
+            if let Some(days) = file.int(&format!("{section}.quiet_days")) {
+                options.quiet_days = Some(days);
+            }
+        }
+        if let Some(profile) = profile
+            && !file.text().lines().any(|line| line.trim() == format!("[{profile}]"))
+        {
+            return Err(format!("{} has no [{profile}]", Self::FILE));
+        }
+        Ok(options)
+    }
+}
+
+/// `base` and then each of `more` that it does not hold yet.
+pub fn joined(mut base: Vec<String>, more: Vec<String>) -> Vec<String> {
+    for item in more {
+        if !base.contains(&item) {
+            base.push(item);
+        }
+    }
+    base
+}
+
 pub struct Options {
     /// Fail on warnings too.
     pub strict: bool,
@@ -961,6 +1031,28 @@ mod tests {
         );
         assert!(lines[0].starts_with("A.md:1\twarning\t"));
         assert!(lines.last().unwrap().starts_with("uploads/lost.png\twarning"));
+    }
+
+    #[test]
+    fn the_vault_keeps_its_own_options_and_a_profile_adds_to_them() {
+        let none = vault(&[("A.md", "")]);
+        assert_eq!(VaultOptions::read(none.path(), None).unwrap(), VaultOptions::default());
+        let dir = vault(&[(
+            ".daftar.toml",
+            "# the vault's audit\n[check]\nno_h1 = [\"Learning\"]\ncallouts = [\"recipe\"]\nmemory = true\nevent_properties = [\"job_next\"]\n\n[audit]\nactive = [\"job_stage=applied\"]\nquiet_days = 30\nno_h1 = [\"Journal\"]\n",
+        )]);
+        let check = VaultOptions::read(dir.path(), None).unwrap();
+        assert_eq!(check.no_h1, ["Learning"]);
+        assert!(check.memory);
+        assert!(check.active.is_empty());
+        assert_eq!(check.quiet_days, None);
+        let audit = VaultOptions::read(dir.path(), Some("audit")).unwrap();
+        assert_eq!(audit.no_h1, ["Learning", "Journal"]);
+        assert_eq!(audit.event_properties, ["job_next"]);
+        assert_eq!(audit.active, ["job_stage=applied"]);
+        assert_eq!(audit.quiet_days, Some(30));
+        assert!(VaultOptions::read(dir.path(), Some("nope")).is_err());
+        assert_eq!(joined(vec!["a".into()], vec!["a".into(), "b".into()]), ["a", "b"]);
     }
 
     #[test]
