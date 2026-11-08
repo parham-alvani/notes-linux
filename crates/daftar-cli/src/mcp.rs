@@ -41,7 +41,8 @@ rewrites the text under a heading; each reads the file again and refuses when it
 commits the files named with a message, then pulls with a rebase and pushes, as the vault's workflow does.";
 
 /// What the server keeps between calls: the full-text index, which takes a
-/// second to build on a large vault, and the notes it was built from.
+/// second to build on a large vault, and the notes it was built from; and
+/// the model and vectors of search by meaning, once a call asks for them.
 struct Server {
     root: PathBuf,
     show_hidden: bool,
@@ -49,12 +50,14 @@ struct Server {
     search: Option<(SearchIndex, VaultIndex)>,
     /// The drill's state file, in place of Daftar's: for the tests.
     drill_state: Option<PathBuf>,
+    meaning: crate::meaning::Kept,
 }
 
 /// Serves until stdin ends.
 pub fn run(root: PathBuf, show_hidden: bool, read_only: bool) -> Result<(), String> {
     TaskStatuses::set_current(TaskStatuses::load(&root));
-    let mut server = Server { root, show_hidden, read_only, search: None, drill_state: None };
+    let meaning = crate::meaning::Kept::new(&root);
+    let mut server = Server { root, show_hidden, read_only, search: None, drill_state: None, meaning };
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -117,6 +120,16 @@ impl Server {
         let lines = match name {
             "find_notes" => crate::find(&index, &hidden, args.text("query")?, args.count("limit", 20)),
             "search" => self.search_notes(&index, &hidden, args.text("query")?, args.count("limit", 20)),
+            "semantic_search" => {
+                let query = args.text("query")?;
+                let meaning = self.meaning.get(root, &index)?;
+                meaning.search(&hidden, query, args.count("limit", 10)).iter().map(crate::meaning::line).collect()
+            }
+            "related_notes" => {
+                let path = crate::note_path(&index, args.text("note")?)?;
+                let meaning = self.meaning.get(root, &index)?;
+                meaning.related(&index, &hidden, &path, args.count("limit", 10)).iter().map(crate::meaning::line).collect()
+            }
             "read_note" => return read_note(root, &index, args.text("note")?, args.optional("heading")),
             "note_info" => note_info(&index, &hidden, args.text("note")?)?,
             "list_folder" => list_folder(&index, &hidden, args.optional("folder").unwrap_or_default())?,
@@ -983,6 +996,20 @@ fn tools(read_only: bool) -> Vec<Value> {
             false,
         ),
         tool(
+            "semantic_search",
+            "Search by meaning, for when the words in the notes are not known: each note's sections are embedded by a multilingual model run offline (Persian and English), and the notes whose sections are nearest the query come first, as `path:line`, the cosine, then the section's heading and text. Needs the model, downloaded once by `daftar-cli semantic-index --download-model`.",
+            json!({ "query": string("What the note is about, in a sentence"), "limit": integer("How many notes, 10 at first") }),
+            &["query"],
+            false,
+        ),
+        tool(
+            "related_notes",
+            "The notes nearest in meaning to a note that it does not link to yet, each with its nearest section: candidates for a link or a merge. Needs the model, as `semantic_search` does.",
+            json!({ "note": string(note), "limit": integer("How many notes, 10 at first") }),
+            &["note"],
+            false,
+        ),
+        tool(
             "find_notes",
             "Notes and files by name, ranked as the quick switcher ranks them: words in any order, aliases, `comp/acme` for a path.",
             json!({ "query": string("Part of a name or path"), "limit": integer("How many, 20 at first") }),
@@ -1272,7 +1299,15 @@ mod tests {
     }
 
     fn server(root: &Path, read_only: bool) -> Server {
-        Server { root: root.to_path_buf(), show_hidden: false, read_only, search: None, drill_state: Some(root.join(".drill-state.json")) }
+        let meaning = crate::meaning::Kept::with(crate::meaning::fake::load, root.join(".cache/semantic.sqlite"));
+        Server {
+            root: root.to_path_buf(),
+            show_hidden: false,
+            read_only,
+            search: None,
+            drill_state: Some(root.join(".drill-state.json")),
+            meaning,
+        }
     }
 
     #[test]
@@ -1344,6 +1379,36 @@ mod tests {
         assert_eq!(text, "Garden/\nSeeds.md");
         let (text, _) = call(&mut server, "tags", json!({ "tag": "#garden" }));
         assert_eq!(text, "Garden/Plants.md");
+    }
+
+    #[test]
+    fn search_by_meaning_finds_notes_and_their_neighbours() {
+        let root = vault();
+        fs::write(root.path().join("Broker.md"), "# Broker\n\nThe consumer lag of the queue.\n").unwrap();
+        fs::write(root.path().join("Garden/Herbs.md"), "Basil and mint, see [[Plants]].\n").unwrap();
+        let mut server = server(root.path(), true);
+        let (text, error) = call(&mut server, "semantic_search", json!({ "query": "صف پیام", "limit": 1 }));
+        assert!(!error && text.starts_with("Broker.md:3\t"), "{text}");
+        assert!(text.ends_with("Broker · The consumer lag of the queue."), "{text}");
+        // Herbs links to Plants, so Plants is never offered for it; a note
+        // written since the last call is.
+        let (text, _) = call(&mut server, "related_notes", json!({ "note": "Herbs" }));
+        assert!(text.contains("Seeds.md") && !text.contains("Plants.md"), "{text}");
+        fs::write(root.path().join("Mint.md"), "Mint and basil and tomato.\n").unwrap();
+        let (text, _) = call(&mut server, "related_notes", json!({ "note": "Herbs", "limit": 1 }));
+        assert!(text.starts_with("Mint.md:1\t"), "{text}");
+        assert!(call(&mut server, "related_notes", json!({ "note": "Nowhere" })).1);
+
+        // With no model, a call says how to get it.
+        let mut server = server_without_model(root.path());
+        let (text, error) = call(&mut server, "semantic_search", json!({ "query": "lag" }));
+        assert!(error && text.contains("--download-model"), "{text}");
+    }
+
+    fn server_without_model(root: &Path) -> Server {
+        let missing = || Err(daftar_core::semantic_model::missing());
+        let meaning = crate::meaning::Kept::with(missing, root.join(".cache/semantic.sqlite"));
+        Server { root: root.to_path_buf(), show_hidden: false, read_only: true, search: None, meaning }
     }
 
     #[test]

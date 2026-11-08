@@ -20,6 +20,7 @@ mod images;
 mod jobs;
 mod lint;
 mod mcp;
+mod meaning;
 mod memory;
 mod report;
 mod review;
@@ -67,11 +68,35 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
     },
-    /// The text of every note, with SQLite's full-text search.
+    /// The text of every note, with SQLite's full-text search; with
+    /// `--meaning`, by meaning too (a model run here, offline, Persian and
+    /// English alike: see `semantic-index`).
     Search {
         query: Vec<String>,
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
+        /// The words and the meaning together: the notes either search
+        /// finds, ranked by both (reciprocal rank fusion).
+        #[arg(long)]
+        meaning: bool,
+        /// By meaning alone: the notes whose sections are nearest the query.
+        #[arg(long, conflicts_with = "meaning")]
+        meaning_only: bool,
+    },
+    /// The notes nearest to a note in meaning, that it does not link to yet.
+    Related {
+        note: String,
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// Builds the index of search by meaning, or brings it up to the notes
+    /// that changed: every section of a note embedded by a model run here,
+    /// kept in ~/.cache/daftar/semantic/. The model is downloaded only with
+    /// `--download-model` (531 MB, once, into ~/.cache/daftar/models/).
+    SemanticIndex {
+        /// Downloads the model first when it is not there.
+        #[arg(long)]
+        download_model: bool,
     },
     /// Open tasks, the ones due first.
     Tasks {
@@ -544,7 +569,40 @@ fn run(cli: Cli) -> Result<(), String> {
                 out!("{path}");
             }
         }
-        Command::Search { query, limit } => {
+        Command::Search { query, limit, meaning, meaning_only } if meaning || meaning_only => {
+            let search = SearchIndex::new();
+            let index = Vault::index(&root, Some(&search));
+            let mut semantic = meaning::Meaning::open(&root)?;
+            semantic.update(&root, &index, true)?;
+            let terminal = std::io::stdout().is_terminal();
+            let query = query.join(" ");
+            let hits = if meaning_only {
+                semantic
+                    .search(&hidden, &query, limit)
+                    .into_iter()
+                    .map(|n| daftar_core::Hit { path: n.path.clone(), snippet: n.shown() })
+                    .collect()
+            } else {
+                semantic.hybrid(&search, &hidden, &query, limit)
+            };
+            for hit in hits {
+                out!("{}\t{}", hit.path, snippet(&hit.snippet, terminal));
+            }
+        }
+        Command::Related { note, limit } => {
+            let index = Vault::index(&root, None);
+            let path = note_path(&index, &note)?;
+            let mut semantic = meaning::Meaning::open(&root)?;
+            semantic.update(&root, &index, true)?;
+            for near in semantic.related(&index, &hidden, &path, limit) {
+                out!("{}", meaning::line(&near));
+            }
+        }
+        Command::SemanticIndex { download_model } => {
+            let index = Vault::index(&root, None);
+            meaning::build(&root, &index, download_model)?;
+        }
+        Command::Search { query, limit, .. } => {
             let search = SearchIndex::new();
             Vault::index(&root, Some(&search));
             let terminal = std::io::stdout().is_terminal();
