@@ -722,7 +722,7 @@ const shared = createRenderer();
 
 /** One line of markdown -- a task's text in a query result -- as inline HTML. */
 export function renderInline(text, { path = "", links = {} } = {}) {
-  return shared.renderInline(text, { path, links, lineOffset: 0 });
+  return shownImages(shared.renderInline(text, { path, links, lineOffset: 0 }));
 }
 
 /**
@@ -748,33 +748,45 @@ export function shownImages(html) {
   return remoteImages ? html : blockRemoteImages(html);
 }
 
-const IMG_TAG = /<img\b[^>]*>/gi;
+// A `>` inside a quoted attribute does not end the tag.
+const IMG_TAG = /<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+const ATTRIBUTE = /([^\s"'>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+const REMOTE = /^\s*(?:https?:)?\/\//i;
+
+/** The attributes of an `<img>` tag, read in order, so that `src=` in an alt text is not taken for the src. */
+function attributes(tag) {
+  const found = {};
+  for (const match of tag.slice(4).matchAll(ATTRIBUTE)) {
+    const name = match[1].toLowerCase();
+    if (!(name in found)) found[name] = match[2] ?? match[3] ?? match[4] ?? "";
+  }
+  return found;
+}
 
 /**
- * [html] with every `<img>` whose `src` is on the web replaced by a
- * `remote-image` button that keeps its address, alt text and size, so the
- * page asks no site for anything until the person clicks one. Pictures from
- * the vault and `data:` pictures stay.
+ * [html] with every `<img>` that would ask a site for a picture (its `src`,
+ * or any address of its `srcset`, on the web) replaced by a `remote-image`
+ * button that keeps its address, alt text and size, so the page asks no site
+ * for anything until the person clicks one. Pictures from the vault and
+ * `data:` pictures stay.
  */
 export function blockRemoteImages(html) {
   return html.replace(IMG_TAG, (tag) => {
-    const attribute = (name) => {
-      const found = tag.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"));
-      return found ? (found[1] ?? found[2] ?? found[3]) : null;
-    };
-    const src = attribute("src");
-    const address = src?.replace(/&amp;/g, "&");
-    if (!address || !/^https?:\/\//i.test(address)) return tag;
+    const attribute = attributes(tag);
+    const sources = (attribute.srcset ?? "").split(",").map((part) => part.trim().split(/\s+/)[0]).filter(Boolean);
+    const src = [attribute.src, ...sources].find((value) => value && REMOTE.test(value.replace(/&amp;/g, "&")));
+    if (!src) return tag;
+    const address = src.trim().replace(/&amp;/g, "&");
     let host = "";
     try {
-      host = new URL(address).host;
+      host = new URL(address, "https://x.invalid").host;
     } catch {
       host = address;
     }
-    const alt = attribute("alt") ?? "";
-    const size = ["width", "height"].map((name) => (attribute(name) ? ` data-${name}="${attribute(name).replace(/"/g, "&quot;")}"` : "")).join("");
+    const alt = attribute.alt ?? "";
+    const size = ["width", "height"].map((name) => (attribute[name] ? ` data-${name}="${attribute[name].replace(/"/g, "&quot;")}"` : "")).join("");
     return (
-      `<button type="button" class="remote-image" data-src="${src.replace(/"/g, "&quot;")}" data-alt="${alt.replace(/"/g, "&quot;")}"${size} title="Load this picture from ${escapeHtml(host)}">` +
+      `<button type="button" class="remote-image" data-src="${src.trim().replace(/"/g, "&quot;")}" data-alt="${alt.replace(/"/g, "&quot;")}"${size} title="Load this picture from ${escapeHtml(host)}">` +
       `<span class="remote-image-icon" aria-hidden="true">🖼</span><span class="remote-image-host">${escapeHtml(host)}</span>` +
       (alt ? `<span class="remote-image-alt" dir="auto">${alt}</span>` : "") +
       `</button>`

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { render, stripComments, frontMatterLines, parseWikilink, setRemoteImages, blockRemoteImages } from "../src/render.js";
+import { render, renderInline, stripComments, frontMatterLines, parseWikilink, setRemoteImages, blockRemoteImages } from "../src/render.js";
 
 const links = { Inbox: "Notes/Inbox.md", "logo.png": "uploads/logo.png", Other: "Other.md" };
 
@@ -220,6 +220,30 @@ test("a picture from the web is a placeholder until clicked when remote images a
     assert.match(html, /data-width="20"/);
     assert.match(html, /remote-image-host">x.org</);
     assert.match(render("[link](https://x.org)", { links }), /<a href="https:\/\/x.org"/);
+  } finally {
+    setRemoteImages(true);
+  }
+  assert.match(render("![a](https://x.org/a.png)", { links }), /<img src="https:\/\/x.org\/a.png"/);
+});
+
+test("no picture from the web gets past the placeholder: srcset, odd attributes, inline text", () => {
+  setRemoteImages(false);
+  try {
+    for (const tag of [
+      '<img src="vault:///a.png" srcset="https://x.org/a.png 2x">',
+      '<img/src="https://x.org/a.png">',
+      '<img src=" https://x.org/a.png">',
+      '<img alt="a>b" src="https://x.org/a.png">',
+      `<img alt="x src=vault:y" src='https://x.org/a.png'>`,
+      '<IMG SRC=//x.org/a.png>',
+    ]) {
+      const html = blockRemoteImages(tag);
+      assert.doesNotMatch(html, /<img/i, tag);
+      assert.match(html, /remote-image-host">x.org</, tag);
+    }
+    assert.equal(blockRemoteImages('<img src="vault:///a.png" srcset="vault:///b.png 2x">'), '<img src="vault:///a.png" srcset="vault:///b.png 2x">');
+    // A task in a query and a property with a link are drawn by renderInline.
+    assert.doesNotMatch(renderInline("Pay ![](https://x.org/p.png)", { links }), /<img/);
   } finally {
     setRemoteImages(true);
   }
