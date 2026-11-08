@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use daftar_core::properties::{PropertyEdit, PropertySheet, PropertyValue};
+use daftar_core::{Card, Drill, DrillState, RandomNote, Rating};
 
 use daftar_core::{
     Bookmarks, Clock, ConfigFile, Day, ExcludedFiles, ParsedTask, QueryTask, QuickCapture, SearchIndex, Sections, TaskLine, TaskStatuses,
@@ -44,12 +45,14 @@ struct Server {
     show_hidden: bool,
     read_only: bool,
     search: Option<(SearchIndex, VaultIndex)>,
+    /// The drill's state file, in place of Daftar's: for the tests.
+    drill_state: Option<PathBuf>,
 }
 
 /// Serves until stdin ends.
 pub fn run(root: PathBuf, show_hidden: bool, read_only: bool) -> Result<(), String> {
     TaskStatuses::set_current(TaskStatuses::load(&root));
-    let mut server = Server { root, show_hidden, read_only, search: None };
+    let mut server = Server { root, show_hidden, read_only, search: None, drill_state: None };
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -255,9 +258,50 @@ impl Server {
                 let (path, at, _) = task_at(root, &index, args)?;
                 vec![vault_commands::postpone(root, &path, at, args.optional("by").unwrap_or("day"), Day::today())?]
             }
+            "random_note" => {
+                let candidates = RandomNote::candidates(&index, args.optional("folder"), args.optional("tag"), |p| hidden.contains(p));
+                let path = RandomNote::pick(&candidates, RandomNote::number).ok_or("no note to pick")?;
+                return read_note(root, &index, &path, None);
+            }
+            "drill_due" => {
+                let deck = Drill::deck(root, &crate::drill::notes(&index, &args.list("notes"), |p| hidden.contains(p))?);
+                let state = DrillState::load(&self.drill_file());
+                let due = Drill::due(&deck, &state, Day::today(), args.count("new", Drill::NEW_CARDS), args.count("limit", 10));
+                due.iter()
+                    .map(|card| {
+                        let when = state.due(card).map_or_else(|| "new".to_string(), |d| d.to_string());
+                        let context = crate::drill::context(card);
+                        format!(
+                            "id: {}\nat: {}:{}\ndue: {when}\ncontext: {context}\nquestion: {}\n",
+                            card.id,
+                            card.path,
+                            card.line + 1,
+                            card.question
+                        )
+                    })
+                    .collect()
+            }
+            "drill_card" => {
+                let card = drill_card(root, &index, args.text("id")?)?;
+                vec![format!("{}\n{}:{}\n\n{}", card.id, card.path, card.line + 1, card.answer)]
+            }
+            "drill_rate" => {
+                let card = drill_card(root, &index, args.text("id")?)?;
+                let rating = args.text("rating")?;
+                let rating = Rating::parse(rating).ok_or_else(|| format!("{rating} is not a rating: again, hard, good or easy (1-4)"))?;
+                let file = self.drill_file();
+                let mut state = DrillState::load(&file);
+                let review = state.rate(&card.id, rating, Day::today());
+                state.save(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+                vec![format!("{}\tnext on {} (in {} days, ease {})", card.id, review.due, review.interval, review.ease)]
+            }
             _ => return Err(format!("no tool {name}")),
         };
         Ok(if lines.is_empty() { "(nothing)".to_string() } else { lines.join("\n") })
+    }
+
+    fn drill_file(&self) -> PathBuf {
+        self.drill_state.clone().unwrap_or_else(|| DrillState::file(&self.root))
     }
 
     /// The notes whose text matches [query], from an index kept between
@@ -285,7 +329,7 @@ impl Server {
 }
 
 /// The tools that write to the vault, which `--read-only` leaves out.
-const WRITES: [&str; 12] = [
+const WRITES: [&str; 13] = [
     "capture",
     "append_to_note",
     "create_note",
@@ -298,6 +342,7 @@ const WRITES: [&str; 12] = [
     "replace_section",
     "commit",
     "move_note",
+    "drill_rate",
 ];
 
 /// A priority's emoji from its name or its emoji; `None` for none or a word it does not know.
@@ -736,6 +781,16 @@ fn cancelled_symbol() -> String {
     statuses.all.iter().find(|s| s.kind == TaskType::Cancelled).map_or('-', |s| s.symbol).to_string()
 }
 
+/// The drill card named [id] (`path#Heading#Under it`), read from its note now.
+fn drill_card(root: &Path, index: &VaultIndex, id: &str) -> Result<Card, String> {
+    index
+        .notes
+        .keys()
+        .filter(|path| id.starts_with(&format!("{path}#")))
+        .find_map(|path| Drill::deck(root, std::slice::from_ref(path)).into_iter().find(|card| card.id == id))
+        .ok_or_else(|| format!("no card {id}; list them again with drill_due"))
+}
+
 fn failure(id: &Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
@@ -1024,6 +1079,40 @@ fn tools(read_only: bool) -> Vec<Value> {
             true,
         ),
     ];
+    all.extend([
+        tool(
+            "random_note",
+            "A note picked at random, as Obsidian's Open random note, with its text: from the whole vault, a folder or a tag.",
+            json!({ "folder": string("Only a note in this folder, as `Learning`"), "tag": string("Only a note with this tag or one under it") }),
+            &[],
+            false,
+        ),
+        tool(
+            "drill_due",
+            "Spaced-repetition cards due today from notes of questions (a heading is a card, its section the answer), the overdue first, then a few new ones: each card's id, `path:line`, due day (or new), context and question, without the answer. Quiz the person with the question, then read the answer with `drill_card` and rate their reply with `drill_rate`.",
+            json!({
+                "notes": { "type": "array", "items": { "type": "string" }, "description": "Notes or folders; `Learning/Interview-Preparation` when none" },
+                "limit": integer("How many cards, 10 at first"),
+                "new": integer("New cards at most, 10 at first"),
+            }),
+            &[],
+            false,
+        ),
+        tool(
+            "drill_card",
+            "The answer of a drill card: its heading's section as the note has it now.",
+            json!({ "id": string("The card's id, as `drill_due` gave it") }),
+            &["id"],
+            false,
+        ),
+        tool(
+            "drill_rate",
+            "Rates how well the person answered a drill card (again: forgotten, hard, good, easy) and schedules it by SM-2; the note is not written, only Daftar's drill state. Answers when it is due next.",
+            json!({ "id": string("The card's id, as `drill_due` gave it"), "rating": string("again, hard, good or easy (or 1-4)") }),
+            &["id", "rating"],
+            true,
+        ),
+    ]);
     if read_only {
         all.retain(|tool| tool["annotations"]["readOnlyHint"].as_bool().is_none_or(|read| read));
     }
@@ -1056,7 +1145,7 @@ mod tests {
     }
 
     fn server(root: &Path, read_only: bool) -> Server {
-        Server { root: root.to_path_buf(), show_hidden: false, read_only, search: None }
+        Server { root: root.to_path_buf(), show_hidden: false, read_only, search: None, drill_state: Some(root.join(".drill-state.json")) }
     }
 
     #[test]
@@ -1265,5 +1354,44 @@ mod tests {
         assert!(plants.contains("[[Seed Bank]]") || plants.contains("[[Garden/Seed Bank]]"), "{plants}");
         assert!(call(&mut server, "move_note", json!({ "note": "Plants", "to": "Garden/Seed Bank.md" })).1);
         assert!(call(&mut server, "move_note", json!({ "note": "Plants", "to": "../Out" })).1);
+    }
+
+    #[test]
+    fn a_drill_asks_without_the_answer_shows_it_and_rates_it() {
+        let root = vault();
+        let mut server = server(root.path(), false);
+        let (said, error) = call(&mut server, "drill_due", json!({ "notes": ["Garden"], "limit": 2 }));
+        assert!(!error, "{said}");
+        assert!(
+            said.starts_with("id: Garden/Plants.md#Plants\nat: Garden/Plants.md:4\ndue: new\ncontext: Plants\nquestion: Plants"),
+            "{said}"
+        );
+        assert!(said.contains("id: Garden/Plants.md#Plants#Basil\n"), "{said}");
+        assert!(!said.contains("Needs sun"), "{said}");
+        let (said, error) = call(&mut server, "drill_card", json!({ "id": "Garden/Plants.md#Plants#Basil" }));
+        assert!(!error, "{said}");
+        assert!(said.ends_with("\n\nNeeds sun."), "{said}");
+        let (said, error) = call(&mut server, "drill_rate", json!({ "id": "Garden/Plants.md#Plants#Basil", "rating": "good" }));
+        assert!(!error, "{said}");
+        assert!(said.contains(&format!("next on {}", Day::today().adding_days(1))), "{said}");
+        let (said, _) = call(&mut server, "drill_due", json!({ "notes": ["Garden"] }));
+        assert!(!said.contains("#Basil"), "{said}");
+        assert!(call(&mut server, "drill_rate", json!({ "id": "Garden/Plants.md#Plants#Basil", "rating": "meh" })).1);
+        assert!(call(&mut server, "drill_card", json!({ "id": "Garden/Plants.md#Rose" })).1);
+        assert!(fs::read_to_string(root.path().join("Garden/Plants.md")).unwrap().contains("Needs sun."));
+        let read_only: Vec<Value> = tools(true);
+        assert!(read_only.iter().all(|t| t["name"] != "drill_rate"));
+    }
+
+    #[test]
+    fn a_random_note_comes_with_its_text() {
+        let root = vault();
+        let mut server = server(root.path(), false);
+        let (said, error) = call(&mut server, "random_note", json!({ "tag": "garden" }));
+        assert!(!error, "{said}");
+        assert!(said.starts_with("Garden/Plants.md\n\n---\ntags: [garden]"), "{said}");
+        let (said, _) = call(&mut server, "random_note", json!({}));
+        assert!(said.starts_with("Garden/Plants.md\n") || said.starts_with("Seeds.md\n"), "{said}");
+        assert!(call(&mut server, "random_note", json!({ "folder": "Nowhere" })).1);
     }
 }
