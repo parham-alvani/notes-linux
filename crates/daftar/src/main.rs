@@ -157,6 +157,16 @@ fn main() -> glib::ExitCode {
         }
     });
     app.add_action(&today);
+    // A meeting notification's prep note, in the window in front.
+    let open_note = gtk::gio::SimpleAction::new("open-note", Some(glib::VariantTy::STRING));
+    let handle = app.clone();
+    open_note.connect_activate(move |_, target| {
+        if let Some(window) = handle.active_window() {
+            window.present();
+            let _ = WidgetExt::activate_action(&window, "win.open-note", target);
+        }
+    });
+    app.add_action(&open_note);
     let new_window = gtk::gio::SimpleAction::new("new-window", None);
     let handle = app.clone();
     new_window.connect_activate(move |_, _| window::Window::present(&handle, None));

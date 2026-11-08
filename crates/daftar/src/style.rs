@@ -102,6 +102,7 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-badge { border-radius: 999px; padding: 0 6px; font-weight: bold; font-size: smaller; color: white; background-color: @daftar_accent; }\n\
          .daftar-join { background-color: @daftar_blue; color: @daftar_background; font-weight: bold; padding: 2px 12px; min-height: 0; }\n\
          .daftar-join-now { background-color: @daftar_accent; color: @daftar_background; font-weight: bold; padding: 2px 12px; min-height: 0; }\n\
+         .daftar-prep { background-color: @daftar_purple; color: @daftar_background; font-weight: bold; padding: 2px 12px; min-height: 0; }\n\
          .daftar-column { border-radius: 16px; padding: 8px; border: 2px solid transparent; }\n\
          .daftar-column .column-head { border-radius: 12px; padding: 8px 12px; }\n\
          .daftar-column .column-dot { border-radius: 999px; min-width: 9px; min-height: 9px; }\n\

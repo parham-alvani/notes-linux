@@ -11,7 +11,7 @@ use chrono::{DateTime, Local, Utc};
 use adw::prelude::*;
 
 use daftar_core::text::direction;
-use daftar_core::{CalendarWeek, Day, Meeting, Vault, VaultTask};
+use daftar_core::{CalendarWeek, Day, JobKeys, JobSearch, Meeting, Vault, VaultTask};
 
 use crate::store::VaultStore;
 
@@ -138,8 +138,20 @@ impl Today {
         match day {
             Some(day) if day.meetings.is_empty() => meetings_card.append(&muted("No meetings today.")),
             Some(day) => {
+                let jobs = JobSearch::new(&store.index(), &JobKeys::default(), |_| true);
                 for meeting in &day.meetings {
-                    meetings_card.append(&meeting_row(meeting, now));
+                    let prep = prep_for(&jobs, meeting).map(|(company, path)| {
+                        let button = gtk::Button::builder()
+                            .label("Prep")
+                            .valign(gtk::Align::Center)
+                            .css_classes(["pill", "daftar-prep"])
+                            .tooltip_text(format!("{company}: {path}"))
+                            .build();
+                        let this = self.clone();
+                        button.connect_clicked(move |_| (this.open)(&path, 0));
+                        button
+                    });
+                    meetings_card.append(&meeting_row(meeting, now, prep.as_ref()));
                 }
             }
             None => meetings_card
@@ -459,9 +471,25 @@ pub fn time_range(meeting: &Meeting) -> String {
     }
 }
 
+/// The company a meeting is with (`JobSearch::for_meeting`, in this
+/// computer's time) and the note to prepare with: its `Interview
+/// Preparation.md`, else its own note.
+pub fn prep_for(jobs: &JobSearch, meeting: &Meeting) -> Option<(String, String)> {
+    let local = |at: DateTime<Utc>| at.with_timezone(&Local).naive_local();
+    let (start, end) = if let Some(start) = meeting.start {
+        (local(start), meeting.end.map_or_else(|| local(start), local))
+    } else {
+        // An all-day event: the whole day.
+        let day = meeting.day.date().and_hms_opt(0, 0, 0)?;
+        (day, day + chrono::Duration::days(1))
+    };
+    jobs.for_meeting(start, end, &meeting.title).map(|a| (a.company.clone(), a.prep_or_note().to_string()))
+}
+
 /// A meeting: a bar in its state, the time, the title with `now` or `maybe`,
-/// an overlap warning, and Join while it is not over.
-fn meeting_row(meeting: &Meeting, now: DateTime<Utc>) -> gtk::Box {
+/// an overlap warning, the company's Prep when it is about one, and Join
+/// while it is not over.
+fn meeting_row(meeting: &Meeting, now: DateTime<Utc>, prep: Option<&gtk::Button>) -> gtk::Box {
     let state = when(meeting, now);
     let tint = match state {
         When::Now => "t-accent",
@@ -505,6 +533,9 @@ fn meeting_row(meeting: &Meeting, now: DateTime<Utc>) -> gtk::Box {
         );
     }
     row.append(&lines);
+    if let Some(prep) = prep {
+        row.append(prep);
+    }
     if let Some(join) = meeting.join.clone().filter(|url| joinable(url))
         && state != When::Past
     {
