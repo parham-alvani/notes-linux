@@ -26,6 +26,7 @@ pub mod home;
 pub mod html_markdown;
 pub mod iconic;
 pub mod jalali;
+pub mod job_search;
 pub mod line_diff;
 pub mod link_resolver;
 pub mod markdown_format;
@@ -88,6 +89,7 @@ pub use git::{Conflicted, Diagnosis, Git, GitFailure, GitStatus, Resolution, Rev
 pub use home::{Beautitab, Quote};
 pub use html_markdown::HtmlMarkdown;
 pub use iconic::{Icon, Iconic};
+pub use job_search::{Application, ChannelCount, JobKeys, JobSearch};
 pub use line_diff::{Kind as DiffKind, Line as DiffLine, LineDiff};
 pub use link_resolver::LinkResolver;
 pub use markdown_format::{FormatConfig, MarkdownFormat, ProseWrap};
