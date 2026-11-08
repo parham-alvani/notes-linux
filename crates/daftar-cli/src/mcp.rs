@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use daftar_core::properties::{PropertyEdit, PropertySheet, PropertyValue};
-use daftar_core::{Card, Drill, DrillState, RandomNote, Rating};
+use daftar_core::{Card, Drill, DrillState, JobKeys, JobSearch, RandomNote, Rating};
 
 use daftar_core::{
     Bookmarks, Clock, ConfigFile, Day, ExcludedFiles, ParsedTask, QueryTask, QuickCapture, SearchIndex, Sections, TaskLine, TaskStatuses,
@@ -27,7 +27,9 @@ const PROTOCOL: &str = "2025-06-18";
 const KNOWN: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 
 const INSTRUCTIONS: &str = "Daftar's tools on the person's notes: an Obsidian vault in a Git repository, \
-which holds their work, companies, tasks, plans, journal and life. Read before you answer from memory: \
+which holds their work, companies, tasks, plans, journal and life. Start a session with `vault_brief`: \
+what is overdue, due and in progress, the job search's booked events and their prep notes, the drill \
+cards due, the audit and yesterday's commits, in one call. Read before you answer from memory: \
 `search` and `find_notes` find notes, `read_note` reads one (or one section), `note_info` gives its \
 properties, outline, links and backlinks, `tasks` and `query_tasks` list tasks (Tasks plugin syntax). \
 Before writing, read the vault's rules: `read_note` on `CLAUDE.md` (and the CLAUDE.md of the folder you \
@@ -127,6 +129,7 @@ impl Server {
                 .map(|s| format!("[{}]\t{}\t{}\tnext [{}]", s.symbol, s.name, s.kind.type_name(), s.next))
                 .collect(),
             "recent_changes" => recent_changes(root, args.count("days", 7))?,
+            "vault_brief" => self.vault_brief(&index, &hidden, args.flag("audit"))?,
             "note_history" => {
                 let path = crate::note_path(&index, args.text("note")?)?;
                 let git = crate::repository(root)?;
@@ -301,6 +304,113 @@ impl Server {
             _ => return Err(format!("no tool {name}")),
         };
         Ok(if lines.is_empty() { "(nothing)".to_string() } else { lines.join("\n") })
+    }
+
+    /// [vault_brief]: what an agent reads first, each part capped so it
+    /// stays one screen.
+    fn vault_brief(&self, index: &VaultIndex, hidden: &ExcludedFiles, audit: bool) -> Result<Vec<String>, String> {
+        let root = &self.root;
+        let now = chrono::Local::now().naive_local();
+        let today = Day::today();
+        let week = today.adding_days(7).to_string();
+        let today_text = today.to_string();
+        let mut lines = vec![format!("now: {}", now.format("%Y-%m-%d %A %H:%M"))];
+
+        let open: Vec<VaultTask> = hidden.tasks(index).into_iter().filter(|t| !TaskLine::is_closed(t.task.status)).collect();
+        let when = |t: &VaultTask| t.task.due.clone().or_else(|| t.task.scheduled.clone());
+        let mut overdue: Vec<&VaultTask> = open.iter().filter(|t| t.task.due.as_ref().is_some_and(|d| *d < today_text)).collect();
+        overdue.sort_by_key(|t| when(t));
+        let due_today: Vec<&VaultTask> = open
+            .iter()
+            .filter(|t| {
+                t.task.due.as_deref() == Some(today_text.as_str())
+                    || (t.task.due.is_none() && t.task.scheduled.as_deref() == Some(today_text.as_str()))
+            })
+            .collect();
+        let mut slipped: Vec<&VaultTask> =
+            open.iter().filter(|t| t.task.due.is_none() && t.task.scheduled.as_ref().is_some_and(|d| *d < today_text)).collect();
+        slipped.sort_by_key(|t| t.task.scheduled.clone());
+        let doing: Vec<&VaultTask> = open.iter().filter(|t| t.task.status == '/').collect();
+        let ahead = open.iter().filter(|t| when(t).is_some_and(|d| d > today_text && d <= week)).count();
+        for (name, list, shown) in [
+            ("overdue (📅 passed)", &overdue, 15),
+            ("today (📅 or ⏳)", &due_today, 15),
+            ("in progress", &doing, 15),
+            ("scheduled on a day that passed (⏳, no 📅), oldest first", &slipped, 5),
+        ] {
+            lines.push(format!("\n## Tasks {name}: {}", list.len()));
+            lines.extend(list.iter().take(shown).map(|t| crate::task_line(t)));
+            if list.len() > shown {
+                lines.push(format!("… and {} more", list.len() - shown));
+            }
+        }
+        lines.push(format!("\n{ahead} more open tasks fall in the next 7 days."));
+
+        let keys = JobKeys::default();
+        let search = JobSearch::new(index, &keys, |path| !hidden.contains(path));
+        let events = search.upcoming(now, Some(now + chrono::Duration::days(7)));
+        lines.push(format!("\n## Job search: booked in the next 7 days ({})", events.len()));
+        for event in events {
+            let when = event
+                .next
+                .map(|n| n.format(if event.next_has_time { "%a %Y-%m-%d %H:%M" } else { "%a %Y-%m-%d" }).to_string())
+                .unwrap_or_default();
+            lines.push(format!(
+                "{when}\t{}\t{}\t{}\tprep: {}",
+                event.company,
+                event.stage,
+                event.next_step.as_deref().unwrap_or(""),
+                event.prep.as_deref().unwrap_or("none")
+            ));
+        }
+
+        if let Ok(notes) = crate::drill::notes(index, &[], |p| hidden.contains(p)) {
+            let deck = Drill::deck(root, &notes);
+            let state = DrillState::load(&self.drill_file());
+            let due = Drill::due(&deck, &state, today, 0, usize::MAX).len();
+            let fresh = deck.iter().filter(|c| state.due(c).is_none()).count();
+            lines.push(format!("\n## Drill\n{due} cards due, {fresh} never asked, of {} (drill_due asks them)", deck.len()));
+        }
+
+        let vault = check::VaultOptions::read(root, audit.then_some("audit"))?;
+        let options = check::Options {
+            strict: false,
+            no_h1: vault.no_h1,
+            callouts: vault.callouts,
+            urls: false,
+            unreachable: false,
+            github_token: None,
+            skip_urls: Vec::new(),
+            archive: false,
+            figures: false,
+            github: false,
+            fix: false,
+            dry_run: false,
+            memory: Some(crate::memory::Rules {
+                event_properties: vault.event_properties,
+                prep_notes: vault.prep_notes,
+                active: vault.active.iter().filter_map(|a| crate::memory::Rules::active_pair(a)).collect(),
+                quiet_days: vault.quiet_days,
+            }),
+        };
+        let mut found = Vec::new();
+        let outcome = check::run(root, |path| hidden.contains(path), &options, |line| found.push(line));
+        let wanted: Vec<String> = found.into_iter().filter(|l| l.contains("\terror\t") || l.contains("\tmemory-")).collect();
+        lines.push(format!("\n## Audit: {} errors, {} warnings in {} notes", outcome.errors, outcome.warnings, outcome.notes));
+        lines.extend(wanted.iter().take(20).cloned());
+        if wanted.len() > 20 {
+            lines.push(format!("… and {} more (check_vault lists them)", wanted.len() - 20));
+        }
+
+        lines.push("\n## Commits since yesterday".to_string());
+        match crate::repository(root).and_then(|git| {
+            git.run(&["log", "--since=1.day", "--format=%h\t%ad\t%s", "--date=format:%Y-%m-%d %H:%M"]).map_err(|e| e.to_string())
+        }) {
+            Ok(log) if log.trim().is_empty() => lines.push("none".to_string()),
+            Ok(log) => lines.extend(log.lines().take(15).map(str::to_string)),
+            Err(error) => lines.push(format!("(no git: {error})")),
+        }
+        Ok(lines)
     }
 
     fn drill_file(&self) -> PathBuf {
@@ -928,6 +1038,13 @@ fn tools(read_only: bool) -> Vec<Value> {
         ),
         tool("task_statuses", "The vault's task statuses: symbol, name, type and the next status.", json!({}), &[], false),
         tool(
+            "vault_brief",
+            "Where things stand, in one call, to read first in a session: the overdue tasks, today's and the ones in progress, how many fall in the week ahead, the job search's booked events of the week with their prep notes, the drill cards due, the vault's audit (errors and memory warnings, with the vault's `.daftar.toml` options), and yesterday's commits.",
+            json!({ "audit": boolean("Use the vault's `[audit]` options too, as `just audit` (the quiet processes)") }),
+            &[],
+            false,
+        ),
+        tool(
             "recent_changes",
             "The vault's git commits of the last days, newest first, each with the files it changed (A added, M changed, D deleted, R renamed).",
             json!({ "days": integer("How many days back, 7 at first") }),
@@ -1403,6 +1520,24 @@ mod tests {
         let (said, _) = call(&mut server, "random_note", json!({}));
         assert!(said.starts_with("Garden/Plants.md\n") || said.starts_with("Seeds.md\n"), "{said}");
         assert!(call(&mut server, "random_note", json!({ "folder": "Nowhere" })).1);
+    }
+
+    #[test]
+    fn the_brief_has_the_tasks_the_job_search_the_drill_and_the_audit() {
+        let root = vault();
+        fs::write(root.path().join("Due.md"), "- [ ] Late 📅 2000-01-01\n- [ ] Slipped ⏳ 2000-01-02\n- [/] Going\n").unwrap();
+        fs::create_dir_all(root.path().join("Companies/Acme")).unwrap();
+        let soon = (chrono::Local::now() + chrono::Duration::days(2)).format("%Y-%m-%dT10:00");
+        fs::write(root.path().join("Companies/Acme/Acme.md"), format!("---\njob_stage: interviewing\njob_next: {soon}\n---\n")).unwrap();
+        let mut server = server(root.path(), true);
+        let (text, error) = call(&mut server, "vault_brief", json!({}));
+        assert!(!error, "{text}");
+        let section = |name: &str| text.split("\n## ").find(|s| s.starts_with(name)).unwrap_or_default().to_string();
+        assert!(section("Tasks overdue").contains("Due.md:1\t[ ] Late"), "{text}");
+        assert!(section("Tasks in progress").contains("Due.md:3\t[/] Going"), "{text}");
+        assert!(section("Tasks scheduled").contains("Due.md:2\t[ ] Slipped"), "{text}");
+        assert!(text.contains("booked in the next 7 days (1)") && text.contains("\tAcme\tinterviewing\t"), "{text}");
+        assert!(text.contains("## Audit: 0 errors"), "{text}");
     }
 
     #[test]
