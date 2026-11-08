@@ -22,9 +22,16 @@ pulldown-cmark = { version = "0.13.6", default-features = false }
 # `web`: fetching a page to clip, for the command line and the app.
 ureq = { version = "3.5.1", optional = true }
 markdown = "1.0.0"
+# `semantic`: search by meaning, with a static embedding model (Model2Vec)
+# run in the process. Pure Rust: the tokenizer's regular expressions are
+# fancy-regex, not Oniguruma, and its suffix arrays are not the C++ ones.
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"], optional = true }
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+sha2 = { version = "0.10.9", optional = true }
 
 [features]
 web = ["dep:ureq"]
+semantic = ["web", "dep:tokenizers", "dep:serde", "dep:sha2"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

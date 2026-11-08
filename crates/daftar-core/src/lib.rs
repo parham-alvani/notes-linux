@@ -48,6 +48,9 @@ pub mod random_note;
 pub mod reading_places;
 pub mod search;
 pub mod sections;
+pub mod semantic;
+#[cfg(feature = "semantic")]
+pub mod semantic_model;
 pub mod string_width;
 pub mod tag_rename;
 pub mod tag_tree;
@@ -109,6 +112,7 @@ pub use random_note::RandomNote;
 pub use reading_places::ReadingPlaces;
 pub use search::{Hit, SearchIndex};
 pub use sections::{Moved, Sections};
+pub use semantic::{Chunk, Embedder, Nearby, SemanticIndex};
 pub use tag_rename::TagRename;
 pub use tag_tree::TagNode;
 pub use task_board::{Column, Drop as BoardDrop, Grouping, Postpone, TaskBoard};
