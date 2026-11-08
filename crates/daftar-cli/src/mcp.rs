@@ -144,6 +144,9 @@ impl Server {
                 let text = fs::read_to_string(root.join(&path)).unwrap_or_default();
                 return Ok(if text.is_empty() { format!("{path}\n\n(not written yet)") } else { format!("{path}\n\n{text}") });
             }
+            "job_pipeline" => {
+                crate::jobs::pipeline(root, &index, |path| !hidden.contains(path), args.0.get("days").and_then(Value::as_i64))
+            }
             "doctor" => {
                 let found = crate::repository(root)?.doctor(1_048_576).map_err(|e| e.to_string())?;
                 found.iter().map(|d| format!("{}\t{}\t{}", d.level, d.code, d.message)).collect()
@@ -1072,6 +1075,13 @@ fn tools(read_only: bool) -> Vec<Value> {
             false,
         ),
         tool(
+            "job_pipeline",
+            "The job search in one call: every note with `job_stage` is an application. Each stage with its count; each channel (`job_channel` up to ` (`) with its applications, how many got past applied and the rate; and the booked events ahead (`job_next`), soonest first, with the company, `job_next_step` and the path of its `Interview Preparation.md`.",
+            json!({ "days": integer("Only the events within this many days; all ahead at first") }),
+            &[],
+            false,
+        ),
+        tool(
             "postpone_task",
             "Moves a task's due date (else scheduled, else start) on, as the Tasks plugin's Postpone does.",
             task(json!({ "by": string("day, 2days, 3days, week, 2weeks or month; day at first") })),
@@ -1393,5 +1403,31 @@ mod tests {
         let (said, _) = call(&mut server, "random_note", json!({}));
         assert!(said.starts_with("Garden/Plants.md\n") || said.starts_with("Seeds.md\n"), "{said}");
         assert!(call(&mut server, "random_note", json!({ "folder": "Nowhere" })).1);
+    }
+
+    #[test]
+    fn the_job_pipeline_has_stages_channels_and_prep_notes() {
+        let root = vault();
+        fs::create_dir_all(root.path().join("Companies/Acme")).unwrap();
+        fs::write(
+            root.path().join("Companies/Acme/Acme.md"),
+            "---\njob_stage: interviewing\njob_next: 2999-01-04T10:00\njob_next_step: Final round\njob_channel: \"Ashby (acme)\"\n---\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("Companies/Acme/Interview Preparation.md"), "# Prep\n").unwrap();
+        fs::write(root.path().join("Seeds.md"), "---\njob_stage: applied\n---\n").unwrap();
+        let mut server = server(root.path(), true);
+        let (text, error) = call(&mut server, "job_pipeline", json!({}));
+        assert!(!error, "{text}");
+        assert!(text.contains("applied\t1\ninterviewing\t1"), "{text}");
+        assert!(text.contains("Ashby\t1\t1\t100%") && text.contains("unknown\t1\t0\t0%"), "{text}");
+        assert!(
+            text.contains(
+                "Companies/Acme/Acme.md:3\t2999-01-04 10:00\tAcme\tinterviewing\tFinal round\tCompanies/Acme/Interview Preparation.md"
+            ),
+            "{text}"
+        );
+        let (text, _) = call(&mut server, "job_pipeline", json!({ "days": 3 }));
+        assert!(text.contains("(none booked)"), "{text}");
     }
 }

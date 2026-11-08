@@ -6,7 +6,7 @@ use std::path::Path;
 
 use chrono::{Duration, NaiveDateTime};
 
-use daftar_core::{Application, JobKeys, JobSearch};
+use daftar_core::{Application, JobKeys, JobSearch, VaultIndex};
 
 /// `stage\tcount`, a line each.
 pub fn stages(search: &JobSearch) -> Vec<String> {
@@ -24,6 +24,26 @@ pub fn channels(search: &JobSearch) -> Vec<String> {
 pub fn upcoming(root: &Path, search: &JobSearch, keys: &JobKeys, now: NaiveDateTime, days: Option<i64>) -> Vec<String> {
     let until = days.map(|days| (now.date() + Duration::days(days.max(0) + 1)).and_hms_opt(0, 0, 0).unwrap_or(now));
     search.upcoming(now, until).into_iter().map(|a| event(root, a, keys)).collect()
+}
+
+/// The MCP's `job_pipeline`: the stages, the channels and the events ahead,
+/// each under its heading, in one answer.
+pub fn pipeline(root: &Path, index: &VaultIndex, keep: impl Fn(&str) -> bool, days: Option<i64>) -> Vec<String> {
+    let keys = JobKeys::default();
+    let search = JobSearch::new(index, &keys, keep);
+    let mut lines = vec!["stages (stage, applications):".to_string()];
+    lines.extend(stages(&search));
+    lines.push(String::new());
+    lines.push("channels (channel, applications, past applied, rate):".into());
+    lines.extend(channels(&search));
+    lines.push(String::new());
+    lines.push("upcoming (note:line, when, company, stage, next step, prep note):".into());
+    let events = upcoming(root, &search, &keys, chrono::Local::now().naive_local(), days);
+    if events.is_empty() {
+        lines.push("(none booked)".into());
+    }
+    lines.extend(events);
+    lines
 }
 
 fn event(root: &Path, application: &Application, keys: &JobKeys) -> String {
