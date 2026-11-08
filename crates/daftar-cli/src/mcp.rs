@@ -1408,7 +1408,14 @@ mod tests {
     fn server_without_model(root: &Path) -> Server {
         let missing = || Err(daftar_core::semantic_model::missing());
         let meaning = crate::meaning::Kept::with(missing, root.join(".cache/semantic.sqlite"));
-        Server { root: root.to_path_buf(), show_hidden: false, read_only: true, search: None, meaning }
+        Server {
+            root: root.to_path_buf(),
+            show_hidden: false,
+            read_only: true,
+            search: None,
+            drill_state: Some(root.join(".drill-state.json")),
+            meaning,
+        }
     }
 
     #[test]
