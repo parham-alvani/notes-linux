@@ -12,6 +12,7 @@ macro_rules! out {
 
 mod check;
 mod clip;
+mod drill;
 mod export;
 mod figures;
 mod fmt;
@@ -33,8 +34,9 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use daftar_core::{
-    CalendarEvents, Candidate, Clock, ConfigFile, Day, ExcludedFiles, Git, Place, QueryTask, QuickCapture, QuickSwitcher, ReplaceOptions,
-    SearchIndex, Sections, Side, SyncFailure, TaskLine, TaskStatuses, TaskType, TasksQuery, Vault, VaultEdits, VaultIndex, VaultTask,
+    CalendarEvents, Candidate, Clock, ConfigFile, Day, Drill, DrillState, ExcludedFiles, Git, Place, QueryTask, QuickCapture,
+    QuickSwitcher, RandomNote, ReplaceOptions, SearchIndex, Sections, Side, SyncFailure, TaskLine, TaskStatuses, TaskType, TasksQuery,
+    Vault, VaultEdits, VaultIndex, VaultTask,
 };
 
 #[derive(Parser)]
@@ -164,6 +166,34 @@ enum Command {
     Broken,
     /// Every tag, with how many notes have it.
     Tags,
+    /// Spaced-repetition drills from notes of questions: a card is a heading
+    /// with its section as the answer (see `daftar_core::drill`), scheduled
+    /// by SM-2 in Daftar's state folder; no note is written. In a terminal
+    /// it asks each card due: Enter shows the answer, 1-4 rates it (Again,
+    /// Hard, Good, Easy), q stops. Else it lists them, as --list.
+    Drill {
+        /// Notes or folders of the vault; `Learning/Interview-Preparation` when none.
+        targets: Vec<String>,
+        /// New cards at most.
+        #[arg(long, default_value_t = 10)]
+        new: usize,
+        /// Cards at most, due and new.
+        #[arg(short = 'n', long, default_value_t = 100)]
+        limit: usize,
+        /// Prints the cards due, a line each (`path:line`, a tab, the day it
+        /// was due or `new`, a tab, the heading), and asks nothing.
+        #[arg(long)]
+        list: bool,
+    },
+    /// The path of a note picked at random, as Obsidian's "Open random note".
+    Random {
+        /// Only a note in this folder of the vault.
+        #[arg(long)]
+        folder: Option<String>,
+        /// Only a note with this tag, or one under it.
+        #[arg(long)]
+        tag: Option<String>,
+    },
     /// Commits every change, pulls with a rebase and pushes, as obsidian-git
     /// and the Mac app do. Uses your git config, credentials and SSH agent.
     /// A pull that stops on a conflict keeps its rebase open and lists the
@@ -668,6 +698,35 @@ fn run(cli: Cli) -> Result<(), String> {
             for (tag, count) in tags {
                 out!("{count}\t#{tag}");
             }
+        }
+        Command::Drill { targets, new, limit, list } => {
+            let index = Vault::index(&root, None);
+            let deck = Drill::deck(&root, &drill::notes(&index, &targets, |p| hidden.contains(p))?);
+            let file = DrillState::file(&root);
+            let mut state = DrillState::load(&file);
+            let today = Day::today();
+            let due = Drill::due(&deck, &state, today, new, limit);
+            let asking = !list && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+            if !asking {
+                if !list {
+                    eprintln!("daftar-cli: not a terminal, so the cards due are listed; drill in a terminal to be asked");
+                }
+                for card in &due {
+                    out!("{}", drill::line(card, &state));
+                }
+                return Ok(());
+            }
+            if due.is_empty() {
+                eprintln!("daftar-cli: nothing due of {} cards", deck.len());
+                return Ok(());
+            }
+            let outcome = drill::session(&due, &mut state, &file, today, &mut std::io::stdin().lock(), &mut std::io::stdout())?;
+            eprintln!("\ndaftar-cli: {} rated, {} forgotten, {} left", outcome.rated, outcome.again, outcome.left);
+        }
+        Command::Random { folder, tag } => {
+            let index = Vault::index(&root, None);
+            let candidates = RandomNote::candidates(&index, folder.as_deref(), tag.as_deref(), |p| hidden.contains(p));
+            out!("{}", RandomNote::pick(&candidates, RandomNote::number).ok_or("no note to pick")?);
         }
         Command::Sync { message: _, abort: true } => {
             let git = repository(&root)?;
