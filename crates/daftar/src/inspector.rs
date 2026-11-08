@@ -4,7 +4,9 @@
 //! and opens, a right click sorts the headings under one and a heading
 //! dropped on another of its level takes its place, the notes that link to it, the unlinked
 //! mentions -- where other notes write its name or an alias without a link,
-//! each with a button that makes it a link -- the links it makes (those to
+//! each with a button that makes it a link -- the notes nearest in meaning
+//! that it does not link to (`related.rs`, once the model is downloaded),
+//! the links it makes (those to
 //! no note yet in red), the places it names and its tags.
 
 use std::cell::{Cell, RefCell};
@@ -24,6 +26,8 @@ use crate::store::VaultStore;
 /// does not fill the list; and no more than this in all.
 const PER_NOTE: usize = 5;
 const MOST: usize = 300;
+/// How many related notes are shown.
+const RELATED: usize = 8;
 
 type Open = dyn Fn(&str, usize);
 type Notice = dyn Fn(&str);
@@ -164,6 +168,9 @@ impl Inspector {
         mentions.append(&mentions_title);
         let waiting = empty("Looking…");
         mentions.append(&waiting);
+        if crate::related::available() {
+            self.related(store, path, generation);
+        }
         self.outgoing(store, path, &note);
         self.places_and_tags(store, path, &note);
         let (names, candidates) = candidates(store, path);
@@ -185,6 +192,50 @@ impl Inspector {
                 list.append(&this.row(&source, mention.line, &mention.excerpt, Some((&store, &path, mention.clone()))));
             }
             mentions.append(&list);
+        });
+    }
+
+    /// The notes nearest in meaning that the note does not link to, each
+    /// with its nearest section, found away from the window.
+    fn related(self: &Rc<Self>, store: &Rc<VaultStore>, path: &str, generation: u64) {
+        let section = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
+        self.content.append(&section);
+        let head = title("Related", 0);
+        section.append(&head);
+        let waiting = empty("Looking…");
+        section.append(&waiting);
+        let (notes, links) = {
+            let index = store.index();
+            let links: std::collections::HashSet<String> = index.resolved_links(path).into_values().collect();
+            (daftar_core::SemanticIndex::notes_of(&index), links)
+        };
+        let (root, target) = (store.root.clone(), path.to_string());
+        let (this, store) = (self.clone(), store.clone());
+        glib::spawn_future_local(async move {
+            let found = gio::spawn_blocking(move || crate::related::nearest(&root, &notes, &target, &links, RELATED + 20))
+                .await
+                .unwrap_or_else(|_| Err("the search stopped".into()));
+            if this.generation.get() != generation {
+                return;
+            }
+            section.remove(&waiting);
+            let found: Vec<_> = match found {
+                Ok(found) => found.into_iter().filter(|near| !store.is_hidden(&near.path)).take(RELATED).collect(),
+                Err(error) => {
+                    section.append(&empty(&error));
+                    return;
+                }
+            };
+            set_count(&head, found.len());
+            if found.is_empty() {
+                section.append(&empty("No other note is near it."));
+                return;
+            }
+            let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+            for near in &found {
+                list.append(&this.row(&near.path, near.line, &near.shown(), None));
+            }
+            section.append(&list);
         });
     }
 

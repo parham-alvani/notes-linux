@@ -23,6 +23,7 @@ mod preferences;
 mod properties_form;
 mod read_aloud;
 mod reader;
+mod related;
 mod settings;
 mod sidebar;
 mod store;
