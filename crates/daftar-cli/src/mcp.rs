@@ -30,7 +30,7 @@ const INSTRUCTIONS: &str = "Daftar's tools on the person's notes: an Obsidian va
 which holds their work, companies, tasks, plans, journal and life. Start a session with `vault_brief`: \
 what is overdue, due and in progress, the job search's booked events and their prep notes, the drill \
 cards due, the audit and yesterday's commits, in one call. Read before you answer from memory: \
-`search` and `find_notes` find notes, `read_note` reads one (or one section), `note_info` gives its \
+`search` and `find_notes` find notes by their words, `semantic_search` by meaning (Persian too) and `related_notes` the notes nearest one, `read_note` reads one (or one section), `note_info` gives its \
 properties, outline, links and backlinks, `tasks` and `query_tasks` list tasks (Tasks plugin syntax). \
 Before writing, read the vault's rules: `read_note` on `CLAUDE.md` (and the CLAUDE.md of the folder you \
 write in). A task is changed by its note, line and text as `tasks` printed them; a line that moved is \
