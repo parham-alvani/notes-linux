@@ -19,6 +19,7 @@ impl Window {
             ("neovide", Window::open_in_neovide),
             ("clip", Window::ask_clip),
             ("check-vault", Window::check_vault),
+            ("random-note", Window::open_random_note),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let this = self.clone();
@@ -50,6 +51,7 @@ impl Window {
             command("Quick Capture", "File", "app.capture", ""),
             command("Clip Web Page…", "File", "win.clip", "Ctrl+Shift+L"),
             command("Check the Vault", "Vault", "win.check-vault", ""),
+            command("Open Random Note", "Go", "win.random-note", "Ctrl+Shift+R"),
             command(
                 if self.hidden_settings().1 { "Hide Hidden Files" } else { "Show Hidden Files" },
                 "View",
@@ -67,6 +69,17 @@ impl Window {
             commands.push(command("Resolve Sync Conflicts", "Git", "win.conflicts", ""));
         }
         commands
+    }
+
+    /// Ctrl+Shift+R: a note of the vault picked at random, as Obsidian's
+    /// Open random note, in this tab; never a hidden one.
+    fn open_random_note(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let candidates = daftar_core::RandomNote::candidates(&store.index(), None, None, |path| store.is_hidden(path));
+        match daftar_core::RandomNote::pick(&candidates, daftar_core::RandomNote::number) {
+            Some(path) => self.open(&path, None),
+            None => self.notice("The vault has no note to pick."),
+        }
     }
 
     /// Clip Web Page…: an address, from the clipboard when it holds one,
