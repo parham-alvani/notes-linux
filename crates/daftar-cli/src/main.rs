@@ -17,6 +17,7 @@ mod export;
 mod figures;
 mod fmt;
 mod images;
+mod jobs;
 mod lint;
 mod mcp;
 mod memory;
@@ -469,6 +470,21 @@ enum Command {
         /// The folder of the vault the note goes in.
         #[arg(long, default_value = "Reviews")]
         folder: String,
+    },
+    /// The job search: every note with a `job_stage` property is an
+    /// application. Prints each stage with its count, then the booked events
+    /// ahead (`job_next`): `path:line`, the time, the company, its stage,
+    /// `job_next_step` and its `Interview Preparation.md`.
+    Jobs {
+        /// Each channel (`job_channel`, the text before ` (`) instead: its
+        /// applications, how many got past applied, and the rate. A closed
+        /// one (rejected, withdrawn) got past applied when its folder has a
+        /// preparation note.
+        #[arg(long)]
+        channels: bool,
+        /// Only the events within this many days.
+        #[arg(long)]
+        upcoming: Option<i64>,
     },
     /// The vault as an MCP server on stdin and stdout, for Claude Code and
     /// other agents: search, notes, links, tags, tasks and their queries,
@@ -1000,6 +1016,21 @@ fn run(cli: Cli) -> Result<(), String> {
                 out!("{path}");
             } else {
                 print!("{text}");
+            }
+        }
+        Command::Jobs { channels, upcoming } => {
+            let index = Vault::index(&root, None);
+            let keys = daftar_core::JobKeys::default();
+            let search = daftar_core::JobSearch::new(&index, &keys, |path| !hidden.contains(path));
+            let lines = if channels {
+                jobs::channels(&search)
+            } else {
+                let mut lines = jobs::stages(&search);
+                lines.extend(jobs::upcoming(&root, &search, &keys, chrono::Local::now().naive_local(), upcoming));
+                lines
+            };
+            for line in lines {
+                out!("{line}");
             }
         }
         Command::Mcp { read_only } => mcp::run(root, cli.hidden, read_only)?,
