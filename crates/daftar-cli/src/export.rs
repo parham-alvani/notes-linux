@@ -53,6 +53,10 @@ pub struct Look {
     /// The day of the export, at the foot of every page and in the PDF's
     /// properties.
     pub day: chrono::NaiveDate,
+    /// `--contents`: a table of the headings before the note.
+    pub contents: bool,
+    /// `--landscape`: the page turned on its side.
+    pub landscape: bool,
 }
 
 impl Look {
@@ -62,6 +66,8 @@ impl Look {
             folder_logo: true,
             footer: config.string("export.footer").unwrap_or_default(),
             day: export_day(std::env::var("SOURCE_DATE_EPOCH").ok().as_deref()),
+            contents: false,
+            landscape: false,
         }
     }
 }
@@ -114,7 +120,7 @@ pub fn run(root: &Path, index: &VaultIndex, path: &str, output: &Path, look: &Lo
     }
     let subtitle = [folder, changed(root, path).map(|day| format!("Changed {day}"))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let main = format!(
-        "#import \"/export.typ\": *\n#show: note.with(title: {}, subtitle: {}, logo: {logo}, folder-logo: {folder_logo}, footer: {}, title-rtl: {}, exported: datetime(year: {}, month: {}, day: {}))\n\n{}",
+        "#import \"/export.typ\": *\n#show: note.with(title: {}, subtitle: {}, logo: {logo}, folder-logo: {folder_logo}, footer: {}, title-rtl: {}, exported: datetime(year: {}, month: {}, day: {}), contents: {}, landscape: {})\n\n{}",
         TypstNote::string(&title),
         TypstNote::string(&subtitle),
         TypstNote::string(&look.footer),
@@ -122,6 +128,8 @@ pub fn run(root: &Path, index: &VaultIndex, path: &str, output: &Path, look: &Lo
         look.day.year(),
         look.day.month(),
         look.day.day(),
+        look.contents,
+        look.landscape,
         body,
     );
     let mut formulas: Vec<Option<String>> = note.formulas.iter().map(|tex| mitex::convert_math(tex, None).ok()).collect();
@@ -335,7 +343,14 @@ mod tests {
         let index = Vault::index(root, None);
         let output = root.join("out/Queue.pdf");
         fs::create_dir_all(output.parent().unwrap()).unwrap();
-        let look = Look { logo: Some(root.join("me.svg")), folder_logo: true, footer: "A footer".to_string(), day: DAY };
+        let look = Look {
+            logo: Some(root.join("me.svg")),
+            folder_logo: true,
+            footer: "A footer".to_string(),
+            day: DAY,
+            contents: false,
+            landscape: false,
+        };
         run(root, &index, "Companies/Acme/Platform/Queue.md", &output, &look, &[]).unwrap();
         let pdf = fs::read(&output).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
@@ -351,7 +366,7 @@ mod tests {
         let note = "# Sums\n\nInline $\\frac{a^2}{\\sqrt{x}}$ and $\\nosuchcommand{x}$.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n```mermaid\ngraph TD\n  A[Start] --> B{Choose}\n  B -->|yes| C[سلام]\n```\n\n```mermaid\nnot a diagram at all\n```\n";
         fs::write(root.join("Sums.md"), note).unwrap();
         let index = Vault::index(root, None);
-        let look = Look { logo: None, folder_logo: false, footer: String::new(), day: DAY };
+        let look = Look { logo: None, folder_logo: false, footer: String::new(), day: DAY, contents: false, landscape: false };
         run(root, &index, "Sums.md", &root.join("Sums.pdf"), &look, &[]).unwrap();
         let pdf = fs::read(root.join("Sums.pdf")).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
@@ -366,12 +381,32 @@ mod tests {
     }
 
     #[test]
+    fn contents_numbered_figures_and_landscape_make_a_pdf() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::write(root.join("chart.svg"), LOGO).unwrap();
+        let note = "## One\n\n> [!figure]\n>\n> ![[chart.svg|A square]]\n\n### Under one\n\nText.\n\n## Two\n\n> [!figure] Titled\n>\n> ![[chart.svg]]\n";
+        fs::write(root.join("Figures.md"), note).unwrap();
+        let index = Vault::index(root, None);
+        let look = Look { logo: None, folder_logo: false, footer: String::new(), day: DAY, contents: true, landscape: true };
+        run(root, &index, "Figures.md", &root.join("Figures.pdf"), &look, &[]).unwrap();
+        assert!(fs::read(root.join("Figures.pdf")).unwrap().starts_with(b"%PDF-"));
+    }
+
+    #[test]
     fn a_logo_that_is_not_there_is_refused() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         fs::write(root.join("Note.md"), "Text.\n").unwrap();
         let index = Vault::index(root, None);
-        let look = Look { logo: Some(root.join("missing.svg")), folder_logo: true, footer: String::new(), day: DAY };
+        let look = Look {
+            logo: Some(root.join("missing.svg")),
+            folder_logo: true,
+            footer: String::new(),
+            day: DAY,
+            contents: false,
+            landscape: false,
+        };
         let error = run(root, &index, "Note.md", &root.join("Note.pdf"), &look, &[]).unwrap_err();
         assert!(error.starts_with("export.logo: "), "{error}");
         assert!(!root.join("Note.pdf").exists());

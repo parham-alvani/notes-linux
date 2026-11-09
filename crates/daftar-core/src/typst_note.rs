@@ -68,8 +68,15 @@ impl TypstNote {
         constructs.math_text = true;
         let options =
             ParseOptions { constructs, gfm_strikethrough_single_tilde: true, math_text_single_dollar: true, ..ParseOptions::default() };
-        let mut writer =
-            Writer { path, resolve: &resolve, pictures: Vec::new(), formulas: Vec::new(), diagrams: Vec::new(), footnotes: HashMap::new() };
+        let mut writer = Writer {
+            path,
+            resolve: &resolve,
+            pictures: Vec::new(),
+            formulas: Vec::new(),
+            diagrams: Vec::new(),
+            footnotes: HashMap::new(),
+            caption: None,
+        };
         let mut markup = String::new();
         // markdown-rs has no syntax that fails: a note is always a tree.
         if let Ok(root) = markdown::to_mdast(&text, &options) {
@@ -122,6 +129,9 @@ struct Writer<'a, F: Fn(&str, &str) -> Option<String>> {
     formulas: Vec<String>,
     diagrams: Vec<String>,
     footnotes: HashMap<String, Vec<Node>>,
+    /// The words after the `|` of the last picture embed that are not a
+    /// width: a `[!figure]` callout's caption when its title is empty.
+    caption: Option<String>,
 }
 
 impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
@@ -237,6 +247,10 @@ impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
         }
         let mut title = String::new();
         self.inlines(&title_nodes, &mut title);
+        if kind == "figure" {
+            self.figure(&title, &body_nodes, &children[1..], out);
+            return;
+        }
         if title.trim().is_empty() {
             title = TypstNote::string(&capitalized(&kind));
             title.insert(0, '#');
@@ -250,6 +264,24 @@ impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
         }
         self.blocks(&children[1..], &mut body);
         let _ = writeln!(out, "#callout({})[{title}][{body}]\n", TypstNote::string(&kind));
+    }
+
+    /// A `[!figure]` callout: its picture as a numbered figure, captioned by
+    /// the callout's title, else by the words after the picture's `|`.
+    fn figure(&mut self, title: &str, first: &[Node], rest: &[Node], out: &mut String) {
+        self.caption = None;
+        let mut body = String::new();
+        if !plain(first).trim().is_empty() || first.iter().any(|node| !matches!(node, Node::Text(_))) {
+            self.inlines(first, &mut body);
+            body.push_str("\n\n");
+        }
+        self.blocks(rest, &mut body);
+        let caption = if title.trim().is_empty() {
+            self.caption.take().map_or_else(|| "none".to_string(), |words| format!("[#{}]", TypstNote::string(&words)))
+        } else {
+            format!("[{title}]")
+        };
+        let _ = writeln!(out, "#numbered-figure({caption})[{body}]\n");
     }
 
     fn list(&mut self, list: &markdown::mdast::List, out: &mut String) {
@@ -458,6 +490,9 @@ impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
             if !found[1].is_empty() {
                 // `![[pic.png|300]]`: the number is a width in pixels.
                 let width = alias.and_then(|a| a.split('x').next()).and_then(|w| w.trim().parse::<u32>().ok());
+                if width.is_none() {
+                    self.caption = alias.filter(|a| !a.is_empty()).map(str::to_string);
+                }
                 if !self.picture(target, width, out) {
                     let name = target.split('#').next().unwrap_or(target);
                     let _ = write!(out, "#embedded[#{}]", TypstNote::string(&crate::Vault::title(name)));
@@ -723,6 +758,16 @@ mod tests {
         assert_eq!(note.markup, "#callout(\"warning\")[#\"Mind the gap\"][#\"It is wide.\"\n\n]\n\n");
         let untitled = typst("> [!tip]\n> Short.\n");
         assert!(untitled.markup.starts_with("#callout(\"tip\")[#\"Tip\"]"));
+    }
+
+    #[test]
+    fn a_figure_callout_is_a_numbered_figure_with_its_caption() {
+        let note = typst("> [!figure]\n>\n> ![[beach.png|The beach at noon]]\n");
+        assert_eq!(note.markup, "#numbered-figure([#\"The beach at noon\"])[#picture(\"/pictures/0.png\", width: auto)\n\n]\n\n");
+        let titled = typst("> [!figure] Low tide\n>\n> ![[beach.png|300]]\n");
+        assert_eq!(titled.markup, "#numbered-figure([#\"Low tide\"])[#picture(\"/pictures/0.png\", width: 225pt)\n\n]\n\n");
+        let bare = typst("> [!figure]\n>\n> ![[beach.png]]\n");
+        assert!(bare.markup.starts_with("#numbered-figure(none)["));
     }
 
     #[test]

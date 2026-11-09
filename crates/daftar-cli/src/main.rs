@@ -356,6 +356,12 @@ enum Command {
         /// again for more, set in the note's order.
         #[arg(long = "section", value_name = "HEADING")]
         sections: Vec<String>,
+        /// A table of the headings, each a link to its page, before the note.
+        #[arg(long)]
+        contents: bool,
+        /// The page on its side, for a screen or a projector.
+        #[arg(long)]
+        landscape: bool,
     },
     /// A web page as a new note: its main text as Markdown, its pictures in
     /// the attachment folder, and `source` and `clipped` in its front matter.
@@ -1043,7 +1049,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err("check failed".to_string());
             }
         }
-        Command::Export { note, output, logo, no_folder_logo, sections } => {
+        Command::Export { note, output, logo, no_folder_logo, sections, contents, landscape } => {
             let index = Vault::index(&root, None);
             let path = note_path(&index, &note)?;
             let mut look = export::Look::from_config(&config());
@@ -1051,6 +1057,8 @@ fn run(cli: Cli) -> Result<(), String> {
                 look.logo = logo;
             }
             look.folder_logo = !no_folder_logo;
+            look.contents = contents;
+            look.landscape = landscape;
             let output = output.unwrap_or_else(|| PathBuf::from(format!("{}.pdf", Vault::title(&path))));
             export::run(&root, &index, &path, &output, &look, &sections)?;
             out!("{}", output.display());

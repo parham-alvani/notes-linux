@@ -90,6 +90,9 @@
   if done or cancelled { text(fill: muted, strike(body)) } else { body }
 }
 
+// A `[!figure]` callout: the picture centred, numbered, its caption under it.
+#let numbered-figure(caption, body) = figure(body, caption: caption, kind: image, supplement: [Figure])
+
 // An Obsidian callout, in its kind's color.
 #let callout(kind, title, body) = {
   let color = if kind in ("tip", "hint", "important", "success", "check", "done") {
@@ -122,11 +125,13 @@
   ]
 }
 
-#let note(title: "", subtitle: "", logo: none, folder-logo: none, footer: "", title-rtl: false, exported: none, body) = {
+#let note(title: "", subtitle: "", logo: none, folder-logo: none, footer: "", title-rtl: false, exported: none, contents: false, landscape: false, body) = {
   // The day of the export, with no time: the same note makes the same file all day.
   set document(title: title, date: exported)
   set page(
     paper: "a4",
+    // `--landscape`: for a screen or a projector, where wide figures matter more than line length.
+    flipped: landscape,
     margin: (top: 24mm, bottom: 20mm, x: 18mm),
     background: place(top, rect(width: 100%, height: 4pt, fill: bar)),
     header: context {
@@ -211,6 +216,17 @@
     text(fill: muted, it.body),
   )
 
+  // A figure keeps its picture and caption on one page; "Figure 3." is in the
+  // accent, its words in the muted grey.
+  show figure: set block(breakable: false, above: 1.1em, below: 1.2em)
+  show figure.caption: it => block(width: 92%, {
+    set par(justify: false)
+    set text(size: 9pt, fill: muted)
+    text(weight: "bold", fill: accent)[#it.supplement #context it.counter.display(it.numbering).]
+    h(0.35em)
+    it.body
+  })
+
   set table(stroke: 0.5pt + rule, inset: (x: 7pt, y: 5pt), fill: (_, row) => if row == 0 { accent.lighten(88%) })
   show table.cell.where(y: 0): set text(weight: "bold", fill: accent)
 
@@ -235,6 +251,18 @@
     #v(0.4em)
     #line(length: 100%, stroke: 1pt + bar)
   ]
+
+  // `--contents`: the headings down to the third, each a link to its page,
+  // then the note on a page of its own.
+  if contents {
+    show outline.entry.where(level: 1): it => {
+      v(0.55em, weak: true)
+      text(weight: "bold", fill: accent, it)
+    }
+    show outline.entry: set text(size: 10pt)
+    outline(title: text(size: 13pt, fill: ink)[Contents], depth: 3, indent: 1.2em)
+    pagebreak(weak: true)
+  }
 
   body
 }
