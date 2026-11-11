@@ -914,8 +914,26 @@ impl Window {
             if !self.leave_editor_in(&tab) {
                 return;
             }
-            tab.stack.set_visible_child_name("reader");
-            tab.reader.show(Request { path, heading: None, line: Some(line) }, false);
+            // The editor's line is where the person reads now: New Task, Sort
+            // Headings and the next Ctrl+E go by it, as by the reading cursor.
+            store.places.set(&path, line);
+            // The page draws the note at the editor's line first, under the
+            // editor, and comes on screen when it has: shown first, it
+            // crossfaded in at the place it was read before the editor and
+            // then jumped. A page that does not answer comes on screen anyway.
+            let switch = {
+                let tab = tab.clone();
+                let done = Rc::new(Cell::new(false));
+                move || {
+                    if !done.replace(true) && tab.showing().as_deref() == Some("editor") && tab.editor.path().is_none() {
+                        tab.stack.set_visible_child_name("reader");
+                        tab.reader.view.grab_focus();
+                    }
+                }
+            };
+            let fallback = switch.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(400), fallback);
+            tab.reader.show_then(Request { path, heading: None, line: Some(line) }, false, switch);
             return;
         }
         let Some(shown) = tab.reader.shown().filter(|_| tab.showing().as_deref() == Some("reader")) else { return };
@@ -925,13 +943,17 @@ impl Window {
         }
         // `editor.neovide`: Ctrl+E edits in Neovide's own window instead.
         if self.settings.borrow().file.bool("editor.neovide").unwrap_or(false) {
-            self.launch_neovide(&shown.path, shown.line.unwrap_or(0));
+            self.launch_neovide(&shown.path, store.places.get(&shown.path).or(shown.line).unwrap_or(0));
             return;
         }
         if !self.one_editor(&tab) {
             return;
         }
-        if !tab.editor.load(&store.root, &shown.path, shown.line) {
+        // At the reading cursor, which `connect_cursor` keeps as the note's
+        // place: the line the note was opened at is where it was, not where
+        // the person reads now, and the editor opened there, often at the top.
+        let line = store.places.get(&shown.path).or(shown.line);
+        if !tab.editor.load(&store.root, &shown.path, line) {
             self.toasts.add_toast(crate::toast(&format!("{} could not be read.", shown.path)));
             return;
         }

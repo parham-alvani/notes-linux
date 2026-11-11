@@ -110,6 +110,9 @@ struct State {
     on_tag: Option<TagHandler>,
     on_create: Option<CreateHandler>,
     on_section: Option<SectionHandler>,
+    /// Runs once the page has drawn the note of the show it was given
+    /// with (`show_then`); a later show drops it.
+    drawn: Option<(u64, Box<dyn FnOnce()>)>,
 }
 
 #[derive(Clone)]
@@ -145,6 +148,7 @@ impl Reader {
                 on_tag: None,
                 on_create: None,
                 on_section: None,
+                drawn: None,
             })),
         };
         reader.connect_messages();
@@ -235,6 +239,17 @@ impl Reader {
         });
     }
 
+    /// [show], and [drawn] once the page has drawn the note, scroll and
+    /// reading cursor included: the editor stays on screen until then, so
+    /// the page is never seen at the place it was before (`toggle_edit`).
+    /// A page that is not ready, or a note that cannot be read, never calls
+    /// it; the caller has a limit of its own.
+    pub fn show_then(&self, request: Request, keep_scroll: bool, drawn: impl FnOnce() + 'static) {
+        let shows = self.state.borrow().shows + 1;
+        self.state.borrow_mut().drawn = Some((shows, Box::new(drawn)));
+        self.show(request, keep_scroll);
+    }
+
     /// Hands [request]'s note to the page: [text] as markdown, or a base's
     /// views when [base] has them.
     fn draw(&self, store: &VaultStore, request: &Request, keep_scroll: bool, text: &str, base: Option<Value>) {
@@ -323,9 +338,37 @@ impl Reader {
                 object.insert("line".into(), json!(line));
             }
         }
-        // `show` returns a promise, which WebKit cannot hand back; the page
-        // reports its own failures.
-        self.run(&format!("daftar.show({note}); undefined"));
+        // `show` returns a promise: awaited as a function's body, so a
+        // `show_then` hears when the page has drawn. The page reports its
+        // own failures.
+        let (state, shows) = (self.state.clone(), self.state.borrow().shows);
+        self.view.call_async_javascript_function(
+            &format!("await daftar.show({note}); return 0;"),
+            None,
+            None,
+            None,
+            gio::Cancellable::NONE,
+            move |result| {
+                if let Err(error) = result {
+                    eprintln!("daftar: the reader failed: {error}");
+                }
+                let drawn = {
+                    let mut state = state.borrow_mut();
+                    match state.drawn.take() {
+                        Some((of, drawn)) if of == shows => Some(drawn),
+                        // A later show's: it waits for its own drawing.
+                        Some(other) if other.0 > shows => {
+                            state.drawn = Some(other);
+                            None
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some(drawn) = drawn {
+                    drawn();
+                }
+            },
+        );
     }
 
     /// Shows the note on screen again, after its file changed.
