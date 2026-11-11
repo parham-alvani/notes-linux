@@ -20,11 +20,17 @@ In `~/.config/daftar/config.toml`, the file both apps read:
 
 ```toml
 [export]
-logo = ""     # an SVG or PNG at the head of every PDF; `~` is the home folder
-footer = ""   # the words at the foot of every page, beside the page count
+logo = ""          # an SVG or PNG at the head of every PDF; `~` is the home folder
+footer = ""        # the words at the foot of every page, beside the page count
+contents = false   # the apps' last choice of a table of contents
+landscape = false  # the apps' last choice of a page on its side
 ```
 
 `--logo` takes the place of `export.logo` for one run.
+
+The command does not read `export.contents` and `export.landscape`: a script says `--contents` and `--landscape` itself. They are the apps' Export as PDF: before the place to save, it offers "Table of contents" and "Landscape", set from these two keys, and passes the flags of the ones that are on. A choice that differs from the file is written back, so the next export, in either app, starts from it. A `daftar-cli` older than 0.21.0 refuses the flags; the app then says to upgrade it.
+
+Test cases every app must have: the options read from the two keys (missing is off); the arguments are `--vault <vault> export -o <file>`, then `--contents` and `--landscape` for each option that is on, then `--` and the note, so a note whose name starts with `-` is still the note; the usage error of an unknown `--contents` or `--landscape` says to upgrade `daftar-cli` to 0.21.0.
 
 ## 3. The page
 

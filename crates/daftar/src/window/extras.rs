@@ -299,7 +299,7 @@ impl Window {
             return;
         };
         let toasts = self.toasts.clone();
-        crate::export::pdf(self.window.upcast_ref(), &store.root, &path, move |text| {
+        crate::export::pdf(self.window.upcast_ref(), self.settings.clone(), &store.root, &path, move |text| {
             toasts.add_toast(crate::toast(text));
         });
     }

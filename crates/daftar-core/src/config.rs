@@ -300,6 +300,11 @@ cli = ""
 logo = ""
 # The words at the foot of every page, beside the page count.
 footer = ""
+# Export as PDF's two choices, kept from the last export: a table of the
+# headings before the note (--contents), and the page on its side
+# (--landscape).
+contents = false
+landscape = false
 "#;
 }
 
