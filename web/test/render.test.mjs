@@ -41,6 +41,23 @@ test("a callout has a title and a body, and a fold marker makes it a details", (
   assert.match(html, /<div class="callout-content">\n<p dir="ltr"[^>]*>The body.<\/p>/);
 });
 
+test("a figure callout is a numbered figure with its caption", () => {
+  const env = { links: { "beach.png": "pictures/beach.png" } };
+  const html = render("> [!figure]\n>\n> ![[beach.png|The beach at noon]]\n", env);
+  assert.match(html, /^<figure class="figure" data-callout="figure" dir="auto">/);
+  assert.doesNotMatch(html, /callout-title/);
+  assert.match(html, /<img src="vault:\/\/\/pictures\/beach.png"[^>]*>[\s\S]*<figcaption><span class="figure-number">Figure 1.<\/span> The beach at noon<\/figcaption>\n<\/figure>/);
+});
+
+test("a figure's title is its caption, and a size is no caption", () => {
+  const html = render("> [!figure] Low *tide*\n> ![[beach.png|300]]\n\n> [!figure]\n> ![[beach.png|300]]\n\n> [!figure]- Third\n> ![[beach.png]]\n");
+  assert.match(html, /Figure 1.<\/span> Low <em>tide<\/em><\/figcaption>/);
+  // The second has no caption, but is counted, as the PDF counts it.
+  assert.equal((html.match(/<figcaption>/g) ?? []).length, 2);
+  assert.match(html, /Figure 3.<\/span> Third<\/figcaption>/);
+  assert.doesNotMatch(html, /<details/);
+});
+
 test("a callout with no title is named after its type", () => {
   assert.match(render("> [!tip]\n> Text\n"), /callout-title-inner">Tip</);
 });

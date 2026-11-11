@@ -367,7 +367,10 @@ function math(md) {
 /**
  * `> [!type] Title` blockquotes as callouts, `+`/`-` making them foldable.
  * The first line of the quote becomes the title, and the rest of the quote is
- * the body.
+ * the body. A `[!figure]` is no box but a numbered figure, as `daftar-cli
+ * export` sets it (`docs/specs/export.md` in notes-linux): its body, then
+ * `Figure n.` and a caption, which is the title, else the words after the
+ * `|` of its last picture embed when they are not a size, else none.
  */
 function callouts(md) {
   md.core.ruler.after("inline", "callout", (state) => {
@@ -409,6 +412,7 @@ function callouts(md) {
       }
       // The matching close, at the same nesting.
       let depth = 0;
+      let closeAt = -1;
       for (let j = i + 1; j < tokens.length; j++) {
         if (tokens[j].type === "blockquote_open" || tokens[j].type === "callout_open") depth++;
         if (tokens[j].type === "blockquote_close") {
@@ -416,26 +420,70 @@ function callouts(md) {
             tokens[j].type = "callout_close";
             tokens[j].meta = tokens[i].meta;
             tokens.splice(j, 0, new state.Token("callout_body_close", "div", -1));
+            closeAt = j + 1;
             break;
           }
           depth--;
         }
         if (tokens[j].type === "callout_close") depth--;
       }
+      if (tokens[i].meta.callout === "figure" && closeAt > 0) {
+        // Numbered in the note's order, whether it has a caption or not, as
+        // Typst counts a figure with none.
+        state.env.figures = (state.env.figures ?? 0) + 1;
+        tokens[i].meta.fold = undefined;
+        const caption = new state.Token("figure_caption", "", 0);
+        caption.meta = { number: state.env.figures };
+        if (tokens[i].meta.hasTitle) {
+          caption.children = titleChildren;
+        } else {
+          const words = figureWords(tokens.slice(i + 1, closeAt));
+          if (words) {
+            const text = new state.Token("text", "", 0);
+            text.content = words;
+            caption.children = [text];
+          }
+        }
+        tokens.splice(closeAt, 0, caption);
+      }
     }
   });
 
+  /** The words after the `|` of the last picture embed in [tokens], when they are not a size. */
+  function figureWords(tokens) {
+    let words = null;
+    for (const token of tokens) {
+      for (const child of token.type === "inline" ? token.children : []) {
+        if (child.type !== "wikiembed") continue;
+        const alias = child.meta.alias?.trim();
+        words = alias && !/^\d+(?:x\d+)?$/.test(alias) ? alias : null;
+      }
+    }
+    return words;
+  }
+
   md.renderer.rules.callout_open = (tokens, idx) => {
     const { callout, fold } = tokens[idx].meta;
+    if (callout === "figure") {
+      const id = tokens[idx].attrGet("id");
+      return `<figure class="figure" data-callout="figure" dir="auto"${id ? ` id="${escapeHtml(id)}"` : ""}>`;
+    }
     const tag = fold ? "details" : "div";
     const open = fold === "+" ? " open" : "";
     // A plain callout is a note to a screen reader; a folding one is a details already.
     const id = tokens[idx].attrGet("id");
     return `<${tag} class="callout" data-callout="${escapeHtml(callout)}" dir="auto"${id ? ` id="${escapeHtml(id)}"` : ""}${fold ? "" : ' role="note"'}${open}>`;
   };
-  md.renderer.rules.callout_close = (tokens, idx) => (tokens[idx].meta.fold ? "</details>\n" : "</div>\n");
+  md.renderer.rules.callout_close = (tokens, idx) =>
+    tokens[idx].meta.callout === "figure" ? "</figure>\n" : tokens[idx].meta.fold ? "</details>\n" : "</div>\n";
+  md.renderer.rules.figure_caption = (tokens, idx, options, env, self) => {
+    const { children, meta } = tokens[idx];
+    if (!children?.length) return "";
+    return `<figcaption><span class="figure-number">Figure ${meta.number}.</span> ${self.renderInline(children, options, env)}</figcaption>\n`;
+  };
   md.renderer.rules.callout_title = (tokens, idx, options, env, self) => {
     const { fold, hasTitle, title, callout } = tokens[idx].meta;
+    if (callout === "figure") return "";
     const tag = fold ? "summary" : "div";
     const text = hasTitle ? self.renderInline(tokens[idx].children, options, env) : escapeHtml(title[0].toUpperCase() + title.slice(1));
     // The icon is the callout's kind, which a custom title does not say.

@@ -311,6 +311,12 @@ details[open] > summary.callout-title::after { transform: rotate(90deg); }
 .callout[data-callout="example"] { --callout-color: var(--purple); }
 .callout[data-callout="quote"], .callout[data-callout="cite"] { --callout-color: var(--warm-grey); }
 .callout[data-callout="figure"] { --callout-color: var(--pink); }
+/* A `[!figure]` is a numbered figure, as the exported PDF sets it. */
+figure.figure { margin: 1.2em 0; text-align: center; }
+figure.figure .callout-content > :last-child { margin-bottom: 0; }
+figure.figure img { margin-inline: auto; }
+figure.figure figcaption { margin-top: 0.5em; font-size: 0.9em; color: var(--text-muted); }
+figure.figure .figure-number { color: var(--accent); font-weight: 600; }
 .callout[data-callout="read"] { --callout-color: var(--aqua); }
 
 .embed {
