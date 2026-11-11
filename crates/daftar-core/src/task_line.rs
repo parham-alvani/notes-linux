@@ -381,6 +381,19 @@ impl TaskLine {
         let id = caps.get(4).map_or("", |m| m.as_str());
         Some(format!("{}[{}] {}{}", &caps[1], fields.status, parts.join(" "), id))
     }
+
+    /// A new task's line from [fields], as `- [ ] text` and its signifiers
+    /// in the Tasks plugin's order; none when there is no text. A task is
+    /// one line: line breaks in the text become spaces.
+    pub fn written(fields: &TaskFields) -> Option<String> {
+        let mut fields = fields.clone();
+        fields.text = fields.text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+        if fields.text.is_empty() {
+            return None;
+        }
+        let status = if matches!(fields.status, '\n' | '\r' | ']') { ' ' } else { fields.status };
+        Self::edited(&format!("- [{status}]"), &fields)
+    }
 }
 
 /// Why a task is in its status, cancelled or waiting: a Dataview field in
@@ -805,6 +818,40 @@ mod tests {
             TaskLine::edited(FULL, &fields).as_deref(),
             Some("    - [/] Call [[Alpha]] #work ⏫ 🆔 abc 🛫 2026-10-26 ⏳ 2026-10-24 📅 2026-11-02 ^block-1")
         );
+    }
+
+    #[test]
+    fn a_new_task_is_written_from_its_fields() {
+        let mut fields = TaskFields::default();
+        assert_eq!(TaskLine::written(&fields), None);
+        fields.text = "  Call Sara\n about the trip ".into();
+        assert_eq!(TaskLine::written(&fields).as_deref(), Some("- [ ] Call Sara about the trip"));
+        fields.priority = Some("⏫".into());
+        fields.created = Some("2026-11-11".into());
+        fields.scheduled = Some("2026-11-14".into());
+        fields.recurring = Some("every week".into());
+        assert_eq!(
+            TaskLine::written(&fields).as_deref(),
+            Some("- [ ] Call Sara about the trip ⏫ 🔁 every week ➕ 2026-11-11 ⏳ 2026-11-14")
+        );
+        // What it writes reads back as the same fields.
+        let read = TaskLine::fields(&TaskLine::written(&fields).unwrap()).unwrap();
+        assert_eq!(read.text, "Call Sara about the trip");
+        assert_eq!(read.created.as_deref(), Some("2026-11-11"));
+        assert_eq!(read.scheduled.as_deref(), Some("2026-11-14"));
+        fields.status = '/';
+        assert!(TaskLine::written(&fields).unwrap().starts_with("- [/] Call"));
+    }
+
+    #[test]
+    fn the_created_date_can_be_changed() {
+        let raw = "- [ ] Pay rent ➕ 2026-11-01 📅 2026-11-05";
+        let mut fields = TaskLine::fields(raw).unwrap();
+        assert_eq!(fields.created.as_deref(), Some("2026-11-01"));
+        fields.created = Some("2026-10-28".into());
+        assert_eq!(TaskLine::edited(raw, &fields).as_deref(), Some("- [ ] Pay rent ➕ 2026-10-28 📅 2026-11-05"));
+        fields.created = None;
+        assert_eq!(TaskLine::edited(raw, &fields).as_deref(), Some("- [ ] Pay rent 📅 2026-11-05"));
     }
 
     #[test]

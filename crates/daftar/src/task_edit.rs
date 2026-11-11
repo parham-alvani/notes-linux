@@ -2,7 +2,9 @@
 //! reason, the priority, the dates and the repeat rule, each in its color. The line is
 //! read from the file when the dialog opens and again before it is written,
 //! and the save is refused when it changed meanwhile. The Mac's
-//! `TaskEditSheet`.
+//! `TaskEditSheet`. With `present_new` it makes a task instead (New Task,
+//! Ctrl+Alt+T): the same form, with the note and the section it goes in,
+//! and today as its created date.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -118,8 +120,60 @@ pub fn relative(day: Day, today: Day) -> String {
     }
 }
 
+/// What the dialog is for: a task on a line, or a new one.
+enum Mode {
+    Edit { path: String, line: usize },
+    New { path: String, heading: Option<usize> },
+}
+
 /// Opens the dialog over [parent]; [saved] runs after a write went through.
 pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str, line: usize, saved: impl Fn() + 'static) {
+    open(parent, store, Mode::Edit { path: path.to_string(), line }, Rc::new(|| {}), Rc::new(move |_: &str| saved()));
+}
+
+/// New Task over [parent], for the note at [path] ("" for none chosen yet)
+/// at the end of the section of the heading on [heading]. [save_first]
+/// runs before the write, so the editors' text is on disk; [saved] gets
+/// the note written.
+pub fn present_new(
+    parent: &impl IsA<gtk::Widget>,
+    store: Rc<VaultStore>,
+    path: &str,
+    heading: Option<usize>,
+    save_first: impl Fn() + 'static,
+    saved: impl Fn(&str) + 'static,
+) {
+    open(parent, store, Mode::New { path: path.to_string(), heading }, Rc::new(save_first), Rc::new(saved));
+}
+
+/// The notes a new task can go in: those with tasks first, then the rest, each by path.
+fn note_choices(store: &VaultStore) -> Vec<String> {
+    let index = store.index();
+    let mut notes: Vec<(bool, String)> = index.notes.values().map(|n| (n.parsed.tasks.is_empty(), n.path.clone())).collect();
+    notes.sort();
+    notes.into_iter().map(|(_, path)| path).collect()
+}
+
+/// A note's headings for the Section list: their lines, and how they are shown.
+fn section_choices(store: &VaultStore, path: &str) -> (Vec<Option<usize>>, Vec<String>) {
+    let headings = daftar_core::Sections::headings(&store.text(path).unwrap_or_default());
+    let mut lines = vec![None];
+    let mut names = vec!["End of the Note".to_string()];
+    for heading in headings {
+        lines.push(Some(heading.line));
+        names.push(format!("{}{}", "    ".repeat(heading.level.saturating_sub(1)), heading.text));
+    }
+    (lines, names)
+}
+
+#[expect(clippy::too_many_lines, reason = "one form, built top to bottom as it is shown")]
+fn open(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, mode: Mode, save_first: Rc<dyn Fn()>, saved: Rc<dyn Fn(&str)>) {
+    let new = matches!(mode, Mode::New { .. });
+    let (path, line) = match &mode {
+        Mode::Edit { path, line } => (path.clone(), *line),
+        Mode::New { path, .. } => (path.clone(), 0),
+    };
+    let path = path.as_str();
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(16)
@@ -131,16 +185,22 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
     let head = gtk::Box::builder().spacing(14).build();
     head.append(&gtk::Image::builder().icon_name("checkbox-checked-symbolic").pixel_size(22).css_classes(["daftar-board-icon"]).build());
     let titles = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(3).valign(gtk::Align::Center).build();
-    titles.append(&gtk::Label::builder().label("Edit Task").xalign(0.0).css_classes(["title-2"]).build());
-    titles.append(
-        &gtk::Label::builder().label(format!("{}, line {}", Vault::title(path), line + 1)).xalign(0.0).css_classes(["dim-label"]).build(),
-    );
+    let title = if new { "New Task" } else { "Edit Task" };
+    titles.append(&gtk::Label::builder().label(title).xalign(0.0).css_classes(["title-2"]).build());
+    let subtitle = gtk::Label::builder()
+        .label(if new { String::new() } else { format!("{}, line {}", Vault::title(path), line + 1) })
+        .xalign(0.0)
+        .css_classes(["dim-label"])
+        .build();
+    titles.append(&subtitle);
     head.append(&titles);
     content.append(&head);
 
-    let dialog = adw::Dialog::builder().title("Edit Task").content_width(680).child(&content).build();
+    let dialog = adw::Dialog::builder().title(title).content_width(680).child(&content).build();
     let error = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["t-red", "tint"]).visible(false).build();
-    let before = match read(&store, path, line) {
+    let read_now =
+        if new { Ok(TaskFields { created: Some(Day::today().to_string()), ..TaskFields::default() }) } else { read(&store, path, line) };
+    let before = match read_now {
         Ok(fields) => fields,
         Err(message) => {
             error.set_label(message);
@@ -157,13 +217,29 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
         }
     };
     let fields = Rc::new(RefCell::new(before.clone()));
-    let postponable = !TaskLine::is_closed(before.status) && (before.due.is_some() || before.scheduled.is_some() || before.start.is_some());
-    let save = gtk::Button::builder().label("Save").css_classes(["suggested-action", "pill"]).build();
+    let postponable =
+        !new && !TaskLine::is_closed(before.status) && (before.due.is_some() || before.scheduled.is_some() || before.start.is_some());
+    let save = gtk::Button::builder().label(if new { "Add Task" } else { "Save" }).css_classes(["suggested-action", "pill"]).build();
+    // A new task's note, and the line of its section's heading.
+    let notes = if new { note_choices(&store) } else { Vec::new() };
+    let target = Rc::new(RefCell::new(match &mode {
+        Mode::New { path, heading } => (Some(path.clone()).filter(|p| notes.contains(p)), *heading),
+        Mode::Edit { .. } => (None, None),
+    }));
     let refresh = {
-        let (fields, before, save) = (fields.clone(), before.clone(), save.clone());
+        let (fields, before, save, target, subtitle) = (fields.clone(), before.clone(), save.clone(), target.clone(), subtitle);
         Rc::new(move || {
             let now = fields.borrow();
-            save.set_sensitive(!now.text.trim().is_empty() && *now != before);
+            let filled = !now.text.trim().is_empty();
+            if new {
+                let note = target.borrow().0.clone();
+                subtitle.set_label(
+                    &note.as_deref().map_or_else(|| "Pick the note it goes in".to_string(), |p| format!("In {}", Vault::title(p))),
+                );
+                save.set_sensitive(filled && note.is_some());
+            } else {
+                save.set_sensitive(filled && *now != before);
+            }
         })
     };
 
@@ -177,6 +253,57 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
         });
     }
     content.append(&text);
+
+    // Where a new task goes: a note, searched by its path, and a section of it.
+    if new {
+        let note = gtk::DropDown::from_strings(&notes.iter().map(String::as_str).collect::<Vec<_>>());
+        note.set_enable_search(true);
+        note.set_search_match_mode(gtk::StringFilterMatchMode::Substring);
+        note.set_expression(Some(gtk::PropertyExpression::new(gtk::StringObject::static_type(), None::<gtk::Expression>, "string")));
+        note.set_hexpand(true);
+        let section = gtk::DropDown::from_strings(&["End of the Note"]);
+        let section_lines = Rc::new(RefCell::new(vec![None]));
+        let fill = {
+            let (store, section, section_lines, target) = (store.clone(), section.clone(), section_lines.clone(), target.clone());
+            move |path: &str, wanted: Option<usize>| {
+                let (lines, names) = section_choices(&store, path);
+                section.set_model(Some(&gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>())));
+                let at = lines.iter().position(|l| *l == wanted).unwrap_or(0);
+                section.set_selected(u32::try_from(at).unwrap_or(0));
+                target.borrow_mut().1 = lines[at];
+                *section_lines.borrow_mut() = lines;
+            }
+        };
+        let (start, heading) = target.borrow().clone();
+        if let Some(start) = start.as_deref()
+            && let Some(at) = notes.iter().position(|p| p == start)
+        {
+            note.set_selected(u32::try_from(at).unwrap_or(0));
+            fill(start, heading);
+        } else {
+            note.set_selected(gtk::INVALID_LIST_POSITION);
+        }
+        {
+            let (target, refresh) = (target.clone(), refresh.clone());
+            note.connect_selected_notify(move |note| {
+                let chosen = usize::try_from(note.selected()).ok().and_then(|i| notes.get(i)).cloned();
+                if let Some(path) = &chosen {
+                    fill(path, None);
+                }
+                target.borrow_mut().0 = chosen;
+                refresh();
+            });
+        }
+        {
+            let target = target.clone();
+            section.connect_selected_notify(move |section| {
+                let at = usize::try_from(section.selected()).unwrap_or(0);
+                target.borrow_mut().1 = section_lines.borrow().get(at).copied().flatten();
+            });
+        }
+        content.append(&row("Note", &note));
+        content.append(&row("Section", &section));
+    }
 
     // Status and priority, as rows of pills of which one is on: every
     // status the vault's Tasks plugin settings name, and the task's own.
@@ -255,10 +382,11 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
     // The dates: each on or off, then the day.
     let dates = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
     type Field = fn(&mut TaskFields) -> &mut Option<String>;
-    let date_fields: [(&str, &str, Field); 3] = [
+    let date_fields: [(&str, &str, Field); 4] = [
         ("📅 Due", "t-accent", |f| &mut f.due),
         ("⏳ Scheduled", "t-blue", |f| &mut f.scheduled),
         ("🛫 Start", "t-purple", |f| &mut f.start),
+        ("➕ Created", "t-green", |f| &mut f.created),
     ];
     for (name, tint, field) in date_fields {
         let value = field(&mut before.clone()).clone();
@@ -320,15 +448,29 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
             dialog.close();
         });
     }
-    let saved: Rc<dyn Fn()> = Rc::new(saved);
     let (store_for_postpone, saved_for_postpone) = (store.clone(), saved.clone());
     {
         let (dialog, path, error, saved) = (dialog.clone(), path.to_string(), error, saved.clone());
         save.connect_clicked(move |_| {
             let now = fields.borrow().clone();
+            if new {
+                let (Some(note), heading) = target.borrow().clone() else { return };
+                save_first();
+                // A heading that went from the note while the form was open: the end of the note.
+                let headings = daftar_core::Sections::headings(&store.text(&note).unwrap_or_default());
+                let heading = heading.filter(|line| headings.iter().any(|h| h.line == *line));
+                if store.add_task(&note, heading, &now) == Ok(()) {
+                    dialog.close();
+                    saved(&note);
+                } else {
+                    error.set_label("The task could not be added to that note.");
+                    error.set_visible(true);
+                }
+                return;
+            }
             if store.edit_task(&path, line, &before, &now) == Ok(()) {
                 dialog.close();
-                saved();
+                saved(&path);
             } else {
                 error.set_label("The note changed before the save. Nothing was written.");
                 error.set_visible(true);
@@ -337,7 +479,11 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, path: &str
     }
     refresh();
     // "Postpone", the Tasks plugin's menu, for an open task with a date.
-    let postpone = postponable.then(|| postpone_button(&dialog, &store_for_postpone, path, line, saved_for_postpone.clone()));
+    let postpone = postponable.then(|| {
+        let saved = saved_for_postpone.clone();
+        let path_ = path.to_string();
+        postpone_button(&dialog, &store_for_postpone, path, line, Rc::new(move || saved(&path_)))
+    });
     let bar = gtk::Box::builder().spacing(8).build();
     if let Some(postpone) = &postpone {
         bar.append(postpone);

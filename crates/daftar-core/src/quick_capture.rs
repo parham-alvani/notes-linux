@@ -55,14 +55,27 @@ impl QuickCapture {
         }
         let headings = NoteParser::parse(text).headings;
         if let Some(found) = headings.iter().position(|h| fold(&h.text) == fold(&name)) {
-            let start = headings[found].line;
-            let end = headings[found + 1..].iter().find(|h| h.level <= headings[found].level).map_or(lines.len(), |h| h.line);
-            let at = last_filled(&lines, start + 1, end).unwrap_or(start) + 1;
-            insert(&[line.to_string()], at, &mut lines, eol);
+            insert_in_section(line, found, &headings, &mut lines, eol);
         } else {
             let at = last_filled(&lines, 0, lines.len()).map_or(0, |l| l + 1);
             insert(&[format!("{} {name}", "#".repeat(level)), line.to_string()], at, &mut lines, eol);
         }
+        lines.join("\n")
+    }
+
+    /// [text] with [line] added at the end of the section of the heading on
+    /// line [heading_line] (from 0), with its subsections: the heading by its
+    /// place, so two headings with one name are two sections. At the end of
+    /// the note when [heading_line] is none or no heading is on that line.
+    /// The Mac's `append(_:to:headingLine:)`; New Task writes with it.
+    pub fn append_at_heading_line(line: &str, text: &str, heading_line: Option<usize>) -> String {
+        let headings = NoteParser::parse(text).headings;
+        let Some(found) = heading_line.and_then(|at| headings.iter().position(|h| h.line == at)) else {
+            return Self::append(line, text, None);
+        };
+        let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+        let eol = if lines.len() > 1 && lines[0].ends_with('\r') { "\r" } else { "" };
+        insert_in_section(line, found, &headings, &mut lines, eol);
         lines.join("\n")
     }
 
@@ -134,6 +147,15 @@ fn first_text(root: &Path, title: &str, day: Day, clock: Clock) -> String {
     Templates::read(root).fill(&source, title, day, clock)
 }
 
+/// [line] after the last filled line of heading [found]'s section, or right
+/// under the heading when the section is empty.
+fn insert_in_section(line: &str, found: usize, headings: &[crate::note_parser::Heading], lines: &mut Vec<String>, eol: &str) {
+    let start = headings[found].line;
+    let end = headings[found + 1..].iter().find(|h| h.level <= headings[found].level).map_or(lines.len(), |h| h.line);
+    let at = last_filled(lines, start + 1, end).unwrap_or(start) + 1;
+    insert(&[line.to_string()], at, lines, eol);
+}
+
 /// "## Inbox" is Inbox at level 2; a bare name is level 2 too.
 fn heading_name(spec: &str) -> (String, usize) {
     let trimmed = spec.trim();
@@ -197,6 +219,23 @@ mod tests {
         assert_eq!(append("- [ ] New", "- [ ] Old", None), "- [ ] Old\n- [ ] New");
         // Under a heading, at once.
         assert_eq!(append("Idea", "# Day\n", None), "# Day\nIdea\n");
+    }
+
+    #[test]
+    fn goes_at_the_end_of_the_section_on_a_line() {
+        // Two headings with one name: the line says which.
+        let note = "# Week\n## Work\n- [ ] A\n\n## Home\n- [ ] B\n\n## Work\n- [ ] C\n";
+        let at = |line| QuickCapture::append_at_heading_line("- [ ] New", note, line);
+        assert_eq!(at(Some(7)), "# Week\n## Work\n- [ ] A\n\n## Home\n- [ ] B\n\n## Work\n- [ ] C\n- [ ] New\n");
+        assert_eq!(at(Some(1)), "# Week\n## Work\n- [ ] A\n- [ ] New\n\n## Home\n- [ ] B\n\n## Work\n- [ ] C\n");
+        // An empty section: right under its heading.
+        assert_eq!(
+            QuickCapture::append_at_heading_line("- [ ] New", "## Inbox\n\n## Later\n", Some(0)),
+            "## Inbox\n- [ ] New\n\n## Later\n"
+        );
+        // No heading there, or none asked: the end of the note.
+        assert_eq!(at(Some(2)), format!("{note}- [ ] New\n"));
+        assert_eq!(at(None), format!("{note}- [ ] New\n"));
     }
 
     #[test]
@@ -280,6 +319,15 @@ mod tests {
                     assert!(rest.any(|l| l == line), "{text:?} {heading:?} {added:?}");
                 }
                 assert_eq!(added.split('\n').filter(|l| l.starts_with("captured ✱")).count(), 1);
+            }
+            let headings = NoteParser::parse(&text).headings;
+            for line in [None, Some(0), Some(3)].into_iter().chain(headings.iter().take(2).map(|h| Some(h.line))) {
+                let added = QuickCapture::append_at_heading_line("- [ ] new ✱", &text, line);
+                let mut rest = added.split('\n');
+                for kept in text.split('\n') {
+                    assert!(rest.any(|l| l == kept), "{text:?} {line:?} {added:?}");
+                }
+                assert_eq!(added.split('\n').filter(|l| l.starts_with("- [ ] new ✱")).count(), 1);
             }
         }
     }

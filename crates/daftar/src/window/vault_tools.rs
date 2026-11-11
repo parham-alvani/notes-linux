@@ -33,6 +33,10 @@ impl Window {
             action.connect_activate(move |_, _| this.periodic_neighbour(step));
             self.window.add_action(&action);
         }
+        let new_task = gio::SimpleAction::new("new-task", None);
+        let this = self.clone();
+        new_task.connect_activate(move |_, _| this.new_task());
+        self.window.add_action(&new_task);
         let sort = gio::SimpleAction::new("sort-tasks", None);
         let this = self.clone();
         sort.connect_activate(move |_, _| this.sort_tasks());
@@ -141,6 +145,7 @@ impl Window {
             command("Today's Scratchpad", "File", "win.scratchpad", "Ctrl+Alt+S"),
             command(previous, "Go", "win.periodic-previous", "Ctrl+Alt+Left"),
             command(next, "Go", "win.periodic-next", "Ctrl+Alt+Right"),
+            command("New Task…", "File", "win.new-task", "Ctrl+Alt+T"),
             command("Sort Tasks (Done First)", "Note", "win.sort-tasks", ""),
             command("Sort Headings Under This", "Note", "win.sort-headings::", ""),
             command("Rename a Tag…", "Edit", "win.rename-tag::", ""),
@@ -211,6 +216,42 @@ impl Window {
             Ok(false) => self.toasts.add_toast(crate::toast("The tasks are in order already.")),
             Err(error) => self.toasts.add_toast(crate::toast(&format!("The tasks could not be sorted: {error}."))),
         }
+    }
+
+    /// Ctrl+Alt+T, New Task: the task form for the note on screen, in the
+    /// section the cursor (with no editor, the reading place) is in; with no
+    /// note, for today's scratchpad when it is there. The editor saves before
+    /// the write, which reads the file again; the note on screen then shows it.
+    fn new_task(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let tab = self.tab();
+        let (path, heading) = if let Some(path) = tab.current().filter(|p| Vault::is_note(p)) {
+            let line = if tab.editing() { tab.editor.line() } else { store.places.get(&path).unwrap_or(0) };
+            let headings = daftar_core::Sections::headings(&store.text(&path).unwrap_or_default());
+            let heading = daftar_core::Sections::heading_at(line, &headings).map(|index| headings[index].line);
+            (path, heading)
+        } else {
+            let folder = self.scratchpad_folder();
+            let folder = folder.trim().trim_matches('/');
+            let name = format!("{}.md", Day::today());
+            let path = if folder.is_empty() { name } else { format!("{folder}/{name}") };
+            (if store.index().files.contains(&path) { path } else { String::new() }, None)
+        };
+        let (save, this) = (self.clone(), self.clone());
+        crate::task_edit::present_new(
+            &self.window,
+            store,
+            &path,
+            heading,
+            move || save.save_editors(),
+            move |written| {
+                let tab = this.tab();
+                if tab.current().as_deref() == Some(written) {
+                    this.written(&tab);
+                }
+                this.toasts.add_toast(crate::toast(&format!("Added the task to {}.", Vault::title(written))));
+            },
+        );
     }
 
     /// "Sort Headings Under This": the headings right under heading

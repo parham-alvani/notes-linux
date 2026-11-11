@@ -197,7 +197,7 @@ impl Window {
     }
 
     /// Every tab's editor saved, so a file is read as it is on disk.
-    fn save_editors(&self) {
+    pub(super) fn save_editors(&self) {
         let tabs = self.tabs.borrow().clone();
         for tab in &tabs {
             tab.editor.save();

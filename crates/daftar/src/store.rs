@@ -11,9 +11,9 @@ use std::time::UNIX_EPOCH;
 
 use daftar_core::properties::{PropertyEdit, PropertySheet};
 use daftar_core::{
-    BoardDrop, Bookmarks, CalendarDay, CalendarWeek, Clock, DailyNotes, Day, ExcludedFiles, Failure, Iconic, PeriodicNotes, ReplaceMatch,
-    ReplacePattern, SearchIndex, Sections, TagRename, TaskFields, TaskSorter, Templates, Vault, VaultEdits, VaultIndex, VaultReplace,
-    VaultTask,
+    BoardDrop, Bookmarks, CalendarDay, CalendarWeek, Clock, DailyNotes, Day, ExcludedFiles, Failure, Iconic, PeriodicNotes, QuickCapture,
+    ReplaceMatch, ReplacePattern, SearchIndex, Sections, TagRename, TaskFields, TaskLine, TaskSorter, Templates, Vault, VaultEdits,
+    VaultIndex, VaultReplace, VaultTask,
 };
 
 use crate::places::PlaceBook;
@@ -321,6 +321,15 @@ impl VaultStore {
     /// The Edit Task dialog's save: refused when the line is no longer [before].
     pub fn edit_task(&self, path: &str, line: usize, before: &TaskFields, fields: &TaskFields) -> Result<(), Failure> {
         self.write(path, |text| VaultEdits::edit_task(text, line, before, fields))
+    }
+
+    /// New Task: [fields] as a new task line at the end of the section of
+    /// the heading on [heading_line] of [path], or at the end of the note.
+    /// The file is read again at the write and every line it had stays.
+    /// The Mac's `VaultStore.addTask`.
+    pub fn add_task(&self, path: &str, heading_line: Option<usize>, fields: &TaskFields) -> Result<(), Failure> {
+        let Some(line) = TaskLine::written(fields) else { return Err(Failure::Unreadable) };
+        self.write(path, |text| Ok(QuickCapture::append_at_heading_line(&line, text, heading_line)))
     }
 
     /// One edit of a note in the index, through `VaultEdits::apply`; the index
