@@ -140,6 +140,25 @@ impl SearchIndex {
         }
     }
 
+    /// The line (from 1) of [text], a note's, that a hit with [snippet]
+    /// for [query] is on, so that a list can open the note there: the first
+    /// line with the snippet's first match, else with a word of the query,
+    /// with case and Persian letters folded as the search folds them; 1 when
+    /// neither is there (the title matched, or an accent the tokenizer took
+    /// off).
+    pub fn line_of(text: &str, snippet: &str, query: &str) -> usize {
+        let fold = |t: &str| persian(&t.to_lowercase());
+        let matched = snippet.split('\u{1}').nth(1).and_then(|rest| rest.split('\u{2}').next());
+        let words: Vec<String> = matched
+            .into_iter()
+            .chain(query.split_whitespace())
+            .map(|w| fold(w.trim_matches(|c| c == '"' || c == '*')))
+            .filter(|w| !w.is_empty())
+            .collect();
+        let lines: Vec<String> = text.lines().map(fold).collect();
+        words.iter().find_map(|word| lines.iter().position(|line| line.contains(word.as_str()))).map_or(1, |at| at + 1)
+    }
+
     /// The person's words as an FTS5 expression. Every word is quoted, so
     /// that `AND`, `-` or a `:` in what they type is a word and not syntax.
     pub fn match_expression(query: &str) -> Option<String> {
@@ -240,6 +259,18 @@ mod tests {
         }
         // The snippet is the note's own text.
         assert!(index.search("خواهم", 10)[0].snippet.contains('\u{200c}'));
+    }
+
+    #[test]
+    fn a_hit_is_on_the_line_of_its_first_match() {
+        let text = "---\ntags: x\n---\n# Trip\n\nWe paint the HALL.\nكتاب علي\n";
+        let index = SearchIndex::new();
+        index.put("a.md", "Trip", text);
+        let hit = &index.search("hall", 10)[0];
+        assert_eq!(SearchIndex::line_of(text, &hit.snippet, "hall"), 6);
+        // Persian letters as the search folds them, from the query.
+        assert_eq!(SearchIndex::line_of(text, "", "کتاب"), 7);
+        assert_eq!(SearchIndex::line_of(text, "", "\"nowhere\""), 1);
     }
 
     fn paths(hits: Vec<Hit>) -> Vec<String> {

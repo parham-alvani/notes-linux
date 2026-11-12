@@ -348,8 +348,25 @@ impl SemanticIndex {
 /// meaning shows its nearest chunk, under its heading; one found only by
 /// its words shows where they are.
 pub fn fuse(words: &[Hit], meaning: &[Nearby], limit: usize) -> Vec<Hit> {
+    fused(words, meaning, limit).into_iter().map(|f| f.hit).collect()
+}
+
+/// A note [fused] ranks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fused {
+    pub hit: Hit,
+    /// The sum of `1 / (k + rank)` over the lists the note is in.
+    pub score: f32,
+    /// The line (from 0) of the chunk [Fused::hit] shows, when search by
+    /// meaning found the note; else the words' snippet is shown.
+    pub line: Option<usize>,
+}
+
+/// [fuse], with each note's score and the line of the chunk it shows.
+pub fn fused(words: &[Hit], meaning: &[Nearby], limit: usize) -> Vec<Fused> {
     let mut scores: HashMap<&str, f32> = HashMap::new();
     let mut snippets: HashMap<&str, String> = HashMap::new();
+    let mut lines: HashMap<&str, usize> = HashMap::new();
     let mut order: Vec<&str> = Vec::new();
     for (rank, hit) in words.iter().enumerate() {
         *scores.entry(&hit.path).or_insert_with(|| {
@@ -364,11 +381,20 @@ pub fn fuse(words: &[Hit], meaning: &[Nearby], limit: usize) -> Vec<Hit> {
             0.0
         }) += 1.0 / (FUSION_K + rank as f32 + 1.0);
         snippets.insert(&near.path, near.shown());
+        lines.insert(&near.path, near.line);
     }
     let mut paths = order;
     // Stable: a tie keeps the full-text search's order.
     paths.sort_by(|a, b| scores[b].total_cmp(&scores[a]));
-    paths.into_iter().take(limit).map(|path| Hit { path: path.to_string(), snippet: snippets.remove(path).unwrap_or_default() }).collect()
+    paths
+        .into_iter()
+        .take(limit)
+        .map(|path| Fused {
+            hit: Hit { path: path.to_string(), snippet: snippets.remove(path).unwrap_or_default() },
+            score: scores[path],
+            line: lines.get(path).copied(),
+        })
+        .collect()
 }
 
 impl Nearby {
@@ -723,6 +749,18 @@ mod tests {
         assert_eq!(fused[1].snippet, "Lag · chunk");
         assert_eq!(fused[2].snippet, "words of b");
         assert_eq!(fuse(&[hit("a")], &[], 0), []);
+    }
+
+    #[test]
+    fn fusion_keeps_each_notes_score_and_the_line_it_shows() {
+        let hit = |path: &str| Hit { path: path.into(), snippet: format!("words of {path}") };
+        let near =
+            |path: &str, line: usize| Nearby { path: path.into(), heading: String::new(), line, score: 0.5, snippet: "chunk".into() };
+        let fused = fused(&[hit("a"), hit("b")], &[near("a", 7)], 10);
+        assert_eq!(fused.iter().map(|f| (f.hit.path.as_str(), f.line)).collect::<Vec<_>>(), [("a", Some(7)), ("b", None)]);
+        let first = 1.0 / (FUSION_K + 1.0);
+        assert!((fused[0].score - 2.0 * first).abs() < 1e-6);
+        assert!((fused[1].score - 1.0 / (FUSION_K + 2.0)).abs() < 1e-6);
     }
 
     #[test]
