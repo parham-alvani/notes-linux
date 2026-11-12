@@ -1388,7 +1388,7 @@ mod tests {
         let config = ConfigFile::new("[capture]\ntarget = \"daily\"\nheading = \"Inbox\"\n".to_string());
         let path = capture(root, &config, "- [ ] Call Sara").unwrap();
         assert_eq!(path, format!("Journal/{today}.md"));
-        assert_eq!(fs::read_to_string(root.join(&path)).unwrap(), format!("# {today}\n## Inbox\n- [ ] Call Sara\n\n## Log\n"));
+        assert_eq!(fs::read_to_string(root.join(&path)).unwrap(), format!("# {today}\n## Inbox\n\n- [ ] Call Sara\n\n## Log\n"));
         // The file is read again: a change made on disk meanwhile stays.
         fs::write(root.join(&path), "# Today\n## Inbox\n- [ ] Call Sara\n- [ ] Written elsewhere\n").unwrap();
         let config = ConfigFile::new("[capture]\ntarget = \"daily\"\n".to_string());
@@ -1401,7 +1401,7 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("Inbox.md")).unwrap(), "# Inbox\n- [ ] Old\n- [ ] New\n");
         let config = ConfigFile::new("[capture]\ntarget = \"Notes/Later.md\"\nheading = \"Ideas\"\n".to_string());
         assert_eq!(capture(root, &config, "x").unwrap(), "Notes/Later.md");
-        assert_eq!(fs::read_to_string(root.join("Notes/Later.md")).unwrap(), "## Ideas\nx\n");
+        assert_eq!(fs::read_to_string(root.join("Notes/Later.md")).unwrap(), "## Ideas\n\nx\n");
         // Never outside the vault.
         let config = ConfigFile::new("[capture]\ntarget = \"../escaped\"\n".to_string());
         assert!(capture(root, &config, "x").is_err());

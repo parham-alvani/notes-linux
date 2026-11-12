@@ -58,7 +58,7 @@ impl QuickCapture {
             insert_in_section(line, found, &headings, &mut lines, eol);
         } else {
             let at = last_filled(&lines, 0, lines.len()).map_or(0, |l| l + 1);
-            insert(&[format!("{} {name}", "#".repeat(level)), line.to_string()], at, &mut lines, eol);
+            insert(&[format!("{} {name}", "#".repeat(level)), String::new(), line.to_string()], at, &mut lines, eol);
         }
         lines.join("\n")
     }
@@ -173,18 +173,16 @@ fn last_filled(lines: &[String], from: usize, to: usize) -> Option<usize> {
     (from..to.min(lines.len())).rev().find(|&i| !lines[i].trim().is_empty())
 }
 
-/// [new] at [at], after a blank line when the line above would take it in:
-/// a paragraph goes on into a plain line, and `---` above text makes a
-/// heading of it. A list item after a list item, or anything right under a
-/// heading, needs none.
+/// [new] at [at], after a blank line when the line above is not blank: a
+/// paragraph goes on into a plain line, `---` above text makes a heading of
+/// it, and a heading wants a blank line under it, as `fmt` writes it
+/// (markdownlint's MD022). Only a list item after a list item needs none.
 fn insert(new: &[String], at: usize, lines: &mut Vec<String>, eol: &str) {
     let mut block: Vec<String> = new.to_vec();
     if at > 0 {
         let above = lines[at - 1].trim();
-        let after_marks = above.trim_start_matches('#');
-        let heading = above.starts_with('#') && after_marks.chars().next().is_none_or(|c| c == ' ' || c == '\t');
         let list = LIST_ITEM.is_match(above) && LIST_ITEM.is_match(&new[0]);
-        if !above.is_empty() && !heading && !list {
+        if !above.is_empty() && !list {
             block.insert(0, String::new());
         }
     }
@@ -217,8 +215,8 @@ mod tests {
         // Blank lines at the end stay at the end.
         assert_eq!(append("- [ ] New", "# Day\n- [ ] Old\n\n\n", None), "# Day\n- [ ] Old\n- [ ] New\n\n\n");
         assert_eq!(append("- [ ] New", "- [ ] Old", None), "- [ ] Old\n- [ ] New");
-        // Under a heading, at once.
-        assert_eq!(append("Idea", "# Day\n", None), "# Day\nIdea\n");
+        // Under a heading, after a blank line.
+        assert_eq!(append("Idea", "# Day\n", None), "# Day\n\nIdea\n");
     }
 
     #[test]
@@ -228,10 +226,10 @@ mod tests {
         let at = |line| QuickCapture::append_at_heading_line("- [ ] New", note, line);
         assert_eq!(at(Some(7)), "# Week\n## Work\n- [ ] A\n\n## Home\n- [ ] B\n\n## Work\n- [ ] C\n- [ ] New\n");
         assert_eq!(at(Some(1)), "# Week\n## Work\n- [ ] A\n- [ ] New\n\n## Home\n- [ ] B\n\n## Work\n- [ ] C\n");
-        // An empty section: right under its heading.
+        // An empty section: under its heading, after a blank line.
         assert_eq!(
             QuickCapture::append_at_heading_line("- [ ] New", "## Inbox\n\n## Later\n", Some(0)),
-            "## Inbox\n- [ ] New\n\n## Later\n"
+            "## Inbox\n\n- [ ] New\n\n## Later\n"
         );
         // No heading there, or none asked: the end of the note.
         assert_eq!(at(Some(2)), format!("{note}- [ ] New\n"));
@@ -259,18 +257,18 @@ mod tests {
             append("- [ ] New", note, Some("## Notes")),
             "# 2026-10-26\n## Inbox\n- [ ] Old\n\n### Later\n- [ ] Sub\n\n## Notes\nText\n\n- [ ] New\n"
         );
-        // An empty section: right under its heading.
-        assert_eq!(append("x", "## Inbox\n\n## Notes\n", Some("Inbox")), "## Inbox\nx\n\n## Notes\n");
+        // An empty section: under its heading, after a blank line.
+        assert_eq!(append("x", "## Inbox\n\n## Notes\n", Some("Inbox")), "## Inbox\n\nx\n\n## Notes\n");
         // An empty heading setting is the end of the note.
-        assert_eq!(append("x", "## Inbox\n- a\n## Notes\n", Some(" ")), "## Inbox\n- a\n## Notes\nx\n");
+        assert_eq!(append("x", "## Inbox\n- a\n## Notes\n", Some(" ")), "## Inbox\n- a\n## Notes\n\nx\n");
     }
 
     #[test]
     fn a_missing_heading_is_made_at_the_end() {
-        assert_eq!(append("- [ ] New", "# Day\nText\n", Some("Inbox")), "# Day\nText\n\n## Inbox\n- [ ] New\n");
-        assert_eq!(append("- [ ] New", "", Some("### Inbox")), "### Inbox\n- [ ] New\n");
+        assert_eq!(append("- [ ] New", "# Day\nText\n", Some("Inbox")), "# Day\nText\n\n## Inbox\n\n- [ ] New\n");
+        assert_eq!(append("- [ ] New", "", Some("### Inbox")), "### Inbox\n\n- [ ] New\n");
         // A heading in code is not a heading.
-        assert_eq!(append("x", "```\n## Inbox\n```\n", Some("Inbox")), "```\n## Inbox\n```\n\n## Inbox\nx\n");
+        assert_eq!(append("x", "```\n## Inbox\n```\n", Some("Inbox")), "```\n## Inbox\n```\n\n## Inbox\n\nx\n");
     }
 
     #[test]
