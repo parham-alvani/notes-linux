@@ -14,3 +14,4 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [The holidays of a place, and the day picker](calendar-events.md) | Linux 0.14.0, macOS 0.16.0; not Android yet |
 | [Pictures from the web, only when asked](remote-images.md) | Linux 0.18.0, macOS 0.16.0, Android 0.61.0 |
 | [New Task, and the created date in the task form](new-task.md) | not released yet (macOS, Linux and Android in progress) |
+| [daftar-cli for a program: `--json` and `fmt --stdin`](cli-json.md) | not released yet (Linux's CLI; macOS runs it) |
