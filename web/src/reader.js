@@ -915,8 +915,9 @@ window.daftar = {
       main.appendChild(holder);
       renderBase(holder, note.base, note.path, "");
     }
-    if (keep !== null) window.scrollTo(0, keep);
-    else if (note.heading) this.scrollTo(note.heading);
+    if (keep !== null) {
+      // Kept below, once the page is laid out as the one the place was taken on.
+    } else if (note.heading) this.scrollTo(note.heading);
     else if (note.line != null) this.scrollToLine(note.line);
     else window.scrollTo(0, 0);
     // The reading cursor: on the line the editor was at, on the same block
@@ -925,6 +926,11 @@ window.daftar = {
     linkDetected(main, note.detected);
     decorate(main);
     folds.apply();
+    // A note shown again after it changed on disk (a format on leaving the
+    // editor, a pull) stays where it was. The code blocks' heads and the
+    // folds above it change the page's height, so the place is set after
+    // them: set before, the page slid by their height.
+    if (keep !== null) window.scrollTo(0, keep);
     // A link to a heading inside a folded section opens the section.
     if (keep === null && note.heading) this.scrollTo(note.heading);
     reading.restore(note.line ?? (keep !== null ? reading.line : null));
