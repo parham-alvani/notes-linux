@@ -32,7 +32,19 @@ impl Problem {
     pub fn description(&self) -> &'static str {
         RULES.iter().find(|(id, _, _)| *id == self.rule).map_or("", |(_, _, text)| text)
     }
+
+    /// Whether [MarkdownLint::fix] mends a problem of this rule.
+    pub fn fixable(&self) -> bool {
+        FIXABLE.contains(&self.rule)
+    }
 }
+
+/// The rules [MarkdownLint::fix] mends: the arms of `fix_once`, and MD047.
+/// A tab in a code block (MD010) is left, as markdownlint leaves it.
+pub const FIXABLE: &[&str] = &[
+    "MD004", "MD009", "MD010", "MD012", "MD018", "MD019", "MD020", "MD021", "MD022", "MD023", "MD026", "MD027", "MD029", "MD030", "MD031",
+    "MD032", "MD034", "MD035", "MD037", "MD038", "MD039", "MD047", "MD048", "MD049", "MD050", "MD058",
+];
 
 /// markdownlint's rules this checks: number, name and what it says.
 pub const RULES: &[(&str, &str, &str)] = &[
@@ -1391,5 +1403,15 @@ mod tests {
             "# Title\n\n## Two\n\n- a\n- b\n\nVisit <https://example.com> today.\n\n```bash\nls\n```\n\n**strong** and *em*\n"
         );
         assert_eq!(MarkdownLint::lint(&fixed, &config()), vec![]);
+    }
+
+    #[test]
+    fn a_problem_says_whether_fix_mends_it() {
+        let text = "# Title\n## Two\n* a \n\n\nVisit https://example.com today.\n";
+        let found = MarkdownLint::lint(text, &config());
+        assert!(!found.is_empty());
+        assert!(found.iter().all(Problem::fixable), "{found:?}");
+        let left = MarkdownLint::lint("# One\n\n# Two\n", &config());
+        assert_eq!(left.iter().map(|p| (p.rule, p.fixable())).collect::<Vec<_>>(), [("MD025", false)]);
     }
 }
