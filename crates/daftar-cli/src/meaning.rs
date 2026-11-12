@@ -40,15 +40,25 @@ impl Meaning {
     }
 
     /// The index brought up to [vault]'s notes; with [loud], the chunks
-    /// embedded so far on stderr.
+    /// embedded so far on stderr: on one line rewritten on a terminal, else
+    /// an `indexed N/M` line at each hundredth, for a program to show.
     pub fn update(&mut self, root: &Path, vault: &VaultIndex, loud: bool) -> Result<semantic::Updated, String> {
         let notes = SemanticIndex::notes_of(vault);
         let terminal = std::io::stderr().is_terminal();
+        let mut last = usize::MAX;
         let mut progress = |done: usize, all: usize| {
-            if !loud || all == 0 || (!terminal && done != all) {
+            if !loud || all == 0 {
                 return;
             }
             let mut stderr = std::io::stderr().lock();
+            if !terminal {
+                let step = done * 100 / all;
+                if step != last {
+                    last = step;
+                    let _ = writeln!(stderr, "indexed {done}/{all}");
+                }
+                return;
+            }
             let _ = write!(stderr, "{}embedding {done}/{all} sections", if terminal { "\r" } else { "" });
             if done == all {
                 let _ = writeln!(stderr);
@@ -71,6 +81,14 @@ impl Meaning {
         let found: Vec<Hit> =
             words.search(query, depth.saturating_add(100)).into_iter().filter(|h| !hidden.contains(&h.path)).take(depth).collect();
         semantic::fuse(&found, &self.search(hidden, query, depth), limit)
+    }
+
+    /// [hybrid], with each note's fused score and the line it shows.
+    pub fn fused(&self, words: &SearchIndex, hidden: &ExcludedFiles, query: &str, limit: usize) -> Vec<semantic::Fused> {
+        let depth = limit.max(20) * 3;
+        let found: Vec<Hit> =
+            words.search(query, depth.saturating_add(100)).into_iter().filter(|h| !hidden.contains(&h.path)).take(depth).collect();
+        semantic::fused(&found, &self.search(hidden, query, depth), limit)
     }
 
     /// The notes nearest to [path] that it does not link to, without the hidden ones.
@@ -115,6 +133,12 @@ pub fn line(near: &Nearby) -> String {
     format!("{}:{}\t{:.2}\t{}", near.path, near.line + 1, near.score, crate::snippet(&near.shown(), false))
 }
 
+/// A note near a query or a note as `--json` prints it: `{"path", "line"
+/// (from 1), "score" (the cosine), "snippet"}`.
+pub fn json(near: &Nearby) -> serde_json::Value {
+    crate::hit_json(&near.path, near.line + 1, Some(near.score), &near.shown())
+}
+
 /// `semantic-index`: downloads the model when asked, then indexes the vault.
 pub fn build(root: &Path, vault: &VaultIndex, download: bool) -> Result<(), String> {
     if !semantic_model::is_downloaded() {
@@ -154,6 +178,33 @@ pub fn build(root: &Path, vault: &VaultIndex, download: bool) -> Result<(), Stri
         started.elapsed().as_secs_f32()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use daftar_core::Vault;
+
+    #[test]
+    fn a_fused_hit_shows_the_line_and_score_of_its_section() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("Queue.md"), "# Notes\n\nIntro.\n\n## Lag\n\nThe broker queue and its consumer lag.\n").unwrap();
+        std::fs::write(root.path().join("Garden.md"), "Basil and mint.\n").unwrap();
+        let words = SearchIndex::new();
+        let vault = Vault::index(root.path(), Some(&words));
+        let mut meaning = Meaning::with(fake::load, &root.path().join(".cache/semantic.sqlite")).unwrap();
+        meaning.update(root.path(), &vault, false).unwrap();
+        let hidden = ExcludedFiles::default();
+        let fused = meaning.fused(&words, &hidden, "consumer lag", 1);
+        assert_eq!(fused.len(), 1);
+        assert_eq!((fused[0].hit.path.as_str(), fused[0].line), ("Queue.md", Some(6)));
+        assert!(fused[0].score > 0.0);
+        let near = meaning.search(&hidden, "consumer lag", 1);
+        let row = json(&near[0]);
+        assert_eq!((row["path"].as_str(), row["line"].as_u64()), (Some("Queue.md"), Some(7)));
+        assert!(row["score"].as_f64().unwrap() > 0.9, "{row}");
+        assert!(row["snippet"].as_str().unwrap().starts_with("Notes > Lag · "), "{row}");
+    }
 }
 
 /// A model of a few words for the tests: each vector counts the words of a

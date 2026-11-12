@@ -180,7 +180,8 @@ impl Server {
                     skip_urls: Vec::new(),
                     archive: false,
                     figures: false,
-                    github: false,
+                    mode: crate::report::Mode::Plain,
+                    only: None,
                     fix: false,
                     dry_run: false,
                     memory: memory.then(|| crate::memory::Rules {
@@ -396,7 +397,8 @@ impl Server {
             skip_urls: Vec::new(),
             archive: false,
             figures: false,
-            github: false,
+            mode: crate::report::Mode::Plain,
+            only: None,
             fix: false,
             dry_run: false,
             memory: Some(crate::memory::Rules {

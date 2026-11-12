@@ -82,17 +82,30 @@ enum Command {
         /// By meaning alone: the notes whose sections are nearest the query.
         #[arg(long, conflicts_with = "meaning")]
         meaning_only: bool,
+        /// One JSON array of `{"path", "line", "score", "snippet"}`: `line`
+        /// from 1, `score` the cosine (--meaning-only), the fused rank
+        /// (--meaning) or null (the words alone).
+        #[arg(long)]
+        json: bool,
     },
     /// The notes nearest to a note in meaning, that it does not link to yet.
     Related {
         note: String,
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: usize,
+        /// One JSON array of `{"path", "line", "score", "snippet"}`, `score`
+        /// the cosine.
+        #[arg(long)]
+        json: bool,
     },
     /// Builds the index of search by meaning, or brings it up to the notes
     /// that changed: every section of a note embedded by a model run here,
     /// kept in ~/.cache/daftar/semantic/. The model is downloaded only with
     /// `--download-model` (531 MB, once, into ~/.cache/daftar/models/).
+    /// Search by meaning and `related` bring the index up to the notes
+    /// themselves, so this only does it ahead of them. Progress goes to
+    /// stderr: `indexed N/M` lines when it is not a terminal. Without the
+    /// model, these commands exit with 3.
     SemanticIndex {
         /// Downloads the model first when it is not there.
         #[arg(long)]
@@ -377,9 +390,15 @@ enum Command {
     },
     /// Lints the notes against the vault's .markdownlint.jsonc, as
     /// markdownlint-cli2 does, with Obsidian's syntax known; the whole vault,
-    /// or the files and folders given. Fails when a problem is left.
+    /// or the files and folders given (from the current folder, else from
+    /// the vault's). Fails when a problem is left.
     Lint {
         paths: Vec<PathBuf>,
+        /// Prints each problem as a JSON line, and nothing else on stdout:
+        /// `{"tool", "level", "path", "line", "column", "code", "message",
+        /// "fixable"}`.
+        #[arg(long)]
+        json: bool,
         /// Mends first what can be mended: spaces, blank lines, list marks,
         /// heading marks, fences, emphasis marks, bare URLs, the last newline.
         #[arg(long)]
@@ -390,8 +409,10 @@ enum Command {
     },
     /// Formats the notes as Prettier does with the vault's .prettierrc (its
     /// Markdown, and YAML front matter): the whole vault, or the files and
-    /// folders given, but what .prettierignore names. Lists what it changed.
+    /// folders given (from the current folder, else from the vault's), but
+    /// what .prettierignore names. Lists what it changed.
     Fmt {
+        #[arg(conflicts_with = "stdin")]
         paths: Vec<PathBuf>,
         /// Writes nothing: lists the notes that are not formatted, and fails
         /// when there is one.
@@ -400,6 +421,19 @@ enum Command {
         /// With --check, shows what formatting would change in each note.
         #[arg(long, requires = "check")]
         diff: bool,
+        /// With --check, prints each note that is not formatted as a JSON
+        /// line, at its first line formatting changes, and nothing else on
+        /// stdout (as `lint --json`, with the code `fmt`).
+        #[arg(long, requires = "check", conflicts_with = "diff")]
+        json: bool,
+        /// Reads one note from stdin and prints it formatted, as fmt would
+        /// write it; writes nothing.
+        #[arg(long, conflicts_with = "check")]
+        stdin: bool,
+        /// With --stdin, the note's path in the vault: a file
+        /// .prettierignore names is printed unchanged.
+        #[arg(long, requires = "stdin")]
+        path: Option<String>,
         /// A folder or file of the vault to leave out (as .prettierignore).
         #[arg(long)]
         ignore: Vec<String>,
@@ -411,8 +445,15 @@ enum Command {
     /// web addresses written wrong, with --urls web addresses that are
     /// gone, and with --figures SVG text that overlaps, leaves the canvas
     /// or spills out of its box. Fails on an error; on a warning too with
-    /// --strict.
+    /// --strict. Given notes (from the current folder, else from the
+    /// vault's), reports on and mends those only.
     Check {
+        paths: Vec<PathBuf>,
+        /// Prints each finding as a JSON line, and nothing else on stdout:
+        /// `{"tool", "level", "path", "line", "column", "code", "message",
+        /// "fixable"}`; what --fix mends goes to stderr.
+        #[arg(long)]
+        json: bool,
         /// Fails on warnings too.
         #[arg(long)]
         strict: bool,
@@ -546,14 +587,32 @@ enum Command {
     },
 }
 
+/// The exit status of a command that searches by meaning when the model
+/// is not downloaded, so that a program running it can offer the download.
+const NO_MODEL: u8 = 3;
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if cli.command.as_ref().is_some_and(needs_model) && !daftar_core::semantic_model::is_downloaded() {
+        eprintln!("daftar-cli: {}", daftar_core::semantic_model::missing());
+        return ExitCode::from(NO_MODEL);
+    }
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("daftar-cli: {message}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Whether [command] cannot run without the model of search by meaning.
+fn needs_model(command: &Command) -> bool {
+    match command {
+        Command::Search { meaning, meaning_only, .. } => *meaning || *meaning_only,
+        Command::Related { .. } => true,
+        Command::SemanticIndex { download_model } => !download_model,
+        _ => false,
     }
 }
 
@@ -575,13 +634,29 @@ fn run(cli: Cli) -> Result<(), String> {
                 out!("{path}");
             }
         }
-        Command::Search { query, limit, meaning, meaning_only } if meaning || meaning_only => {
+        Command::Search { query, limit, meaning, meaning_only, json } if meaning || meaning_only => {
             let search = SearchIndex::new();
             let index = Vault::index(&root, Some(&search));
             let mut semantic = meaning::Meaning::open(&root)?;
             semantic.update(&root, &index, true)?;
             let terminal = std::io::stdout().is_terminal();
             let query = query.join(" ");
+            if json {
+                let rows: Vec<serde_json::Value> = if meaning_only {
+                    semantic.search(&hidden, &query, limit).iter().map(meaning::json).collect()
+                } else {
+                    semantic
+                        .fused(&search, &hidden, &query, limit)
+                        .into_iter()
+                        .map(|f| {
+                            let line = f.line.map_or_else(|| words_line(&root, &f.hit, &query), |line| line + 1);
+                            hit_json(&f.hit.path, line, Some(f.score), &f.hit.snippet)
+                        })
+                        .collect()
+                };
+                out!("{}", serde_json::Value::Array(rows));
+                return Ok(());
+            }
             let hits = if meaning_only {
                 semantic
                     .search(&hidden, &query, limit)
@@ -595,11 +670,16 @@ fn run(cli: Cli) -> Result<(), String> {
                 out!("{}\t{}", hit.path, snippet(&hit.snippet, terminal));
             }
         }
-        Command::Related { note, limit } => {
+        Command::Related { note, limit, json } => {
             let index = Vault::index(&root, None);
             let path = note_path(&index, &note)?;
             let mut semantic = meaning::Meaning::open(&root)?;
             semantic.update(&root, &index, true)?;
+            if json {
+                let rows: Vec<serde_json::Value> = semantic.related(&index, &hidden, &path, limit).iter().map(meaning::json).collect();
+                out!("{}", serde_json::Value::Array(rows));
+                return Ok(());
+            }
             for near in semantic.related(&index, &hidden, &path, limit) {
                 out!("{}", meaning::line(&near));
             }
@@ -608,13 +688,21 @@ fn run(cli: Cli) -> Result<(), String> {
             let index = Vault::index(&root, None);
             meaning::build(&root, &index, download_model)?;
         }
-        Command::Search { query, limit, .. } => {
+        Command::Search { query, limit, json, .. } => {
             let search = SearchIndex::new();
             Vault::index(&root, Some(&search));
             let terminal = std::io::stdout().is_terminal();
+            let query = query.join(" ");
             // More asked for, so that [limit] are left once the hidden ones are out.
-            let hits = search.search(&query.join(" "), limit.saturating_add(100));
-            for hit in hits.into_iter().filter(|hit| !hidden.contains(&hit.path)).take(limit) {
+            let hits = search.search(&query, limit.saturating_add(100));
+            let hits = hits.into_iter().filter(|hit| !hidden.contains(&hit.path)).take(limit);
+            if json {
+                let rows: Vec<serde_json::Value> =
+                    hits.map(|hit| hit_json(&hit.path, words_line(&root, &hit, &query), None, &hit.snippet)).collect();
+                out!("{}", serde_json::Value::Array(rows));
+                return Ok(());
+            }
+            for hit in hits {
                 out!("{}\t{}", hit.path, snippet(&hit.snippet, terminal));
             }
         }
@@ -976,8 +1064,8 @@ fn run(cli: Cli) -> Result<(), String> {
             };
             out!("{}", vault_commands::daily(&root, &index.files, day, !no_create, Clock::now())?);
         }
-        Command::Lint { paths, fix, ignore } => {
-            let outcome = lint::run(&root, &paths, &ignore, fix, report::github(), |line| out!("{line}"))?;
+        Command::Lint { paths, json, fix, ignore } => {
+            let outcome = lint::run(&root, &paths, &ignore, fix, report::Mode::of(json), |line| out!("{line}"))?;
             if fix && outcome.fixed > 0 {
                 eprintln!("daftar-cli: fixed {} of {} notes", outcome.fixed, outcome.checked);
             }
@@ -985,14 +1073,22 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{} problems in {} of {} notes", outcome.problems, outcome.notes, outcome.checked));
             }
         }
-        Command::Fmt { paths, check, diff, ignore } => {
-            let options = fmt::Options { check, diff, github: report::github() };
+        Command::Fmt { stdin: true, path, ignore, .. } => {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map_err(|e| format!("stdin: {e}"))?;
+            let formatted = fmt::formatted(&root, &text, path.as_deref(), &ignore)?;
+            std::io::Write::write_all(&mut std::io::stdout().lock(), formatted.as_bytes()).map_err(|e| e.to_string())?;
+        }
+        Command::Fmt { paths, check, diff, json, ignore, .. } => {
+            let options = fmt::Options { check, diff, mode: report::Mode::of(json) };
             let outcome = fmt::run(&root, &paths, &ignore, &options, |line| out!("{line}"))?;
             if check && outcome.changed > 0 {
                 return Err(format!("{} of {} notes are not formatted; run daftar-cli fmt", outcome.changed, outcome.checked));
             }
         }
         Command::Check {
+            paths,
+            json,
             strict,
             no_h1,
             callout,
@@ -1029,7 +1125,8 @@ fn run(cli: Cli) -> Result<(), String> {
                 skip_urls: skip_url,
                 archive,
                 figures,
-                github: report::github(),
+                mode: report::Mode::of(json),
+                only: if paths.is_empty() { None } else { Some(lint::notes_but(&root, &paths, &[], None)?.into_iter().collect()) },
                 fix,
                 dry_run,
                 memory: memory.then_some(memory::Rules {
@@ -1078,7 +1175,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 let path = week.path(&folder);
                 review::write(&root, &path, &text)?;
                 // As `fmt` would write it, so the vault's checks pass.
-                fmt::run(&root, &[root.join(&path)], &[], &fmt::Options { check: false, diff: false, github: false }, |_| {})?;
+                fmt::run(&root, &[root.join(&path)], &[], &fmt::Options { check: false, diff: false, mode: report::Mode::Plain }, |_| {})?;
                 out!("{path}");
             } else {
                 print!("{text}");
@@ -1119,6 +1216,19 @@ fn emit(line: std::fmt::Arguments) {
         }
         std::process::exit(i32::from(error.kind() != std::io::ErrorKind::BrokenPipe));
     }
+}
+
+/// A hit of a search, as `search --json` and `related --json` print it:
+/// `score` rounded to four places, the snippet on one line with no marks.
+fn hit_json(path: &str, line: usize, score: Option<f32>, snippet: &str) -> serde_json::Value {
+    let score = score.map(|s| (f64::from(s) * 10_000.0).round() / 10_000.0);
+    serde_json::json!({ "path": path, "line": line, "score": score, "snippet": crate::snippet(snippet, false) })
+}
+
+/// The line (from 1) of [hit]'s note that its words are on.
+fn words_line(root: &std::path::Path, hit: &daftar_core::Hit, query: &str) -> usize {
+    let text = fs::read_to_string(root.join(&hit.path)).unwrap_or_default();
+    SearchIndex::line_of(&text, &hit.snippet, query)
 }
 
 /// A search snippet on one line, its matches in bold on a terminal; the
@@ -1304,6 +1414,26 @@ mod tests {
         assert_eq!(query_blocks(text), ["not done\ndue this week", "done"]);
         let callout = "> [!todo] Now\n>\n> ```tasks\n> not done\n> group by filename\n> ```\n";
         assert_eq!(query_blocks(callout), ["not done\ngroup by filename"]);
+    }
+
+    #[test]
+    fn a_hit_as_json() {
+        assert_eq!(
+            hit_json("A.md", 12, Some(0.834_567), "a \u{1}plan\u{2}\nnext").to_string(),
+            r#"{"path":"A.md","line":12,"score":0.8346,"snippet":"a plan next"}"#
+        );
+        assert_eq!(hit_json("A.md", 1, None, "x").to_string(), r#"{"path":"A.md","line":1,"score":null,"snippet":"x"}"#);
+    }
+
+    #[test]
+    fn only_search_by_meaning_needs_the_model() {
+        let search = |meaning, meaning_only| Command::Search { query: vec![], limit: 1, meaning, meaning_only, json: true };
+        assert!(!needs_model(&search(false, false)));
+        assert!(needs_model(&search(true, false)));
+        assert!(needs_model(&search(false, true)));
+        assert!(needs_model(&Command::Related { note: "A".into(), limit: 1, json: false }));
+        assert!(needs_model(&Command::SemanticIndex { download_model: false }));
+        assert!(!needs_model(&Command::SemanticIndex { download_model: true }));
     }
 
     #[test]

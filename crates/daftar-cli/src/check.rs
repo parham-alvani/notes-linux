@@ -8,10 +8,12 @@
 //! and with `--urls` a web address that is gone, with `--figures` the text
 //! of an SVG a note shows that overlaps, leaves the canvas or spills out of
 //! its box (`figures.rs`). Prints `path:line`, a tab, `error` or `warning`,
-//! a tab, the kind and what it found; in GitHub Actions, an annotation for each. With
-//! `--fix` it mends what has one answer: a bare link whose name more than
-//! one note has gets the shortest path that names the note it goes to now,
-//! and keeps the text it showed.
+//! a tab, the kind and what it found; in GitHub Actions, an annotation for
+//! each, and with `--json` a JSON line (`report.rs`). With `--fix` it mends
+//! what has one answer: a bare link whose name more than one note has gets
+//! the shortest path that names the note it goes to now, and keeps the text
+//! it showed. Given notes, it reads the whole vault, as a link resolves
+//! against every note, but reports on and mends those notes only.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -122,8 +124,12 @@ pub struct Options {
     /// Lays out the text of every SVG a note shows or links to, and warns
     /// of text over text, off the canvas, or out of its box.
     pub figures: bool,
-    /// Prints GitHub Actions annotations.
-    pub github: bool,
+    /// How a finding is printed.
+    pub mode: report::Mode,
+    /// The notes to report on and mend, from the vault's folder; every
+    /// note when none. Pictures and figures are the vault's, so with notes
+    /// there are no `unused-picture` or `--figures` findings.
+    pub only: Option<HashSet<String>>,
     /// Mends what has one answer, and prints each change instead.
     pub fix: bool,
     /// With [fix], prints the changes and writes nothing.
@@ -792,6 +798,14 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
             figures.push(file);
         }
     }
+    let chosen = |path: &str| options.only.as_ref().is_none_or(|only| only.contains(path));
+    if options.only.is_some() {
+        figures.clear();
+        web.retain(|_, places| {
+            places.retain(|(path, _)| chosen(path));
+            !places.is_empty()
+        });
+    }
     if !figures.is_empty() {
         let fonts = &*figures::FONTS;
         let problems: Vec<(&String, Vec<(&'static str, String)>)> = figures
@@ -877,7 +891,14 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
             }
         }
     }
-    let fixed = mend(root, &fixes, options.dry_run, &mut print);
+    fixes.retain(|(path, ..)| chosen(path));
+    found.retain(|(path, ..)| chosen(path));
+    let fixed = if options.mode == report::Mode::Json {
+        // Only findings go to stdout as JSON; what was mended goes to stderr.
+        mend(root, &fixes, options.dry_run, &mut |line| eprintln!("{line}"))
+    } else {
+        mend(root, &fixes, options.dry_run, &mut print)
+    };
     let (mut errors, mut warnings) = (0, 0);
     for (path, line, error, kind, detail) in &found {
         if *error {
@@ -886,14 +907,31 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
             warnings += 1;
         }
         let level = if *error { "error" } else { "warning" };
-        if options.github {
-            print(report::annotation(level, path, *line, None, kind, detail));
+        let finding = report::Finding {
+            tool: "check",
+            level,
+            path,
+            line: *line,
+            column: None,
+            code: kind,
+            message: detail,
+            fixable: fixable(kind, detail),
+        };
+        if let Some(printed) = finding.printed(options.mode) {
+            print(printed);
         } else {
             let at = if *line > 0 { format!("{path}:{line}") } else { path.clone() };
             print(format!("{at}\t{level}\t{kind}\t{detail}"));
         }
     }
-    Outcome { fixed, errors, warnings, notes: paths.len() }
+    let notes = paths.iter().filter(|p| chosen(p)).count();
+    Outcome { fixed, errors, warnings, notes }
+}
+
+/// Whether `check --fix` mends a finding: an ambiguous link, and with
+/// `--urls --archive` a dead address that has a copy.
+fn fixable(kind: &str, detail: &str) -> bool {
+    kind == "ambiguous-link" || (kind == "dead-url" && detail.contains("; archived at "))
 }
 
 /// Each of [fixes], `(path, line, kind, old, new)`, made in its note
@@ -989,7 +1027,8 @@ mod tests {
             skip_urls: Vec::new(),
             archive: false,
             figures: false,
-            github: false,
+            mode: report::Mode::Plain,
+            only: None,
             fix: false,
             dry_run: false,
             memory: None,
@@ -1111,6 +1150,33 @@ mod tests {
         );
         // Nothing is ambiguous any more.
         assert!(findings(dir.path(), &options).is_empty());
+    }
+
+    #[test]
+    fn given_notes_it_reports_and_mends_those_only_as_json() {
+        let note = "[[Plan]]\n![[gone.png]]\n";
+        let dir = vault(&[("Work/Plan.md", ""), ("Home/Plan.md", ""), ("Work/Note.md", note), ("Other.md", note)]);
+        let mut options = options();
+        options.mode = report::Mode::Json;
+        options.only = Some(HashSet::from(["Work/Note.md".to_string()]));
+        let lines = findings(dir.path(), &options);
+        let found: Vec<serde_json::Value> = lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(
+            found,
+            [
+                serde_json::json!({"tool": "check", "level": "warning", "path": "Work/Note.md", "line": 1, "column": null,
+                    "code": "ambiguous-link", "message": "[[Plan]] names 2 notes; give its folder", "fixable": true}),
+                serde_json::json!({"tool": "check", "level": "error", "path": "Work/Note.md", "line": 2, "column": null,
+                    "code": "missing-embed", "message": "![[gone.png]] is not in the vault", "fixable": false}),
+            ]
+        );
+        // What --fix mends is not a finding: it goes to stderr, and only the given note changes.
+        options.fix = true;
+        let lines = findings(dir.path(), &options);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("\"missing-embed\""));
+        assert_eq!(fs::read_to_string(dir.path().join("Work/Note.md")).unwrap(), "[[Work/Plan|Plan]]\n![[gone.png]]\n");
+        assert_eq!(fs::read_to_string(dir.path().join("Other.md")).unwrap(), note);
     }
 
     #[test]
