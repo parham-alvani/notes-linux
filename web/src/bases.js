@@ -2,7 +2,7 @@
 // runs the base (`BaseEngine`); this only draws what it sends. Kept apart
 // from the page runtime so node can test it.
 
-import { escapeHtml as escape, vaultUrl } from "./render.js";
+import { escapeHtml as escape, vaultUrl, picture } from "./render.js";
 
 /** A cell's value; a checkbox is named after its column, [name]. */
 export function renderCell(cell, name = "") {
@@ -56,7 +56,8 @@ function cover(image, layout) {
   const src = image.file ? vaultUrl(image.file) : image.url && /^https?:\/\//i.test(image.url) ? image.url : null;
   if (!src) return "";
   const fit = layout.imageFit === "contain" ? "contain" : "cover";
-  return `<div class="base-card-cover" style="${style}"><img src="${escape(src)}" alt="" loading="lazy" style="object-fit: ${fit}"></div>`;
+  // Through `picture`: a cover from the web is a placeholder while pictures from the web are off.
+  return `<div class="base-card-cover" style="${style}">${picture({ src, extra: ` loading="lazy" style="object-fit: ${fit}"` })}</div>`;
 }
 
 function renderCards(view) {

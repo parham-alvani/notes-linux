@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { render, renderInline, stripComments, frontMatterLines, parseWikilink, setRemoteImages, blockRemoteImages } from "../src/render.js";
+import { render, renderInline, stripComments, frontMatterLines, parseWikilink, setRemoteImages, pictureAddress, hostOf, withoutRemotePictures } from "../src/render.js";
 
 const links = { Inbox: "Notes/Inbox.md", "logo.png": "uploads/logo.png", Other: "Other.md" };
 
@@ -233,7 +233,7 @@ test("a picture from the web is a placeholder until clicked when remote images a
     assert.doesNotMatch(remote, /<img/);
     assert.match(render("![[logo.png]]", { links }), /<img src="vault:/);
     assert.match(render("![a](data:image/png;base64,AAAA)", { links }), /<img src="data:image\/png/);
-    const html = blockRemoteImages('<img src="HTTP://X.ORG/a.png" width="20">');
+    const html = render('<img src="HTTP://X.ORG/a.png" width="20">');
     assert.match(html, /data-width="20"/);
     assert.match(html, /remote-image-host">x.org</);
     assert.match(render("[link](https://x.org)", { links }), /<a href="https:\/\/x.org"/);
@@ -243,26 +243,94 @@ test("a picture from the web is a placeholder until clicked when remote images a
   assert.match(render("![a](https://x.org/a.png)", { links }), /<img src="https:\/\/x.org\/a.png"/);
 });
 
-test("no picture from the web gets past the placeholder: srcset, odd attributes, inline text", () => {
+test("no picture from the web gets past the placeholder, however its address or its tag is written", () => {
   setRemoteImages(false);
   try {
-    for (const tag of [
-      '<img src="vault:///a.png" srcset="https://x.org/a.png 2x">',
-      '<img/src="https://x.org/a.png">',
+    for (const source of [
       '<img src=" https://x.org/a.png">',
       '<img alt="a>b" src="https://x.org/a.png">',
       `<img alt="x src=vault:y" src='https://x.org/a.png'>`,
-      '<IMG SRC=//x.org/a.png>',
+      "<IMG SRC=//x.org/a.png>",
+      // Read as the browser reads it: one slash, none, backslashes, a tab, a character reference.
+      "![a](https:/x.org/a.png)",
+      "![a](https:x.org/a.png)",
+      '<img src="https:\\\\x.org/a.png">',
+      "![a](&#104;ttps://x.org/a.png)",
+      '<img src="https:/x.org/a.png">',
+      '<img src="&#104;ttps://x.org/a.png">',
+      '<img src="https&colon;//x.org/a.png">',
+      '<img src="ht\ttps://x.org/a.png">',
+      '<img src="\u0001https://x.org/a.png">',
+      '<img src="http://user@X.org:80/a.png">',
+      "- [ ] task ![a](https:/x.org/a.png)",
+      "> [!note] ![a](https:/x.org/a.png)\n> body ![a](https:x.org/b.png)",
+      "| a |\n| --- |\n| ![a](https:/x.org/a.png) |",
+      "![a][r]\n\n[r]: https:/x.org/a.png",
     ]) {
-      const html = blockRemoteImages(tag);
-      assert.doesNotMatch(html, /<img/i, tag);
-      assert.match(html, /remote-image-host">x.org</, tag);
+      const html = render(source);
+      assert.doesNotMatch(html, /<img/i, source);
+      assert.match(html, /remote-image-host">x\.org(:80)?</, source);
+      assert.match(html, /data-src="https:\/\/(user@)?x\.org/i, source);
     }
-    assert.equal(blockRemoteImages('<img src="vault:///a.png" srcset="vault:///b.png 2x">'), '<img src="vault:///a.png" srcset="vault:///b.png 2x">');
+    // An address of a `srcset` is not kept at all; the vault's picture is.
+    const set = render('<img src="vault:///a.png" srcset="https://x.org/a.png 2x">');
+    assert.match(set, /<img src="vault:\/\/\/a.png" alt="">/);
+    assert.doesNotMatch(set, /x\.org/);
     // A task in a query and a property with a link are drawn by renderInline.
     assert.doesNotMatch(renderInline("Pay ![](https://x.org/p.png)", { links }), /<img/);
+    assert.match(renderInline("Pay ![](https:/x.org/p.png)", { links }), /class="remote-image"/);
   } finally {
     setRemoteImages(true);
   }
   assert.match(render("![a](https://x.org/a.png)", { links }), /<img src="https:\/\/x.org\/a.png"/);
+});
+
+test("a picture's address is read as the browser reads it; plain http is asked for over https", () => {
+  assert.deepEqual(pictureAddress("https://x.org/a.png"), { src: "https://x.org/a.png", remote: true });
+  assert.deepEqual(pictureAddress(" HTTP:/x.org/a.png "), { src: "https://x.org/a.png", remote: true });
+  assert.deepEqual(pictureAddress("//x.org/a.png"), { src: "https://x.org/a.png", remote: true });
+  assert.deepEqual(pictureAddress("vault:///uploads/a.png"), { src: "vault:///uploads/a.png", remote: false });
+  assert.deepEqual(pictureAddress("uploads/a.png"), { src: "uploads/a.png", remote: false });
+  assert.equal(pictureAddress("javascript:alert(1)"), null);
+  assert.equal(pictureAddress("file:///etc/passwd"), null);
+  assert.equal(pictureAddress("data:text/html,<b>"), null);
+  assert.equal(hostOf("https://User@X.org:8080/a/b?c#d"), "x.org:8080");
+  assert.match(render("![a](http://x.org/a.png)"), /<img src="https:\/\/x.org\/a.png" alt="a">/);
+});
+
+test("a base card's cover from the web is a placeholder while pictures from the web are off", async () => {
+  const { renderView } = await import("../src/bases.js");
+  const view = { kind: "cards", columns: [], count: 1, layout: {}, groups: [{ name: null, rows: [{ path: "A.md", cells: [], image: { url: "https://x.org/c.png" } }] }] };
+  assert.match(renderView(view), /<img src="https:\/\/x.org\/c.png" alt="" loading="lazy" style="object-fit: cover">/);
+  setRemoteImages(false);
+  try {
+    assert.match(renderView(view), /class="remote-image" data-src="https:\/\/x.org\/c.png"/);
+    assert.doesNotMatch(renderView(view), /<img/);
+  } finally {
+    setRemoteImages(true);
+  }
+});
+
+test("a diagram's picture shape loses an address on the web, and keeps one in the vault", () => {
+  assert.equal(withoutRemotePictures('A@{ img: "https://x.org/a.png", label: "x" }'), 'A@{ img: "", label: "x" }');
+  assert.equal(withoutRemotePictures("A@{ img : 'http:/x.org/a.png' }"), "A@{ img : '' }");
+  assert.equal(withoutRemotePictures('A@{ img: "vault:///a.png" }'), 'A@{ img: "vault:///a.png" }');
+  assert.equal(withoutRemotePictures("A --> B"), "A --> B");
+});
+
+test("math KaTeX cannot draw is shown as its source, and the note is drawn", () => {
+  const deep = "{".repeat(20000);
+  for (const source of ["```math\n" + deep + "\n```\n\nafter", "```latex\n" + deep + "\n```\n\nafter", "$$\n" + deep + "\n$$\n\nafter", "$" + deep + "x$ after"]) {
+    const html = render(source);
+    assert.match(html, /<code class="math-error">\{\{/);
+    assert.match(html, /after/);
+  }
+  assert.match(render("```math\n\\frac{1}{2}\n```"), /class="math math-block"><span class="katex-display">/);
+});
+
+test("a box with nothing after it is a task, and a box glued to its text is not", () => {
+  assert.match(render("- [ ]\n"), /<li class="task-list-item" data-task=" "/);
+  assert.match(render("- [x]\n"), /<li class="task-list-item is-checked" data-task="x"/);
+  assert.doesNotMatch(render("- [x]done\n"), /task-list-item/);
+  assert.doesNotMatch(render("- [x]**done**\n"), /task-list-item/);
 });

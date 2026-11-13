@@ -6,6 +6,7 @@ import MarkdownIt from "markdown-it";
 import footnote from "markdown-it-footnote";
 import katex from "katex";
 import hljs from "highlight.js/lib/common";
+import { sanitizeHtml, cleanAddress, schemeOf } from "./sanitize.js";
 
 const IMAGE = /\.(png|jpe?g|gif|webp|svg|bmp|avif|hei[cf]|tiff?)$/i;
 const VIDEO = /\.(mp4|m4v|mov|webm|ogv)$/i;
@@ -13,7 +14,8 @@ const AUDIO = /\.(mp3|m4a|wav|ogg|oga|flac|aac|opus)$/i;
 const CALLOUT = /^\[!([\w-]+)\]([+-]?)[ \t]*(.*)$/;
 const BLOCK_ID = /\s\^([A-Za-z0-9-]+)\s*$/;
 const OWN_BLOCK_ID = /^\^([A-Za-z0-9-]+)$/;
-const TASK = /^\[([^\]\n])\][ \t]+/;
+// A box with nothing after it is a task too, as the parser reads it; `[x]text` is not.
+const TASK = /^\[([^\]\n])\](?:[ \t]+|$)/;
 const TAG = /^#([\p{L}\p{N}_\/-]+)/u;
 
 /** Done or cancelled. In progress and any custom status are still open. */
@@ -302,14 +304,22 @@ function tags(md) {
   };
 }
 
+/**
+ * TeX as KaTeX draws it. `throwOnError: false` shows a TeX mistake in red,
+ * but KaTeX still throws what is not a mistake of TeX's (a stack that ran
+ * out on twenty thousand `{`): then the source is shown as code, and the
+ * rest of the note is drawn.
+ */
+function tex(source, displayMode) {
+  try {
+    return katex.renderToString(source, { displayMode, throwOnError: false, output: "htmlAndMathml" });
+  } catch (error) {
+    return `<code class="math-error">${escapeHtml(source)}</code>`;
+  }
+}
+
 function math(md) {
-  const render = (tex, displayMode) => {
-    try {
-      return katex.renderToString(tex, { displayMode, throwOnError: false, output: "htmlAndMathml" });
-    } catch (error) {
-      return `<code class="math-error">${escapeHtml(tex)}</code>`;
-    }
-  };
+  const render = tex;
 
   md.block.ruler.before("fence", "math_block", (state, startLine, endLine, silent) => {
     const start = state.bMarks[startLine] + state.tShift[startLine];
@@ -554,7 +564,8 @@ function tasks(md) {
       const first = inline.children[0];
       if (first?.type !== "text") continue;
       const match = TASK.exec(first.content);
-      if (!match) continue;
+      // The whole line decides: `[x]**bold**` has a first text of `[x]` alone, and is no task.
+      if (!match || !TASK.test(inline.content)) continue;
       const status = match[1];
       first.content = first.content.slice(match[0].length);
       const box = new state.Token("task_checkbox", "", 0);
@@ -660,8 +671,9 @@ function isolateDates(md) {
         for (const match of child.content.matchAll(HYPHEN_DATE)) {
           const before = new state.Token("text", "", 0);
           before.content = child.content.slice(at, match.index);
-          const date = new state.Token("html_inline", "", 0);
-          date.content = `<bdi dir="ltr">${escapeHtml(match[0])}</bdi>`;
+          // Its own kind of token: a note's raw HTML is `html_inline`, which is filtered.
+          const date = new state.Token("isolated_date", "", 0);
+          date.content = match[0];
           children.push(before, date);
           at = match.index + match[0].length;
         }
@@ -748,7 +760,7 @@ function fences(md) {
     if (lang === "tasks") return `<div class="tasks-query" data-source="${escapeHtml(token.content)}"></div>\n`;
     if (lang === "base") return `<div class="base-query" data-source="${escapeHtml(token.content)}"></div>\n`;
     if (lang === "math" || lang === "latex") {
-      return `<div class="math math-block">${katex.renderToString(token.content, { displayMode: true, throwOnError: false })}</div>\n`;
+      return `<div class="math math-block">${tex(token.content, true)}</div>\n`;
     }
     // A `^id` line under the block names it: the id goes on its outer tag.
     const id = token.attrGet("id");
@@ -760,9 +772,35 @@ function fences(md) {
   };
 }
 
+/**
+ * A note's raw HTML, through the list of `sanitize.js`: the tags and
+ * attributes a note may write are written again, the rest is left out or
+ * shown as text. Nothing a note writes can carry a class, an id or a
+ * `data-` attribute, which are how the page knows its own controls.
+ */
+function rawHtml(md) {
+  const safe = (tokens, idx) => sanitizeHtml(tokens[idx].content, { image: rawImage });
+  md.renderer.rules.html_block = safe;
+  md.renderer.rules.html_inline = safe;
+  md.renderer.rules.isolated_date = (tokens, idx) => `<bdi dir="ltr">${escapeHtml(tokens[idx].content)}</bdi>`;
+}
+
+/** An `<img>` a note wrote as HTML: its address, alt text and size, and nothing else. */
+function rawImage(attribute) {
+  return picture({ src: attribute.src ?? "", alt: attribute.alt ?? "", width: attribute.width, height: attribute.height });
+}
+
+/** `![alt](address "title")`: drawn by `picture`, so a picture from the web is one whichever way it is written. */
+function images(md) {
+  md.renderer.rules.image = (tokens, idx, options, env, self) => {
+    const token = tokens[idx];
+    return picture({ src: token.attrGet("src") ?? "", alt: self.renderInlineAsText(token.children ?? [], options, env), title: token.attrGet("title") ?? "" });
+  };
+}
+
 export function createRenderer() {
   const md = new MarkdownIt({ html: true, linkify: true, breaks: false, typographer: false });
-  md.use(footnote).use(wikilinks).use(highlights).use(tags).use(math).use(callouts).use(tasks).use(blockIds).use(direction).use(isolateDates).use(headings).use(sourceLines).use(fences);
+  md.use(rawHtml).use(images).use(footnote).use(wikilinks).use(highlights).use(tags).use(math).use(callouts).use(tasks).use(blockIds).use(direction).use(isolateDates).use(headings).use(sourceLines).use(fences);
   return md;
 }
 
@@ -770,7 +808,7 @@ const shared = createRenderer();
 
 /** One line of markdown -- a task's text in a query result -- as inline HTML. */
 export function renderInline(text, { path = "", links = {} } = {}) {
-  return shownImages(shared.renderInline(text, { path, links, lineOffset: 0 }));
+  return shared.renderInline(text, { path, links, lineOffset: 0 });
 }
 
 /**
@@ -781,7 +819,7 @@ export function renderInline(text, { path = "", links = {} } = {}) {
 export function render(text, { path = "", links = {} } = {}) {
   const lineOffset = frontMatterLines(text);
   const body = text.split("\n").slice(lineOffset).join("\n");
-  return shownImages(shared.render(stripComments(body), { path, links, lineOffset }));
+  return shared.render(stripComments(body), { path, links, lineOffset });
 }
 
 let remoteImages = true;
@@ -791,61 +829,72 @@ export function setRemoteImages(shown) {
   remoteImages = shown !== false;
 }
 
-/** [html] as the setting wants it: its pictures from the web kept, or each one a placeholder. */
-export function shownImages(html) {
-  return remoteImages ? html : blockRemoteImages(html);
-}
-
-// A `>` inside a quoted attribute does not end the tag.
-const IMG_TAG = /<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
-const ATTRIBUTE = /([^\s"'>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
-const REMOTE = /^\s*(?:https?:)?\/\//i;
-
-/** The attributes of an `<img>` tag, read in order, so that `src=` in an alt text is not taken for the src. */
-function attributes(tag) {
-  const found = {};
-  for (const match of tag.slice(4).matchAll(ATTRIBUTE)) {
-    const name = match[1].toLowerCase();
-    if (!(name in found)) found[name] = match[2] ?? match[3] ?? match[4] ?? "";
-  }
-  return found;
+/** What `setRemoteImages` was last given. */
+export function remoteImagesShown() {
+  return remoteImages;
 }
 
 /**
- * [html] with every `<img>` that would ask a site for a picture (its `src`,
- * or any address of its `srcset`, on the web) replaced by a `remote-image`
- * button that keeps its address, alt text and size, so the page asks no site
- * for anything until the person clicks one. Pictures from the vault and
- * `data:` pictures stay.
+ * Where a picture's address goes, read as the browser reads it, not as it
+ * is written: spaces, tabs and line breaks do not count, `https:/x.org`,
+ * `https:x.org` and `https:\\x.org` are all `https://x.org`, and `//x.org`
+ * is a site too. `{ src, remote }`, with a picture from the web under one
+ * spelling, `https://host/…` (an `http:` picture is asked for over https,
+ * as browsers do: the page loads nothing over plain http); null for an
+ * address that is no picture's (`javascript:`, `file:`).
  */
-export function blockRemoteImages(html) {
-  return html.replace(IMG_TAG, (tag) => {
-    const attribute = attributes(tag);
-    const sources = (attribute.srcset ?? "").split(",").map((part) => part.trim().split(/\s+/)[0]).filter(Boolean);
-    const src = [attribute.src, ...sources].find((value) => value && REMOTE.test(value.replace(/&amp;/g, "&")));
-    if (!src) return tag;
-    const address = src.trim().replace(/&amp;/g, "&");
-    let host = "";
-    try {
-      host = new URL(address, "https://x.invalid").host;
-    } catch {
-      host = address;
-    }
-    const alt = attribute.alt ?? "";
-    const size = ["width", "height"].map((name) => (attribute[name] ? ` data-${name}="${attribute[name].replace(/"/g, "&quot;")}"` : "")).join("");
-    return (
-      `<button type="button" class="remote-image" data-src="${src.trim().replace(/"/g, "&quot;")}" data-alt="${alt.replace(/"/g, "&quot;")}"${size} title="Load this picture from ${escapeHtml(host)}">` +
-      `<span class="remote-image-icon" aria-hidden="true">🖼</span><span class="remote-image-host">${escapeHtml(host)}</span>` +
-      (alt ? `<span class="remote-image-alt" dir="auto">${alt}</span>` : "") +
-      `</button>`
-    );
-  });
+export function pictureAddress(value) {
+  const address = cleanAddress(String(value));
+  const scheme = schemeOf(address);
+  if (scheme === "http" || scheme === "https" || /^[\/\\]{2}/.test(address)) {
+    const rest = address.slice(scheme ? scheme.length + 1 : 0).replace(/^[\/\\]+/, "");
+    return rest ? { src: `https://${rest}`, remote: true } : null;
+  }
+  if (!address) return null;
+  if (scheme === null || scheme === "vault" || scheme === "cid" || (scheme === "data" && /^data:image\//i.test(address))) return { src: address, remote: false };
+  return null;
 }
 
-/** Puts a placeholder's picture back, for this view only. */
-export function loadRemoteImage(button) {
+/** A diagram's source with the address of each picture shape (`img: "https://…"`) that names a site taken out. */
+export function withoutRemotePictures(source) {
+  return source.replace(/(\bimg\s*:\s*)(["'])(.*?)\2/g, (whole, key, quote, address) => (pictureAddress(address)?.remote === false ? whole : `${key}${quote}${quote}`));
+}
+
+/** The site of a picture from the web, `https://host/…`: its host, in small letters. */
+export function hostOf(address) {
+  const authority = address.replace(/^https:\/\//, "").split(/[\/?#\\]/)[0];
+  return authority.slice(authority.lastIndexOf("@") + 1).toLowerCase();
+}
+
+/**
+ * A picture as HTML, from its parts: an `<img>`, or, for a picture from the
+ * web while `remoteImages` is off, a `remote-image` button that keeps its
+ * address, alt text and size, so the page asks no site for anything until
+ * the person clicks it. Every picture a note or a base draws comes through
+ * here, so there is no HTML to search for pictures afterwards. [extra] is
+ * the caller's own attributes, written as they are.
+ */
+export function picture({ src, alt = "", title = "", width, height, extra = "" }) {
+  const address = pictureAddress(src);
+  if (!address) return alt ? escapeHtml(alt) : "";
+  const sized = (prefix) =>
+    [["width", width], ["height", height]].map(([name, value]) => (/^\d{1,5}%?$/.test(String(value ?? "")) ? ` ${prefix}${name}="${value}"` : "")).join("");
+  if (address.remote && !remoteImages) {
+    const host = hostOf(address.src);
+    return (
+      `<button type="button" class="remote-image" data-src="${escapeHtml(address.src)}" data-alt="${escapeHtml(alt)}"${sized("data-")} title="Load this picture from ${escapeHtml(host)}">` +
+      `<span class="remote-image-icon" aria-hidden="true">🖼</span><span class="remote-image-host">${escapeHtml(host)}</span>` +
+      (alt ? `<span class="remote-image-alt" dir="auto">${escapeHtml(alt)}</span>` : "") +
+      `</button>`
+    );
+  }
+  return `<img src="${escapeHtml(address.src)}" alt="${escapeHtml(alt)}"${title ? ` title="${escapeHtml(title)}"` : ""}${sized("")}${extra}>`;
+}
+
+/** Puts a placeholder's picture back, for this view only, from [address]: the placeholder's own, or the way to it the app gave. */
+export function loadRemoteImage(button, address = button.dataset.src) {
   const img = button.ownerDocument.createElement("img");
-  img.src = button.dataset.src;
+  img.src = address;
   img.alt = button.dataset.alt ?? "";
   if (button.dataset.width) img.setAttribute("width", button.dataset.width);
   if (button.dataset.height) img.setAttribute("height", button.dataset.height);

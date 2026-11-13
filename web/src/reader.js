@@ -2,7 +2,7 @@
 // what the person does with it. Every message to the app goes through
 // `post`, and the app calls `daftar.show` and `daftar.scrollTo`.
 
-import { render, renderInline, isClosed, hue, languageColor, vaultUrl, escapeHtml, setRemoteImages, shownImages, loadRemoteImage } from "./render.js";
+import { render, renderInline, isClosed, hue, languageColor, vaultUrl, escapeHtml, setRemoteImages, remoteImagesShown, pictureAddress, withoutRemotePictures, loadRemoteImage } from "./render.js";
 import { renderView } from "./bases.js";
 import { renderCanvas, bounds, fit } from "./canvas.js";
 import { codeHead, findBar as findBarHtml, foldState, taskChip, baseTabs, canvasBar, zoomLabel, imageBar, imageInfo } from "./controls.js";
@@ -57,12 +57,31 @@ async function drawDiagrams(root) {
     },
   });
   for (const node of nodes) {
+    // A picture shape asks its site while the diagram is laid out, before
+    // anything is in the page: with pictures from the web off, its address
+    // leaves the source. The page's policy refuses what this misses.
+    if (!remoteImagesShown() && !node.dataset.processed) node.textContent = withoutRemotePictures(node.textContent);
     try {
       await mermaid.run({ nodes: [node] });
     } catch (error) {
       node.classList.add("mermaid-error");
     }
+    dropRemotePictures(node);
   }
+}
+
+/**
+ * A diagram can draw a picture from the web (an image shape, a label's
+ * `<img>`). With pictures from the web off it is taken out: the page's
+ * policy has already refused to ask for it, and a diagram has no place for
+ * a placeholder.
+ */
+function dropRemotePictures(root) {
+  if (remoteImagesShown()) return;
+  root.querySelectorAll("image, img").forEach((picture) => {
+    const address = picture.getAttribute("href") ?? picture.getAttribute("xlink:href") ?? picture.getAttribute("src") ?? "";
+    if (pictureAddress(address)?.remote !== false) picture.remove();
+  });
 }
 
 /**
@@ -199,7 +218,7 @@ function renderBase(holder, result, key, wanted) {
   const problems = (result.problems ?? []).map((line) => `<li>${escape(line)}</li>`).join("");
   const warning = problems ? `<div class="callout query-warning" data-callout="warning"><div class="callout-title">Not understood</div><ul>${problems}</ul></div>` : "";
   const tabs = views.length > 1 ? baseTabs(views, chosen) : "";
-  holder.innerHTML = warning + tabs + `<div class="base-view">${views[chosen] ? shownImages(renderView(views[chosen])) : ""}</div>`;
+  holder.innerHTML = warning + tabs + `<div class="base-view">${views[chosen] ? renderView(views[chosen]) : ""}</div>`;
   const choose = (at) => {
     chosenViews.set(key, at);
     renderBase(holder, result, key, wanted);
@@ -904,8 +923,9 @@ window.daftar = {
     }
     imagePage.viewer?.observer.disconnect();
     imagePage.viewer = null;
+    // No title, no heading: a drill card's answer is a part of its note.
     main.innerHTML =
-      `<h1 class="inline-title" dir="${RTL_FIRST.test(note.title) ? "rtl" : "auto"}">${escape(note.title)}</h1>` +
+      (note.title ? `<h1 class="inline-title" dir="${RTL_FIRST.test(note.title) ? "rtl" : "auto"}">${escape(note.title)}</h1>` : "") +
       renderProperties(note.properties, note) +
       render(note.text, { path: note.path, links: note.links });
     // A base is a wide table: it gets the whole window.
@@ -915,11 +935,9 @@ window.daftar = {
       main.appendChild(holder);
       renderBase(holder, note.base, note.path, "");
     }
-    if (keep !== null) {
-      // Kept below, once the page is laid out as the one the place was taken on.
-    } else if (note.heading) this.scrollTo(note.heading);
-    else if (note.line != null) this.scrollToLine(note.line);
-    else window.scrollTo(0, 0);
+    // A kept place, a heading and a line are scrolled to below, once the
+    // page is laid out as it will be seen.
+    if (keep === null && !note.heading && note.line == null) window.scrollTo(0, 0);
     // The reading cursor: on the line the editor was at, on the same block
     // when the note is shown again, or at the top in a note just opened.
     folds.shut = new Set(note.folds ?? []);
@@ -927,12 +945,14 @@ window.daftar = {
     decorate(main);
     folds.apply();
     // A note shown again after it changed on disk (a format on leaving the
-    // editor, a pull) stays where it was. The code blocks' heads and the
-    // folds above it change the page's height, so the place is set after
-    // them: set before, the page slid by their height.
+    // editor, a pull) stays where it was, and a heading or a line (back
+    // from the editor) is scrolled to. The code blocks' heads and the folds
+    // above the place change the page's height, so the scroll comes after
+    // them: before, the page slid by their height. A link to a heading
+    // inside a folded section opens the section.
     if (keep !== null) window.scrollTo(0, keep);
-    // A link to a heading inside a folded section opens the section.
-    if (keep === null && note.heading) this.scrollTo(note.heading);
+    else if (note.heading) this.scrollTo(note.heading);
+    else if (note.line != null) this.scrollToLine(note.line);
     reading.restore(note.line ?? (keep !== null ? reading.line : null));
     progress();
     await Promise.all([drawDiagrams(main), fillEmbeds(main), fillQueries(main), fillBases(main)]);
@@ -1605,15 +1625,24 @@ post({ kind: "ready" });
 
 // A picture from the web left out by `appearance.remote_images = false` loads
 // when its placeholder is clicked, and the click goes no further: a picture
-// inside a link does not follow the link.
+// inside a link does not follow the link. The app says which way the picture
+// comes: its policy for the page lets no `https:` picture in while the
+// setting is off, so the app allows this one address and gives the address
+// that reaches it. A host with no such handler loads the picture directly.
 document.addEventListener(
   "click",
-  (event) => {
+  async (event) => {
     const button = event.target instanceof Element ? event.target.closest(".remote-image") : null;
     if (!button) return;
     event.preventDefault();
     event.stopPropagation();
-    loadRemoteImage(button);
+    let address = button.dataset.src;
+    try {
+      address = (await app?.remoteImage?.postMessage({ url: address })) || address;
+    } catch (error) {
+      // The picture is asked for as it is written; the policy decides.
+    }
+    if (button.isConnected) loadRemoteImage(button, address);
   },
   true,
 );
