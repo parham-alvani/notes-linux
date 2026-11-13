@@ -15,6 +15,27 @@ function post(message) {
 }
 
 let current = { path: "" };
+/** Grows with each `daftar.show`: a drawing a newer one replaced stops at its next wait. */
+let shows = 0;
+
+/**
+ * Where the time of a `daftar.show` goes: `performance` marks named
+ * `daftar:<stage>`, cleared at each show, which a benchmark reads with
+ * `performance.getEntriesByType("mark")`. `painted` is the frame after the
+ * first screen was drawn.
+ */
+const timing = {
+  start() {
+    performance.clearMarks();
+    performance.mark("daftar:start");
+  },
+  mark(name) {
+    performance.mark(`daftar:${name}`);
+  },
+  painted() {
+    requestAnimationFrame(() => setTimeout(() => this.mark("painted"), 0));
+  },
+};
 let mermaidLoading = null;
 
 function loadMermaid() {
@@ -29,21 +50,17 @@ function loadMermaid() {
   return mermaidLoading;
 }
 
-async function drawDiagrams(root) {
-  const nodes = [...root.querySelectorAll("pre.mermaid")];
-  if (nodes.length === 0) return;
-  const mermaid = await loadMermaid();
-  // The diagram takes the reader's palette, naz or Daylight.
+/** The palette as Mermaid takes it, from the page's colours, naz or Daylight. */
+function diagramTheme() {
   const css = getComputedStyle(document.documentElement);
   const color = (name) => css.getPropertyValue(name).trim();
-  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-  mermaid.initialize({
+  return {
     startOnLoad: false,
     theme: "base",
     securityLevel: "strict",
     fontFamily: "-apple-system, sans-serif",
     themeVariables: {
-      darkMode: dark,
+      darkMode: matchMedia("(prefers-color-scheme: dark)").matches,
       background: color("--background"),
       primaryColor: color("--panel"),
       primaryTextColor: color("--text"),
@@ -55,19 +72,87 @@ async function drawDiagrams(root) {
       noteBkgColor: color("--panel"),
       noteTextColor: color("--text"),
     },
-  });
-  for (const node of nodes) {
-    // A picture shape asks its site while the diagram is laid out, before
-    // anything is in the page: with pictures from the web off, its address
-    // leaves the source. The page's policy refuses what this misses.
-    if (!remoteImagesShown() && !node.dataset.processed) node.textContent = withoutRemotePictures(node.textContent);
-    try {
-      await mermaid.run({ nodes: [node] });
-    } catch (error) {
-      node.classList.add("mermaid-error");
-    }
-    dropRemotePictures(node);
+  };
+}
+
+/** One diagram drawn, in place of its source. */
+async function drawDiagram(mermaid, node) {
+  // A note shown since: this diagram is off the page.
+  if (!node.isConnected || node.dataset.processed) return;
+  // A picture shape asks its site while the diagram is laid out, before
+  // anything is in the page: with pictures from the web off, its address
+  // leaves the source. The page's policy refuses what this misses.
+  if (!remoteImagesShown()) node.textContent = withoutRemotePictures(node.textContent);
+  try {
+    await mermaid.run({ nodes: [node] });
+  } catch (error) {
+    node.classList.add("mermaid-error");
   }
+  dropRemotePictures(node);
+}
+
+/**
+ * The note's diagrams are drawn as they come near the window, not all at
+ * once: a diagram takes tens of milliseconds, and a note can have a dozen.
+ * The ones within a screen and a half of the window are drawn before the
+ * note counts as shown; the rest when a scroll brings them that near, one
+ * at a time. A diagram drawn above the window changes the page's height
+ * above what is read, so the page scrolls by as much and the text stays put.
+ */
+const diagrams = { observer: null, queue: Promise.resolve() };
+
+function lazyDiagram(node) {
+  diagrams.queue = diagrams.queue.then(async () => {
+    if (!node.isConnected) return;
+    const mermaid = await loadMermaid();
+    const above = node.getBoundingClientRect().bottom <= 0;
+    const height = node.offsetHeight;
+    await drawDiagram(mermaid, node);
+    if (!node.isConnected) return;
+    if (above) window.scrollBy(0, node.offsetHeight - height);
+    decorate(node);
+    reading.redraw();
+    progress();
+  }).catch(() => {});
+  return diagrams.queue;
+}
+
+async function drawDiagrams(root) {
+  // A diagram kept from the last drawing is drawn already.
+  const nodes = [...root.querySelectorAll("pre.mermaid:not([data-processed])")];
+  if (root.id === "note") {
+    diagrams.observer?.disconnect();
+    diagrams.observer = null;
+  }
+  if (nodes.length === 0) return;
+  const mermaid = await loadMermaid();
+  mermaid.initialize(diagramTheme());
+  if (root.id !== "note") {
+    // An embed or a preview: drawn now, as it is small.
+    for (const node of nodes) await drawDiagram(mermaid, node);
+    return;
+  }
+  const near = (node) => {
+    const box = node.getBoundingClientRect();
+    return box.bottom > -1.5 * window.innerHeight && box.top < 2.5 * window.innerHeight;
+  };
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        observer.unobserve(entry.target);
+        lazyDiagram(entry.target);
+      }
+    },
+    { rootMargin: "150% 0px" },
+  );
+  diagrams.observer = observer;
+  const now = [];
+  for (const node of nodes) {
+    if (near(node)) now.push(node);
+    else observer.observe(node);
+  }
+  for (const node of now) await drawDiagram(mermaid, node);
 }
 
 /**
@@ -124,10 +209,12 @@ function section(root, anchor) {
 async function fillEmbeds(root) {
   const embeds = [...root.querySelectorAll(".embed")];
   for (const embed of embeds) {
+    // A note shown since took this one's embeds off the page.
+    if (!embed.isConnected) continue;
     const body = embed.querySelector(".embed-body");
     try {
       const note = await app?.embed?.postMessage({ path: embed.dataset.path });
-      if (!note) continue;
+      if (!note || !embed.isConnected) continue;
       const holder = document.createElement("div");
       holder.innerHTML = render(note.text, { path: embed.dataset.path, links: note.links });
       holder.querySelectorAll(".embed").forEach((inner) => {
@@ -157,13 +244,14 @@ async function fillEmbeds(root) {
  */
 async function fillQueries(root) {
   for (const block of root.querySelectorAll(".tasks-query")) {
+    if (!block.isConnected) continue;
     let result;
     try {
       result = await app?.tasks?.postMessage({ source: block.dataset.source, path: current.path });
     } catch (error) {
       result = null;
     }
-    if (!result) continue;
+    if (!result || !block.isConnected) continue;
     const parts = [];
     if (result.notUnderstood.length > 0) {
       const lines = result.notUnderstood.map((line) => `<li><code>${escape(line)}</code></li>`).join("");
@@ -240,13 +328,14 @@ function renderBase(holder, result, key, wanted) {
 /** Each `![[x.base]]` and ` ```base ` block, run by the app. */
 async function fillBases(root) {
   for (const block of root.querySelectorAll(".base-query")) {
+    if (!block.isConnected) continue;
     let result;
     try {
       result = await app?.base?.postMessage({ path: block.dataset.path ?? "", source: block.dataset.source ?? "", context: current.path });
     } catch (error) {
       result = null;
     }
-    if (!result) continue;
+    if (!result || !block.isConnected) continue;
     const key = `${current.path}|${block.dataset.path ?? block.dataset.source}`;
     renderBase(block, result, key, block.dataset.view);
   }
@@ -523,6 +612,7 @@ const folds = {
 
   /** Hides what each folded heading holds: everything after it up to a heading as big or bigger. */
   apply() {
+    sections.list = null;
     let shutLevel = Infinity;
     for (const child of document.getElementById("note").children) {
       const level = /^H[1-6]$/.test(child.tagName) && child.dataset.heading !== undefined ? Number(child.tagName[1]) : null;
@@ -712,23 +802,33 @@ function decorate(root) {
     });
     pre.replaceWith(block);
     block.append(head, pre);
+    // The block stands where the code was: it is what a later drawing compares.
+    if (pre.source !== undefined) Object.assign(block, { source: pre.source, line: pre.line });
   });
 }
 
-/** The section at the top of the window, told to the app when it changes, for the outline. */
+/**
+ * The section at the top of the window, told to the app when it changes,
+ * for the outline. The headings are listed once a drawing (`sections.list`
+ * is cleared when the note or its folds change) and the one at the top is
+ * found by halves: a scroll reads a few boxes, not every heading's.
+ */
 let lastSection = null;
+const sections = { list: null };
 function reportSection() {
-  const headings = [...document.querySelectorAll("#note > [data-heading]")].filter((h) => !h.classList.contains("folded-away"));
-  let at = null;
-  for (const heading of headings) {
-    if (heading.getBoundingClientRect().top > 90) break;
-    at = Number(heading.dataset.line);
+  sections.list ??= [...document.querySelectorAll("#note > [data-heading]")].filter((h) => !h.classList.contains("folded-away"));
+  const headings = sections.list;
+  let low = 0, high = headings.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (headings[mid].getBoundingClientRect().top > 90) high = mid;
+    else low = mid + 1;
   }
+  const at = low > 0 ? Number(headings[low - 1].dataset.line) : null;
   if (at === lastSection) return;
   lastSection = at;
   post({ kind: "section", line: at ?? -1 });
 }
-window.addEventListener("scroll", reportSection, { passive: true });
 
 /** The thin bar at the top that fills as the note is read. */
 function progress() {
@@ -739,8 +839,23 @@ function progress() {
   bar.style.transform = `scaleX(${part})`;
   bar.setAttribute("aria-valuenow", String(Math.round(part * 100)));
 }
-window.addEventListener("scroll", progress, { passive: true });
-window.addEventListener("resize", progress);
+
+/**
+ * A scroll is handled once a frame, its reads before its writes: the
+ * section's boxes are read, then the bar is set, so no box is read after a
+ * style was changed in the same frame.
+ */
+let scrollFrame = 0;
+function onScroll() {
+  if (scrollFrame) return;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = 0;
+    reportSection();
+    progress();
+  });
+}
+window.addEventListener("scroll", onScroll, { passive: true });
+window.addEventListener("resize", onScroll);
 
 /**
  * Find in the note: a bar at the top, every match marked, the current one
@@ -886,6 +1001,78 @@ function escape(text) {
   return escapeHtml(String(text));
 }
 
+/**
+ * What the note on screen was drawn from: each top-level block keeps the
+ * HTML it was made from (`block.source`, its file lines left out) and its
+ * first file line (`block.line`), so a drawing of a changed note can tell
+ * which blocks stayed the same.
+ */
+const drawn = { path: "" };
+const LINES = / data-line="\d+"/g;
+
+function firstLine(el) {
+  const at = el.matches("[data-line]") ? el : el.querySelector("[data-line]");
+  return at ? Number(at.dataset.line) : null;
+}
+
+function remember(main) {
+  for (const el of main.children) {
+    el.source = el.outerHTML.replace(LINES, "");
+    el.line = firstLine(el);
+  }
+}
+
+/**
+ * Draws [html] over the note in [main] block by block: the blocks the same
+ * at the start and the end are kept, their file lines moved by what was
+ * added above them, and only those between are replaced. False when the
+ * page holds no note drawn by `remember`.
+ */
+/** The block a patch keeps in place on screen, and where it was. */
+const patchAnchor = { block: null };
+
+function patch(main, html) {
+  patchAnchor.block = null;
+  const old = [...main.children];
+  if (old.length === 0 || old.some((el) => el.source === undefined)) return false;
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const fresh = [...template.content.children];
+  const keys = fresh.map((el) => el.outerHTML.replace(LINES, ""));
+  let start = 0;
+  while (start < old.length && start < fresh.length && old[start].source === keys[start]) start++;
+  let end = 0;
+  while (end < old.length - start && end < fresh.length - start && old[old.length - 1 - end].source === keys[fresh.length - 1 - end]) end++;
+  // The blocks kept below the change: their lines move with it.
+  for (let i = 0; i < end; i++) {
+    const el = old[old.length - 1 - i];
+    const line = firstLine(fresh[fresh.length - 1 - i]);
+    const shift = line != null && el.line != null ? line - el.line : 0;
+    if (shift === 0) continue;
+    el.line = line;
+    for (const at of [el, ...el.querySelectorAll("[data-line]")]) {
+      if (at.dataset.line === undefined || at.closest(".embed-body")) continue;
+      at.dataset.line = String(Number(at.dataset.line) + shift);
+    }
+  }
+  const after = old[old.length - end] ?? null;
+  // The first block on screen, when it is kept: the page is put back so
+  // it stays where it is. WebKit has no scroll anchoring, and a paragraph
+  // added above the window (a pull, a save from elsewhere) slid the text
+  // being read down by its height.
+  const shown = old.find((el) => el.getBoundingClientRect().bottom > 0);
+  const index = shown ? old.indexOf(shown) : -1;
+  if (index >= 0 && (index < start || index >= old.length - end)) patchAnchor.block = { el: shown, top: shown.getBoundingClientRect().top };
+  for (const el of old.slice(start, old.length - end)) el.remove();
+  for (let i = start; i < fresh.length - end; i++) {
+    const el = fresh[i];
+    el.source = keys[i];
+    el.line = firstLine(el);
+    main.insertBefore(el, after);
+  }
+  return true;
+}
+
 window.daftar = {
   /**
    * Shows a note: `{ path, title, text, links, properties }`, then scrolls
@@ -893,6 +1080,9 @@ window.daftar = {
    * `keepScroll` -- a note shown again after it changed on disk.
    */
   async show(note) {
+    timing.start();
+    const generation = ++shows;
+    sections.list = null;
     const keep = note.keepScroll ? window.scrollY : null;
     current = note;
     const root = document.documentElement.style;
@@ -910,6 +1100,8 @@ window.daftar = {
     const main = document.getElementById("note");
     main.classList.toggle("is-canvas", Boolean(note.canvas));
     main.classList.toggle("is-image", Boolean(note.image));
+    // A board or a picture is no note drawn block by block.
+    if (note.canvas || note.image) drawn.path = "";
     if (note.canvas) {
       await showCanvas(main, note);
       return;
@@ -924,10 +1116,21 @@ window.daftar = {
     imagePage.viewer?.observer.disconnect();
     imagePage.viewer = null;
     // No title, no heading: a drill card's answer is a part of its note.
-    main.innerHTML =
+    const html =
       (note.title ? `<h1 class="inline-title" dir="${RTL_FIRST.test(note.title) ? "rtl" : "auto"}">${escape(note.title)}</h1>` : "") +
       renderProperties(note.properties, note) +
       render(note.text, { path: note.path, links: note.links });
+    timing.mark("rendered");
+    // The same note again after a change on disk: only the blocks that
+    // changed are drawn again; the rest keep their diagrams, pictures and
+    // decorations.
+    const patched = keep !== null && !note.base && drawn.path === note.path && patch(main, html);
+    if (!patched) {
+      main.innerHTML = html;
+      remember(main);
+    }
+    drawn.path = note.base ? "" : note.path;
+    timing.mark("inserted");
     // A base is a wide table: it gets the whole window.
     main.classList.toggle("is-base", Boolean(note.base));
     if (note.base) {
@@ -942,20 +1145,30 @@ window.daftar = {
     // when the note is shown again, or at the top in a note just opened.
     folds.shut = new Set(note.folds ?? []);
     linkDetected(main, note.detected);
+    timing.mark("detected");
     decorate(main);
+    timing.mark("decorate");
     folds.apply();
+    timing.mark("folds");
     // A note shown again after it changed on disk (a format on leaving the
     // editor, a pull) stays where it was, and a heading or a line (back
     // from the editor) is scrolled to. The code blocks' heads and the folds
     // above the place change the page's height, so the scroll comes after
     // them: before, the page slid by their height. A link to a heading
     // inside a folded section opens the section.
-    if (keep !== null) window.scrollTo(0, keep);
-    else if (note.heading) this.scrollTo(note.heading);
+    if (keep !== null) {
+      window.scrollTo(0, keep);
+      const anchor = patchAnchor.block;
+      patchAnchor.block = null;
+      if (anchor?.el.isConnected) window.scrollBy(0, anchor.el.getBoundingClientRect().top - anchor.top);
+    } else if (note.heading) this.scrollTo(note.heading);
     else if (note.line != null) this.scrollToLine(note.line);
     reading.restore(note.line ?? (keep !== null ? reading.line : null));
     progress();
-    await Promise.all([drawDiagrams(main), fillEmbeds(main), fillQueries(main), fillBases(main)]);
+    timing.mark("decorated");
+    timing.painted();
+    await Promise.all([drawDiagrams(main).then(() => timing.mark("diagrams")), fillEmbeds(main), fillQueries(main), fillBases(main)]);
+    if (generation !== shows) return;
     decorate(main);
     // Embeds, queries and pictures made the page longer.
     progress();
@@ -963,6 +1176,38 @@ window.daftar = {
     lastSection = undefined;
     reportSection();
     if (finder.bar?.classList.contains("is-open")) search(finder.input.value);
+    timing.mark("done");
+  },
+
+  /**
+   * A page made ahead, before it shows a note: a made-up note drawn once,
+   * off the page, so the first real one finds the renderer, the code
+   * colours of the common languages, KaTeX and the page's styles ready.
+   */
+  warm() {
+    const holder = Object.assign(document.createElement("div"), { id: "warm" });
+    holder.setAttribute("aria-hidden", "true");
+    holder.style.cssText = "position: absolute; visibility: hidden; left: 0; top: 0; width: 640px; pointer-events: none;";
+    const fence = (lang, code) => "```" + lang + "\n" + code + "\n```\n\n";
+    const sample =
+      "# Title\n\nSome **bold**, _italic_, `code`, ==marked==, [[Note]], #tag and https://example.org.\n\n" +
+      "## A list\n\n- [ ] a task 📅 2026-01-01\n- [x] done\n    1. nested\n\n> [!note] A callout\n>\n> Its body.\n\n" +
+      "| a | b |\n| - | - |\n| 1 | 2 |\n\n$x^2 + \\frac{a}{b}$ and\n\n$$\\sum_{i=1}^{n} i$$\n\nسلام دنیا\n\n" +
+      ["bash", "python", "go", "yaml", "json", "javascript", "sql", "rust", "swift", "typescript"].map((lang) => fence(lang, "x = 1")).join("");
+    holder.innerHTML = render(sample, { path: "", links: {} });
+    document.body.appendChild(holder);
+    decorate(holder);
+    void holder.offsetHeight;
+    holder.remove();
+  },
+
+  /**
+   * The addresses and phone numbers the app found in the note on screen,
+   * after it was drawn: the app looks for them while the page draws.
+   */
+  detect(path, items) {
+    if (path !== current.path || current.canvas || current.image) return;
+    linkDetected(document.getElementById("note"), items);
   },
 
   /** Scrolls to a heading by its text, or to a `^block` id. */

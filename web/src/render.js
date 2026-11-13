@@ -311,11 +311,31 @@ function tags(md) {
  * rest of the note is drawn.
  */
 function tex(source, displayMode) {
-  try {
-    return katex.renderToString(source, { displayMode, throwOnError: false, output: "htmlAndMathml" });
-  } catch (error) {
-    return `<code class="math-error">${escapeHtml(source)}</code>`;
+  return remembered(`${displayMode ? "$$" : "$"}${source}`, () => {
+    try {
+      return katex.renderToString(source, { displayMode, throwOnError: false, output: "htmlAndMathml" });
+    } catch (error) {
+      return `<code class="math-error">${escapeHtml(source)}</code>`;
+    }
+  });
+}
+
+/**
+ * The HTML of a formula or a code block, by its source, made once: a note
+ * drawn again after a change, or an embed of it, draws only what changed.
+ * KaTeX and highlight.js are most of a drawing's time in a note full of
+ * them. The table is emptied when it holds too much.
+ */
+const made = new Map();
+
+function remembered(key, make) {
+  let html = made.get(key);
+  if (html === undefined) {
+    if (made.size >= 4000) made.clear();
+    html = make();
+    made.set(key, html);
   }
+  return html;
 }
 
 function math(md) {
@@ -743,11 +763,13 @@ function sourceLines(md) {
 function fences(md) {
   md.options.highlight = (code, lang) => {
     if (lang && hljs.getLanguage(lang)) {
-      try {
-        return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
-      } catch (error) {
-        return "";
-      }
+      return remembered(`\u0000${lang}\u0000${code}`, () => {
+        try {
+          return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
+        } catch (error) {
+          return "";
+        }
+      });
     }
     return "";
   };
