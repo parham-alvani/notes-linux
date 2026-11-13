@@ -9,6 +9,8 @@ use gtk::{gio, glib};
 use daftar_core::properties::PropertyEdit;
 use daftar_core::{BoardDrop, Day, Postpone, Vault};
 
+use crate::store::VaultStore;
+
 use super::Window;
 use crate::vault_dialogs;
 
@@ -225,7 +227,14 @@ impl Window {
     fn new_task(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
         let tab = self.tab();
-        let (path, heading) = if let Some(path) = tab.current().filter(|p| Vault::is_note(p)) {
+        let (path, heading) = if let Some(path) = tab.current().filter(|p| Vault::is_note(p) && VaultStore::takes_tasks(p)) {
+            // The cursor's line is the editor's, so the headings are read
+            // from what it holds: saved first, the file is that text. Read
+            // from an older file, lines typed above the cursor moved the
+            // headings and the task went under another one.
+            if tab.editing() {
+                self.save_editors();
+            }
             let line = if tab.editing() { tab.editor.line() } else { store.places.get(&path).unwrap_or(0) };
             let headings = daftar_core::Sections::headings(&store.text(&path).unwrap_or_default());
             let heading = daftar_core::Sections::heading_at(line, &headings).map(|index| headings[index].line);

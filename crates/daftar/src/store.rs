@@ -323,11 +323,21 @@ impl VaultStore {
         self.write(path, |text| VaultEdits::edit_task(text, line, before, fields))
     }
 
+    /// Whether New Task may write in the note at [path]: not a week note in
+    /// `Calendar/`, which is read-only here, as the phone writes it whole
+    /// and would drop the task at its next change.
+    pub fn takes_tasks(path: &str) -> bool {
+        !CalendarWeek::is_week_note(path)
+    }
+
     /// New Task: [fields] as a new task line at the end of the section of
     /// the heading on [heading_line] of [path], or at the end of the note.
     /// The file is read again at the write and every line it had stays.
     /// The Mac's `VaultStore.addTask`.
     pub fn add_task(&self, path: &str, heading_line: Option<usize>, fields: &TaskFields) -> Result<(), Failure> {
+        if !Self::takes_tasks(path) {
+            return Err(Failure::Unwritable("a week note in Calendar/ is the phone's, which writes it whole".to_string()));
+        }
         let Some(line) = TaskLine::written(fields) else { return Err(Failure::Unreadable) };
         self.write(path, |text| Ok(QuickCapture::append_at_heading_line(&line, text, heading_line)))
     }

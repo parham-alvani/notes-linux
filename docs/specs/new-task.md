@@ -31,8 +31,8 @@ Writing: the editors save first (on macOS `VaultStore.afterEditors`, on Linux `s
 
 ## 3. Where the form starts
 
-- **Note**: the note on screen. With none (home, Today, the board), the scratchpad when it is there (macOS: `scratchpad.note`; Linux: today's note in `scratchpad.folder`); else no note, and the form asks for one. The note can be changed in the form, by searching the vault's notes, those with tasks first.
-- **Section**: the heading whose section the cursor is in (in the editor its cursor, in the reader the reading place), or "End of the Note" above the first heading. Changing the note sets it to "End of the Note".
+- **Note**: the note on screen. With none (home, Today, the board), the scratchpad when it is there (macOS: `scratchpad.note`; Linux: today's note in `scratchpad.folder`); else no note, and the form asks for one. The note can be changed in the form, by searching the vault's notes, those with tasks first. The week notes in `Calendar/` are never offered and never written, as the phone writes them whole and would drop the task: a week note on screen counts as no note, and a write to one is refused. Hidden notes (`files.hidden`) are not offered.
+- **Section**: the heading whose section the cursor is in (in the editor its cursor, in the reader the reading place), or "End of the Note" above the first heading. In the editor the editors save before the headings are read, so they are the editor's text: read from an older file, lines typed above the cursor move the headings and the task goes under another. Changing the note sets it to "End of the Note".
 
 Opening: macOS File › New Task… (⌥⌘T) and the command palette; Linux the `win.new-task` action, Ctrl+Alt+T, and the palette; Android from the task lists.
 

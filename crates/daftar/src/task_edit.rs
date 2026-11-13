@@ -146,10 +146,17 @@ pub fn present_new(
     open(parent, store, Mode::New { path: path.to_string(), heading }, Rc::new(save_first), Rc::new(saved));
 }
 
-/// The notes a new task can go in: those with tasks first, then the rest, each by path.
+/// The notes a new task can go in: those with tasks first, then the rest,
+/// each by path. Not the week notes, which the phone writes whole, nor the
+/// hidden notes.
 fn note_choices(store: &VaultStore) -> Vec<String> {
     let index = store.index();
-    let mut notes: Vec<(bool, String)> = index.notes.values().map(|n| (n.parsed.tasks.is_empty(), n.path.clone())).collect();
+    let mut notes: Vec<(bool, String)> = index
+        .notes
+        .values()
+        .filter(|n| VaultStore::takes_tasks(&n.path) && !store.is_hidden(&n.path))
+        .map(|n| (n.parsed.tasks.is_empty(), n.path.clone()))
+        .collect();
     notes.sort();
     notes.into_iter().map(|(_, path)| path).collect()
 }
