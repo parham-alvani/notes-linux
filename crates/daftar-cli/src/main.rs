@@ -1115,6 +1115,10 @@ fn run(cli: Cli) -> Result<(), String> {
             let no_h1 = check::joined(vault.no_h1, no_h1);
             let callout = check::joined(vault.callouts, callout);
             let github_token = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).ok();
+            // Given paths with no note of the vault in them (a file outside
+            // it, a hidden folder, a picture) checked nothing: an error, not
+            // a clean run, which a script would take for no problems.
+            let only = if paths.is_empty() { None } else { Some(check::given_notes(&root, &paths)?) };
             let options = check::Options {
                 strict,
                 no_h1,
@@ -1126,7 +1130,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 archive,
                 figures,
                 mode: report::Mode::of(json),
-                only: if paths.is_empty() { None } else { Some(lint::notes_but(&root, &paths, &[], None)?.into_iter().collect()) },
+                only,
                 fix,
                 dry_run,
                 memory: memory.then_some(memory::Rules {

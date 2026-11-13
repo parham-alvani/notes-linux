@@ -17,13 +17,13 @@ Each finding is one JSON object on its own line (JSON Lines) on stdout, and noth
 - `column` counts characters from 1, or is `null` when the tool does not know it (always `null` for `check` and `fmt`).
 - `code` is the GitHub annotation's title: `MD009/no-trailing-spaces` for lint, the kind for check (`callout-body`, `ambiguous-link`, `memory-stale-status`, …), `fmt` for fmt.
 - `message` is what was found, as the plain output says it.
-- `fixable` is true when `lint --fix`, `check --fix` or `fmt` would mend it: a lint rule `--fix` mends (`MarkdownLint::FIXABLE`), a check `ambiguous-link`, or a `dead-url` that has an archived copy, and every `fmt` finding.
+- `fixable` is true when `lint --fix`, `check --fix` or `fmt` would mend it: a lint problem `--fix` mends (a rule of `MarkdownLint::FIXABLE`, but not a tab in a code block, which `--fix` leaves), a check `ambiguous-link`, or a `dead-url` that has an archived copy, and every `fmt` finding.
 
 The exit status is the one without `--json`: 0 with no problem, 1 when lint finds a problem, `fmt --check` finds a note not formatted, or check finds an error (a warning too with `--strict`), and 1 on a failure, whose one line is on stderr. The other options (`--profile`, `--memory`, `--strict`, `--urls`, `--ignore`, …) work with `--json` as without it. `fmt --json` needs `--check` and does not take `--diff`. With `check --fix --json` and `lint --fix --json`, each change made and each note that could not be written goes to stderr, not stdout.
 
 ## 2. One note
 
-`lint`, `lint --fix`, `fmt`, `fmt --check`, `check` and `check --fix` take files and folders. A relative path is read from the current folder when it is there and in the vault, else from the vault's folder, so a program can pass `Folder/Note.md` from any folder. A path that is in neither is an error. `check` still reads the whole vault, since a link resolves against every note, but it prints and mends the findings of the notes given only; pictures and figures are the vault's, so `unused-picture` and the `--figures` findings are left out then.
+`lint`, `lint --fix`, `fmt`, `fmt --check`, `check` and `check --fix` take files and folders. A relative path is read from the current folder when it is there and in the vault, else from the vault's folder, so a program can pass `Folder/Note.md` from any folder. A path that is in neither is an error. `check` still reads the whole vault, since a link resolves against every note, but it prints and mends the findings of the notes given only; pictures and figures are the vault's, so `unused-picture` and the `--figures` findings are left out then. Given paths that hold no note of the vault (a file outside it, a hidden folder, a picture) are an error too, as `check` would otherwise check nothing and exit 0.
 
 `fmt --stdin [--path <path in the vault>]` reads one note from stdin and prints it as `fmt` would write it with the vault's `.prettierrc`, byte for byte, and writes nothing. With `--path`, a file `fmt` leaves alone (one `.prettierignore` or `--ignore` names, or one in a hidden folder) is printed unchanged. It exits 0, and 1 on a failure such as a `.prettierrc` it cannot read.
 

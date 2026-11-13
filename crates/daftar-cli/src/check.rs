@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use chrono::NaiveDate;
@@ -549,6 +549,19 @@ pub(crate) fn task_problems(task: &ParsedTask, statuses: &TaskStatuses, today: &
 fn stem(path: &str) -> &str {
     let name = path.rsplit('/').next().unwrap_or(path);
     name.strip_suffix(".md").unwrap_or(name)
+}
+
+/// The notes of the vault in [paths], for [Options::only]. Paths with none
+/// in them (a file outside the vault, a hidden folder, a picture) are an
+/// error, as a missing path is: a run that checked nothing would say there
+/// is no problem.
+pub fn given_notes(root: &Path, paths: &[PathBuf]) -> Result<HashSet<String>, String> {
+    let notes: HashSet<String> = crate::lint::notes_but(root, paths, &[], None)?.into_iter().collect();
+    if notes.is_empty() {
+        let named: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        return Err(format!("{} holds no note of the vault", named.join(", ")));
+    }
+    Ok(notes)
 }
 
 pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut print: impl FnMut(String)) -> Outcome {
@@ -1150,6 +1163,15 @@ mod tests {
         );
         // Nothing is ambiguous any more.
         assert!(findings(dir.path(), &options).is_empty());
+    }
+
+    #[test]
+    fn given_paths_with_no_note_are_an_error() {
+        let dir = vault(&[("Work/Note.md", ""), ("Work/logo.png", ""), (".hidden/Secret.md", "")]);
+        assert_eq!(given_notes(dir.path(), &[PathBuf::from("Work")]).unwrap(), HashSet::from(["Work/Note.md".to_string()]));
+        for path in ["Work/logo.png", ".hidden/Secret.md", "Gone.md"] {
+            assert!(given_notes(dir.path(), &[PathBuf::from(path)]).is_err(), "{path}");
+        }
     }
 
     #[test]

@@ -151,7 +151,7 @@ fn first_text(root: &Path, title: &str, day: Day, clock: Clock) -> String {
 /// under the heading when the section is empty.
 fn insert_in_section(line: &str, found: usize, headings: &[crate::note_parser::Heading], lines: &mut Vec<String>, eol: &str) {
     let start = headings[found].line;
-    let end = headings[found + 1..].iter().find(|h| h.level <= headings[found].level).map_or(lines.len(), |h| h.line);
+    let end = crate::Sections::end(found, headings, lines.len());
     let at = last_filled(lines, start + 1, end).unwrap_or(start) + 1;
     insert(&[line.to_string()], at, lines, eol);
 }

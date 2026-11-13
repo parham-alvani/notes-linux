@@ -76,19 +76,23 @@ impl Meaning {
 
     /// [search] fused with the full-text search of [words].
     pub fn hybrid(&self, words: &SearchIndex, hidden: &ExcludedFiles, query: &str, limit: usize) -> Vec<Hit> {
-        // Enough of each list that a note well placed in one is not cut off.
-        let depth = limit.max(20) * 3;
-        let found: Vec<Hit> =
-            words.search(query, depth.saturating_add(100)).into_iter().filter(|h| !hidden.contains(&h.path)).take(depth).collect();
-        semantic::fuse(&found, &self.search(hidden, query, depth), limit)
+        let (found, near) = self.both(words, hidden, query, limit);
+        semantic::fuse(&found, &near, limit)
     }
 
     /// [hybrid], with each note's fused score and the line it shows.
     pub fn fused(&self, words: &SearchIndex, hidden: &ExcludedFiles, query: &str, limit: usize) -> Vec<semantic::Fused> {
+        let (found, near) = self.both(words, hidden, query, limit);
+        semantic::fused(&found, &near, limit)
+    }
+
+    /// The two lists [hybrid] and [fused] fuse, each deep enough that a
+    /// note well placed in one is not cut off.
+    fn both(&self, words: &SearchIndex, hidden: &ExcludedFiles, query: &str, limit: usize) -> (Vec<Hit>, Vec<Nearby>) {
         let depth = limit.max(20) * 3;
         let found: Vec<Hit> =
             words.search(query, depth.saturating_add(100)).into_iter().filter(|h| !hidden.contains(&h.path)).take(depth).collect();
-        semantic::fused(&found, &self.search(hidden, query, depth), limit)
+        (found, self.search(hidden, query, depth))
     }
 
     /// The notes nearest to [path] that it does not link to, without the hidden ones.
