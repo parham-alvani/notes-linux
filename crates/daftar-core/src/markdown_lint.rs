@@ -22,6 +22,9 @@ pub struct Problem {
     pub column: Option<usize>,
     pub rule: &'static str,
     pub detail: String,
+    /// Whether [MarkdownLint::fix] mends it: its rule is one `fix` mends,
+    /// and the problem is not a tab in a code block, which is left.
+    pub fixable: bool,
 }
 
 impl Problem {
@@ -33,9 +36,9 @@ impl Problem {
         RULES.iter().find(|(id, _, _)| *id == self.rule).map_or("", |(_, _, text)| text)
     }
 
-    /// Whether [MarkdownLint::fix] mends a problem of this rule.
+    /// Whether [MarkdownLint::fix] mends this problem.
     pub fn fixable(&self) -> bool {
-        FIXABLE.contains(&self.rule)
+        self.fixable
     }
 }
 
@@ -445,6 +448,11 @@ impl Document {
     fn blank(&self, line: usize) -> bool {
         self.lines.get(line).is_none_or(|l| strip_quotes(l).trim().is_empty())
     }
+
+    /// Whether [line] (from 0) is in a code block, its fences too.
+    fn in_code(&self, line: usize) -> bool {
+        self.code.iter().any(|c| c.first <= line && line <= c.last)
+    }
 }
 
 /// `$` runs paired as micromark pairs them, a paragraph (lines up to a
@@ -532,7 +540,13 @@ impl MarkdownLint {
                 #[expect(clippy::naive_bytecount, reason = "once, for a file that is not UTF-8")]
                 let line = good.iter().filter(|&&b| b == b'\n').count() + 1;
                 let column = good.rsplit(|&b| b == b'\n').next().map_or(0, |l| String::from_utf8_lossy(l).chars().count()) + 1;
-                vec![Problem { line, column: Some(column), rule: "MD094", detail: format!("[Byte: {}]", error.valid_up_to()) }]
+                vec![Problem {
+                    line,
+                    column: Some(column),
+                    rule: "MD094",
+                    detail: format!("[Byte: {}]", error.valid_up_to()),
+                    fixable: false,
+                }]
             }
             Err(_) => Vec::new(),
         }
@@ -544,7 +558,8 @@ impl MarkdownLint {
         let mut out = Vec::new();
         let mut push = |line: usize, column: Option<usize>, rule: &'static str, detail: String| {
             if config.on(rule) {
-                out.push(Problem { line: line + 1, column, rule, detail });
+                let fixable = FIXABLE.contains(&rule) && !(rule == "MD010" && doc.in_code(line));
+                out.push(Problem { line: line + 1, column, rule, detail, fixable });
             }
         };
         headings(&doc, config, &mut push);
@@ -1208,7 +1223,7 @@ fn fix_once(text: &str, config: &LintConfig) -> String {
         let Some(line) = lines.get(n).cloned() else { continue };
         match p.rule {
             "MD009" => lines[n] = line.trim_end_matches(' ').to_string(),
-            "MD010" if !doc.code.iter().any(|c| c.first <= n && n <= c.last) => lines[n] = line.replace('\t', "    "),
+            "MD010" if !doc.in_code(n) => lines[n] = line.replace('\t', "    "),
             "MD012" => remove.push(n),
             "MD029" => {
                 let expected = p.detail.trim_start_matches("[Expected: ").split(';').next().unwrap_or("1");
@@ -1413,5 +1428,17 @@ mod tests {
         assert!(found.iter().all(Problem::fixable), "{found:?}");
         let left = MarkdownLint::lint("# One\n\n# Two\n", &config());
         assert_eq!(left.iter().map(|p| (p.rule, p.fixable())).collect::<Vec<_>>(), [("MD025", false)]);
+    }
+
+    #[test]
+    fn a_tab_in_a_code_block_is_not_fixable() {
+        // markdownlint's default: a tab in a code block is a problem too.
+        let config = LintConfig::parse("{}").unwrap();
+        let text = "# Title\n\nA\ttab\n\n```go\n\tx := 1\n```\n";
+        let found = MarkdownLint::lint(text, &config);
+        assert_eq!(found.iter().map(|p| (p.rule, p.line, p.fixable())).collect::<Vec<_>>(), [("MD010", 3, true), ("MD010", 6, false)]);
+        // What it says is so: the fix leaves the tab in the block, and only that one is found again.
+        let fixed = MarkdownLint::fix(text, &config);
+        assert_eq!(MarkdownLint::lint(&fixed, &config).iter().map(|p| (p.line, p.fixable())).collect::<Vec<_>>(), [(6, false)]);
     }
 }
