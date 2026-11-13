@@ -143,7 +143,9 @@ impl SearchIndex {
     /// The line (from 1) of [text], a note's, that a hit with [snippet]
     /// for [query] is on, so that a list can open the note there: the first
     /// line with the snippet's first match, else with a word of the query,
-    /// with case and Persian letters folded as the search folds them; 1 when
+    /// with case and Persian letters folded as the search folds them, at the
+    /// start of a word, as the search matches a word or its prefix (`art` is
+    /// not in "start"); 1 when
     /// neither is there (the title matched, or an accent the tokenizer took
     /// off).
     pub fn line_of(text: &str, snippet: &str, query: &str) -> usize {
@@ -156,7 +158,10 @@ impl SearchIndex {
             .filter(|w| !w.is_empty())
             .collect();
         let lines: Vec<String> = text.lines().map(fold).collect();
-        words.iter().find_map(|word| lines.iter().position(|line| line.contains(word.as_str()))).map_or(1, |at| at + 1)
+        let starts_word = |line: &str, word: &str| {
+            line.match_indices(word).any(|(at, _)| line[..at].chars().next_back().is_none_or(|c| !c.is_alphanumeric()))
+        };
+        words.iter().find_map(|word| lines.iter().position(|line| starts_word(line, word))).map_or(1, |at| at + 1)
     }
 
     /// The person's words as an FTS5 expression. Every word is quoted, so
@@ -271,6 +276,9 @@ mod tests {
         // Persian letters as the search folds them, from the query.
         assert_eq!(SearchIndex::line_of(text, "", "کتاب"), 7);
         assert_eq!(SearchIndex::line_of(text, "", "\"nowhere\""), 1);
+        // A word inside a longer one is not the word: "start" has no "art".
+        assert_eq!(SearchIndex::line_of("We start Monday.\nModern art.\n", "", "art"), 2);
+        assert_eq!(SearchIndex::line_of("Starting.\nThe artist.\n", "", "art*"), 2);
     }
 
     fn paths(hits: Vec<Hit>) -> Vec<String> {
