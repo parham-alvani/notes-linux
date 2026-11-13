@@ -75,8 +75,16 @@ pub(crate) struct Tab {
 }
 
 impl Tab {
+    /// The page on screen: "reader", "editor", "empty", …. Back from the
+    /// editor, the stack stays on the closed editor until the page has drawn
+    /// the note (`Window::toggle_edit`); that is reading already, so a quick
+    /// second Ctrl+E, New Task and the disk's changes go by the note read.
     pub fn showing(&self) -> Option<String> {
-        self.stack.visible_child_name().map(String::from)
+        let name = self.stack.visible_child_name()?;
+        if name == "editor" && self.editor.path().is_none() {
+            return Some("reader".to_string());
+        }
+        Some(name.into())
     }
 
     pub fn editing(&self) -> bool {

@@ -925,7 +925,7 @@ impl Window {
                 let tab = tab.clone();
                 let done = Rc::new(Cell::new(false));
                 move || {
-                    if !done.replace(true) && tab.showing().as_deref() == Some("editor") && tab.editor.path().is_none() {
+                    if !done.replace(true) && tab.stack.visible_child_name().as_deref() == Some("editor") && tab.editor.path().is_none() {
                         tab.stack.set_visible_child_name("reader");
                         tab.reader.view.grab_focus();
                     }
