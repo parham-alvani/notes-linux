@@ -15,7 +15,7 @@ A task has a time when its text (the description, without the box, the signifier
 ```
 
 - A time is `H:MM` or `HH:MM`, hours `0`–`23` and minutes `00`–`59`, in ASCII digits.
-- It may be followed by an end: `-` or `–` (en dash), with or without a space on each side, then a second time.
+- It may be followed by an end: `-` or `–` (en dash), with at most one space on each side, then a second time. A dash not followed by a time is no range: `10:00 - later` is a time of 10:00 with the text `- later`, and `10:00-x` is no time. An end that is not a time of the day, as in `10:00-25:00`, makes the whole no time.
 - The time (or the range) is followed by a space or by the end of the text; `10:00am`, `9:3` and `24:00` are no time.
 - The task lasts from its start to its end; with no end, or an end that is not after the start, it lasts **30 minutes**, cut at 24:00.
 - The text shown on the timeline is the rest, trimmed: `Call Sara about the trip`. Everywhere else the text is unchanged.
@@ -46,7 +46,7 @@ Meetings and tasks that share time stand side by side:
 
 - **The working day** is 09:00 to 18:00, as the week notes count free time, unless the app knows another (`calendar.hours` on Android).
 - **The axis** runs from the earliest of the working day's start, the first item's start and now, rounded down to the hour, to the latest of the working day's end, the last item's end and now, rounded up to the hour, within 00:00–24:00. With nothing in the day it is the working day.
-- **Free time** is every stretch of the working day that no meeting and no task takes, of 15 minutes or more. A tentative meeting takes its time, as in the week note's `Free:` line. Free time is computed from the timeline's own items, so a task with a time makes the free time around it shorter.
+- **Free time** is every stretch of the working day that no meeting and no task takes, of 15 minutes or more. An all-day event takes no time here, though the week note's own `Free:` line counts an all-day absence as the whole day. A tentative meeting takes its time, as in the week note's `Free:` line. Free time is computed from the timeline's own items, so a task with a time makes the free time around it shorter.
 - **Now** is the minute of the wall clock when the day is today, and there is none on another day. An item that ended by now is **past**; one that started by now and has not ended is **current**.
 
 `Timeline.duration` writes a length as the free time is labelled: `45m`, `2h`, `1h 30m`.
@@ -57,7 +57,7 @@ On Today, as its own card under the day's summary, and only when the day has a w
 
 - The hours are written on the left, one line across per hour, the axis's hours only.
 - A **meeting** is a box in the meetings' color (blue) with its time and title; a tentative one is fainter with a dashed edge; a busy-only one is grey. Pressing it opens its join link when it has one; its tooltip or long press shows its calendars and overlaps.
-- A **task** is a box in the accent color with a box to tick it (the ordinary toggle) and its text; pressing it opens its note at its line.
+- A **task** is a box in the accent color with a box to tick it (the ordinary toggle) and its text; pressing it opens its note at its line (on Android, which opens a note only at a heading, at the task's section).
 - **Free time** is a faint green band behind the lanes, labelled `free 1h 30m` when it is tall enough to hold the label.
 - **Now** is a red line across with a dot at the left. What is past is dimmed. On opening, the page shows Today from the top, and the timeline itself is never scrolled on its own.
 - All-day events stand above the axis as chips.
@@ -73,7 +73,8 @@ Ported by name (snake case in Rust, camelCase in Kotlin). Times are in UTC and t
     - `09:30 Call Sara` is 570–600, `Call Sara`;
     - `9:30-10:15 Gym` is 570–615, `Gym`; `14:00 – 15:30 Review` is 840–930, `Review`; `7:15–7:45 Run` is 435–465, `Run`;
     - `23:50 Late` is 1430–1440; `12:00` alone is 720–750 with the text empty; `10:00-09:00 Back` is 600–630;
-    - `10:00am Coffee`, `9:3 x`, `24:00 x`, `Call at 09:30`, `12:60 x` and `` are no time.
+    - `10:00 - later` is 600–630, `- later`;
+    - `10:00am Coffee`, `9:3 x`, `24:00 x`, `Call at 09:30`, `12:60 x`, `10:00-x`, `10:00-25:00 x` and `` are no time.
 2. `meetingsAndTasksShareLanesWhenTheyOverlap`: meetings A 09:00–10:00, B 09:30–10:30, C 10:00–11:00, and the task `11:00 Write`: A is lane 0 of 2, B lane 1 of 2, C lane 0 of 2, the task lane 0 of 1. A meeting and a task both 13:00–13:30: the meeting is lane 0 and the task lane 1, of 2.
 3. `theAxisCoversTheWorkingDayAndEveryItem`: with nothing, 09:00–18:00 (540–1080); with a meeting 07:45–08:20, 07:00–18:00; with a meeting 17:30–19:10, 09:00–20:00; with now at 06:10 and nothing else, 06:00–18:00.
 4. `freeTimeIsWhatNothingTakes`: meetings 09:00–10:00 and 12:30–13:00 (tentative), the task `13:00-13:40 Lunch`, and the task `17:50 Call`: free time is 10:00–12:30 and 13:40–17:50; with a meeting 10:00–12:20 added, 12:20–12:30 is too short and left out.

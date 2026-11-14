@@ -274,7 +274,8 @@ mod tests {
         assert_eq!(time("23:50 Late"), Some((1430, 1440, "Late".into())));
         assert_eq!(time("12:00"), Some((720, 750, String::new())));
         assert_eq!(time("10:00-09:00 Back"), Some((600, 630, "Back".into())));
-        for none in ["10:00am Coffee", "9:3 x", "24:00 x", "Call at 09:30", "12:60 x", ""] {
+        assert_eq!(time("10:00 - later"), Some((600, 630, "- later".into())));
+        for none in ["10:00am Coffee", "9:3 x", "24:00 x", "Call at 09:30", "12:60 x", "10:00-x", "10:00-25:00 x", ""] {
             assert_eq!(time(none), None, "{none}");
         }
     }
