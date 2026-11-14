@@ -56,7 +56,7 @@ Meetings and tasks that share time stand side by side:
 On Today, as its own card under the day's summary, and only when the day has a week note or a task with a time; the Meetings card stays as it is, with its join links and prep buttons.
 
 - The hours are written on the left, one line across per hour, the axis's hours only.
-- A **meeting** is a box in the meetings' color (blue) with its time and title; a tentative one is fainter with a dashed edge; a busy-only one is grey. Pressing it opens its join link when it has one; its tooltip or long press shows its calendars and overlaps.
+- A **meeting** is a box in the meetings' color (blue) with its time and title. The time is the meeting's own start and end on the viewer's clock, not the times cut at midnight: the box from 00:00 to 01:00 of a meeting that began at 23:00 the day before says `23:00–01:00`. A tentative one is fainter with a dashed edge; a busy-only one is grey. Pressing it opens its join link when it has one; its tooltip or long press shows its calendars and overlaps.
 - A **task** is a box in the accent color with a box to tick it (the ordinary toggle) and its text; pressing it opens its note at its line (on Android, which opens a note only at a heading, at the task's section).
 - **Free time** is a faint green band behind the lanes, labelled `free 1h 30m` when it is tall enough to hold the label.
 - **Now** is a red line across with a dot at the left. What is past is dimmed. On opening, the page shows Today from the top, and the timeline itself is never scrolled on its own.

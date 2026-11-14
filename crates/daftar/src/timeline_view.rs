@@ -146,7 +146,11 @@ fn clock(minute: u32) -> String {
 /// One box: a meeting, or a task with its box to tick.
 fn slot(item: &TimelineItem, actions: &Actions) -> gtk::Widget {
     let tall = f64::from(item.end - item.start) * SCALE >= f64::from(TWO_LINES);
-    let time = format!("{}–{}", clock(item.start), clock(item.end));
+    // A meeting says its own times, also on the day it is cut at midnight.
+    let time = match &item.entry {
+        TimelineEntry::Meeting(meeting) => crate::today::time_range(meeting),
+        TimelineEntry::Task(..) => format!("{}–{}", clock(item.start), clock(item.end)),
+    };
     let words = |title: &str| -> gtk::Box {
         let rtl = direction::starts_rtl(title);
         let lines = gtk::Box::builder()
