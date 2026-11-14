@@ -62,6 +62,8 @@ fn css(palette: &[(&str, &str)]) -> String {
              .t-{tint} checkbutton check:indeterminate, .t-{tint} checkbutton check:checked {{ background-color: @daftar_{tint}; color: white; }}\n\
              .daftar-meeting.t-{tint} .meeting-bar {{ background-color: @daftar_{tint}; }}\n\
              .daftar-meeting.t-{tint} .tint {{ color: @daftar_{tint}; }}\n\
+             .daftar-slot.t-{tint} {{ background-color: alpha(@daftar_{tint}, 0.16); border-left: 3px solid @daftar_{tint}; }}\n\
+             .daftar-slot.t-{tint} .tint {{ color: @daftar_{tint}; }}\n\
              .daftar-column.t-{tint} {{ background-color: alpha(@daftar_{tint}, 0.05); }}\n\
              .daftar-column.t-{tint}.drop-target {{ background-color: alpha(@daftar_{tint}, 0.16); border-color: alpha(@daftar_{tint}, 0.8); }}\n\
              .daftar-column.t-{tint} .column-dot {{ background-color: @daftar_{tint}; }}\n\
@@ -76,6 +78,16 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-split > stack.daftar-pane-focused { border-top-color: @daftar_accent; }\n\
          .daftar-page, .daftar-page > viewport, .daftar-editor { background-color: @daftar_background; }\n\
          .daftar-card { border-radius: 14px; padding: 16px; }\n\
+         .daftar-slot { border-radius: 6px; padding: 1px 6px; }\n\
+         .daftar-slot.tentative { border-left-style: dashed; opacity: 0.75; }\n\
+         .daftar-slot.is-past { opacity: 0.45; }\n\
+         .daftar-slot.is-current { box-shadow: inset 0 0 0 1px alpha(@daftar_accent, 0.6); }\n\
+         .daftar-slot checkbutton { padding: 0; min-height: 0; }\n\
+         .daftar-free { background-color: alpha(@daftar_green, 0.08); border-radius: 6px; padding: 2px 8px; }\n\
+         .daftar-free-label { color: @daftar_green; }\n\
+         .daftar-hour-rule { background-color: alpha(@daftar_rule, 0.5); }\n\
+         .daftar-now { background-color: @daftar_red; }\n\
+         .daftar-now.dot { border-radius: 999px; }\n\
          .daftar-card .card-title { font-weight: bold; }\n\
          .daftar-card .card-icon { border-radius: 7px; color: white; min-width: 26px; min-height: 26px; }\n\
          .daftar-chip { border-radius: 999px; padding: 4px 10px; font-weight: 500; }\n\

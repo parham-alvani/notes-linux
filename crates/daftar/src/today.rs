@@ -94,7 +94,8 @@ impl Today {
         }
         let today = Day::today();
         let groups = TaskGroups::new(store.listed_tasks(), today, 7);
-        let days = store.calendar_days(today, 2);
+        // The day before too: a meeting over midnight is listed on its first day.
+        let days = store.calendar_days(today.adding_days(-1), 3);
         let day = days.iter().find(|d| d.day == today);
         let tomorrow = days.iter().find(|d| d.day == today.adding_days(1));
 
@@ -132,6 +133,9 @@ impl Today {
         }
         head.append(&chips);
         self.content.append(&head);
+        if let Some(card) = self.timeline(&days, day.is_some(), store, today) {
+            self.content.append(&card);
+        }
 
         let meetings_card = card("Meetings", "x-office-calendar-symbolic", "t-blue", None);
         let now = Utc::now();
@@ -210,6 +214,37 @@ impl Today {
             self.content.append(&card);
         }
         self.content.append(&self.review(store, today, scratchpad));
+    }
+
+    /// Today's timeline (`docs/specs/today-timeline.md`), when the day has a
+    /// week note or a task with a time.
+    fn timeline(self: &Rc<Self>, days: &[daftar_core::CalendarDay], noted: bool, store: &VaultStore, today: Day) -> Option<gtk::Box> {
+        let meetings: Vec<Meeting> = days.iter().filter(|d| d.day <= today).flat_map(|d| d.meetings.iter().cloned()).collect();
+        let timeline = daftar_core::Timeline::new(
+            today,
+            &meetings,
+            &store.listed_tasks(),
+            &Local,
+            Some(Utc::now()),
+            daftar_core::timeline::WORKING_DAY,
+        );
+        let timed = timeline.items.iter().any(|i| matches!(i.entry, daftar_core::TimelineEntry::Task(..)));
+        if !noted && !timed {
+            return None;
+        }
+        let card = card("Timeline", "preferences-system-time-symbolic", "t-blue", None);
+        let actions = crate::timeline_view::Actions {
+            open: {
+                let this = self.clone();
+                Rc::new(move |path: &str, line: usize| (this.open)(path, line))
+            },
+            toggle: {
+                let this = self.clone();
+                Rc::new(move |path: &str, line: usize, status: char| (this.toggle)(path, line, status))
+            },
+        };
+        card.append(&crate::timeline_view::view(&timeline, &actions));
+        Some(card)
     }
 
     /// The holidays and feasts of the next 45 days, each opening its note

@@ -54,6 +54,10 @@ New Task (`win.new-task`, Ctrl+Alt+T, the palette) is `task_edit::present_new`: 
 
 Ctrl+E goes by one line both ways: into the editor at the reading place (`store.places`, which the reading cursor keeps), not at the line the note was opened at; back to reading, the editor's line becomes the reading place. Back to reading, the page draws the note first, under the editor (`Reader::show_then`, which awaits `daftar.show` with `call_async_javascript_function`), and the stack crossfades to it only then, or after 400 ms: switched first, the reader faded in at its old place and jumped.
 
+## Today's timeline
+
+Today's Timeline card (`timeline_view.rs`) draws `daftar_core::Timeline` (`timeline.rs`, `docs/specs/today-timeline.md`): the meetings of the day's and the day before's week notes cut to the day on this computer's wall clock, the day's open tasks whose text starts with a time (`TaskTime`, the Day Planner's `09:30` or `14:00-15:30`), their lanes, the free time of the working day and now. Its children are placed by `Layout`, a `gtk::LayoutManager` subclass, since gtk4-rs binds no `GtkCustomLayout`. To look at it with no display, run a widget under Broadway (`gtk4-broadwayd :7`, `GDK_BACKEND=broadway BROADWAY_DISPLAY=:7`) and save a `gtk::WidgetPaintable` of its window through the window's renderer to a PNG.
+
 ## The reader is shared with the Mac
 
 The reading cursor is a block with a band on one line of it (`reading` in `web/src/reader.js`, the Mac's 0.12.0): a block's lines are its text's rects merged where they share most of their height (`rows`), `j`/`k` go a line at a time, the file line of a line (`sourceLine`) is the block's line plus the `\n` before it, found with `caretRangeFromPoint`, and after a scroll a cursor off screen comes to the first line on screen (`follow`). `appearance.reading_line` is the band's strength, sent as `readingLine`; 0 is none.

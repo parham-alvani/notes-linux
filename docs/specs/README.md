@@ -21,3 +21,4 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [Search by meaning and related notes](meaning-search.md) | not released yet (macOS first) |
 | [The weekly review page](weekly-review.md) | not released yet (macOS first) |
 | [Send to Daftar from other apps](send-to-daftar.md) | not released yet (macOS first) |
+| [Today's timeline: meetings and timed tasks on one axis](today-timeline.md) | not released yet |

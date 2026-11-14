@@ -31,6 +31,7 @@ mod style;
 mod sync;
 mod task_edit;
 mod terminal;
+mod timeline_view;
 mod today;
 mod vault_check;
 mod vault_dialogs;
