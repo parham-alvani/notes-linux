@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use daftar_core::properties::{PropertyEdit, PropertySheet, PropertyValue};
-use daftar_core::{Card, Drill, DrillState, JobKeys, JobSearch, RandomNote, Rating};
+use daftar_core::{Card, Drill, DrillState, DueTasks, JobKeys, JobSearch, RandomNote, Rating};
 
 use daftar_core::{
     Bookmarks, Clock, ConfigFile, Day, ExcludedFiles, ParsedTask, QueryTask, QuickCapture, SearchIndex, Sections, TaskLine, TaskStatuses,
@@ -364,39 +364,22 @@ pub(crate) fn vault_brief(
 ) -> Result<Vec<String>, String> {
     let now = chrono::Local::now().naive_local();
     let today = Day::today();
-    let week = today.adding_days(7).to_string();
-    let today_text = today.to_string();
     let mut lines = vec![format!("now: {}", now.format("%Y-%m-%d %A %H:%M"))];
 
-    let open: Vec<VaultTask> = hidden.tasks(index).into_iter().filter(|t| !TaskLine::is_closed(t.task.status)).collect();
-    let when = |t: &VaultTask| t.task.due.clone().or_else(|| t.task.scheduled.clone());
-    let mut overdue: Vec<&VaultTask> = open.iter().filter(|t| t.task.due.as_ref().is_some_and(|d| *d < today_text)).collect();
-    overdue.sort_by_key(|t| when(t));
-    let due_today: Vec<&VaultTask> = open
-        .iter()
-        .filter(|t| {
-            t.task.due.as_deref() == Some(today_text.as_str())
-                || (t.task.due.is_none() && t.task.scheduled.as_deref() == Some(today_text.as_str()))
-        })
-        .collect();
-    let mut slipped: Vec<&VaultTask> =
-        open.iter().filter(|t| t.task.due.is_none() && t.task.scheduled.as_ref().is_some_and(|d| *d < today_text)).collect();
-    slipped.sort_by_key(|t| t.task.scheduled.clone());
-    let doing: Vec<&VaultTask> = open.iter().filter(|t| t.task.status == '/').collect();
-    let ahead = open.iter().filter(|t| when(t).is_some_and(|d| d > today_text && d <= week)).count();
+    let due = DueTasks::new(&hidden.tasks(index), today);
     for (name, list, shown) in [
-        ("overdue (📅 passed)", &overdue, 15),
-        ("today (📅 or ⏳)", &due_today, 15),
-        ("in progress", &doing, 15),
-        ("scheduled on a day that passed (⏳, no 📅), oldest first", &slipped, 5),
+        ("overdue (📅 passed)", &due.overdue, 15),
+        ("today (📅 or ⏳)", &due.today, 15),
+        ("in progress", &due.in_progress, 15),
+        ("scheduled on a day that passed (⏳, no 📅), oldest first", &due.slipped, 5),
     ] {
         lines.push(format!("\n## Tasks {name}: {}", list.len()));
-        lines.extend(list.iter().take(shown).map(|t| crate::task_line(t)));
+        lines.extend(list.iter().take(shown).map(crate::task_line));
         if list.len() > shown {
             lines.push(format!("… and {} more", list.len() - shown));
         }
     }
-    lines.push(format!("\n{ahead} more open tasks fall in the next 7 days."));
+    lines.push(format!("\n{} more open tasks fall in the next {} days.", due.ahead, daftar_core::due_tasks::AHEAD_DAYS));
 
     let keys = JobKeys::default();
     let search = JobSearch::new(index, &keys, |path| !hidden.contains(path));

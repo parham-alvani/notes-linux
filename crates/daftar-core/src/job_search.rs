@@ -13,8 +13,9 @@
 
 use std::collections::HashMap;
 
-use chrono::{Duration, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 
+use crate::calendar_week::Meeting;
 use crate::vault::{Vault, VaultIndex};
 
 /// The properties an application is read from. [Default] is the `job_` ones.
@@ -246,6 +247,20 @@ impl JobSearch {
             .map(|(_, a)| a)
     }
 
+    /// The application a week note's [meeting] is about, its times read on
+    /// the wall clock of [zone] (`for_meeting`); an all-day event is the
+    /// whole of its day. Today's Prep and `daftar-cli agenda` ask this.
+    pub fn for_calendar_meeting<Tz: TimeZone>(&self, meeting: &Meeting, zone: &Tz) -> Option<&Application> {
+        let local = |at: DateTime<Utc>| at.with_timezone(zone).naive_local();
+        let (start, end) = if let Some(start) = meeting.start {
+            (local(start), meeting.end.map_or_else(|| local(start), local))
+        } else {
+            let day = meeting.day.date().and_hms_opt(0, 0, 0)?;
+            (day, day + Duration::days(1))
+        };
+        self.for_meeting(start, end, &meeting.title)
+    }
+
     /// The line, from 1, of [key] in the front matter of [text]; 1 when it is not there.
     pub fn property_line(text: &str, key: &str) -> usize {
         let mut lines = text.split('\n');
@@ -404,6 +419,30 @@ mod tests {
         // A long block of busy time holds the event, but is not it.
         assert_eq!(meeting("2026-11-09T06:30", "2026-11-09T15:30", "Busy"), None);
         assert_eq!(meeting("2026-11-09T13:50", "2026-11-09T15:00", "Call").as_deref(), Some("Globex"));
+    }
+
+    #[test]
+    fn a_week_notes_meeting_is_read_on_the_wall_clock_of_a_zone() {
+        let search = search();
+        let at_utc = |text: &str| at(text).and_utc();
+        let meeting = |start: Option<&str>, end: Option<&str>, title: &str| Meeting {
+            day: crate::Day::parse("2026-11-10").unwrap(),
+            start: start.map(at_utc),
+            end: end.map(at_utc),
+            title: title.into(),
+            calendars: vec![],
+            join: None,
+            tentative: false,
+            busy_only: false,
+            overlaps: None,
+        };
+        // Acme's job_next is 15:30 on the wall clock: 14:30 in UTC one hour east.
+        let east = chrono::FixedOffset::east_opt(3600).unwrap();
+        let call = meeting(Some("2026-11-10T14:30"), Some("2026-11-10T15:15"), "Call");
+        assert_eq!(search.for_calendar_meeting(&call, &east).map(|a| a.company.as_str()), Some("Acme"));
+        assert_eq!(search.for_calendar_meeting(&call, &Utc), None);
+        let all_day = meeting(None, None, "Onsite at Globex");
+        assert_eq!(search.for_calendar_meeting(&all_day, &Utc).map(|a| a.company.as_str()), Some("Globex"));
     }
 
     #[test]

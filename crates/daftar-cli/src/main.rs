@@ -10,6 +10,7 @@ macro_rules! out {
     };
 }
 
+mod agenda;
 mod check;
 mod clip;
 mod drill;
@@ -17,6 +18,7 @@ mod export;
 mod figures;
 mod fmt;
 mod hook;
+mod ics;
 mod images;
 mod jobs;
 mod lint;
@@ -656,6 +658,36 @@ enum Command {
         /// Only the events within this many days.
         #[arg(long)]
         upcoming: Option<i64>,
+    },
+    /// The day at a glance: its timeline (the week notes' meetings, the
+    /// tasks whose text starts with a time, the free time and now), the
+    /// tasks overdue, due and in progress, and the job search's events of
+    /// the day with their prep notes.
+    Agenda {
+        /// The day (YYYY-MM-DD); today at first.
+        #[arg(long)]
+        day: Option<String>,
+        /// One JSON object: `day`, `now`, `timeline`, `free`, `overdue`,
+        /// `today`, `in_progress` and `jobs`.
+        #[arg(long)]
+        json: bool,
+        /// One line for a Waybar custom module (`"return-type": "json"`):
+        /// the next meeting and how long until it, else how many tasks are
+        /// due; the class `soon`, `overdue` or `clear`; the rest in the tooltip.
+        #[arg(long, conflicts_with = "json")]
+        waybar: bool,
+    },
+    /// An iCalendar file of the open tasks with a 📅 or ⏳ day ahead (all
+    /// day, or at the time their text starts with) and the job search's
+    /// booked events, for a calendar app to import. The week notes'
+    /// meetings are left out: they came from a calendar.
+    Ics {
+        /// The days from today it covers.
+        #[arg(long, default_value_t = 60)]
+        days: i64,
+        /// Writes the file here instead of stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
     /// The vault as an MCP server on stdin and stdout, for Claude Code and
     /// other agents: search, notes, links, tags, tasks and their queries,
@@ -1366,6 +1398,28 @@ fn run(cli: Cli) -> Result<(), String> {
             for line in lines {
                 out!("{line}");
             }
+        }
+        Command::Agenda { day, json, waybar } => {
+            let (zone, now) = (chrono::Local, chrono::Utc::now());
+            let day = match day {
+                Some(text) => Day::parse(&text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,
+                None => Day::today(),
+            };
+            let index = Vault::index(&root, None);
+            let keys = daftar_core::JobKeys::default();
+            let search = daftar_core::JobSearch::new(&index, &keys, |path| !hidden.contains(path));
+            let agenda = agenda::Agenda::new(&root, &hidden.tasks(&index), &search, &keys, day, &zone, now);
+            match (json, waybar) {
+                (true, _) => out!("{}", agenda.json()),
+                (_, true) => out!("{}", agenda.waybar()),
+                _ => agenda.lines().iter().for_each(|line| out!("{line}")),
+            }
+        }
+        Command::Ics { days, output } => {
+            let index = Vault::index(&root, None);
+            let search = daftar_core::JobSearch::new(&index, &daftar_core::JobKeys::default(), |path| !hidden.contains(path));
+            let events = ics::events(&hidden.tasks(&index), &search, Day::today(), days);
+            ics::put(&ics::calendar(&events, chrono::Utc::now()), output.as_deref())?;
         }
         Command::Mcp { read_only } => mcp::run(root, cli.hidden, read_only)?,
         Command::Images { folder, dry_run, keep_originals, trash } => {

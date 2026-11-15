@@ -510,15 +510,7 @@ pub fn time_range(meeting: &Meeting) -> String {
 /// computer's time) and the note to prepare with: its `Interview
 /// Preparation.md`, else its own note.
 pub fn prep_for(jobs: &JobSearch, meeting: &Meeting) -> Option<(String, String)> {
-    let local = |at: DateTime<Utc>| at.with_timezone(&Local).naive_local();
-    let (start, end) = if let Some(start) = meeting.start {
-        (local(start), meeting.end.map_or_else(|| local(start), local))
-    } else {
-        // An all-day event: the whole day.
-        let day = meeting.day.date().and_hms_opt(0, 0, 0)?;
-        (day, day + chrono::Duration::days(1))
-    };
-    jobs.for_meeting(start, end, &meeting.title).map(|a| (a.company.clone(), a.prep_or_note().to_string()))
+    jobs.for_calendar_meeting(meeting, &Local).map(|a| (a.company.clone(), a.prep_or_note().to_string()))
 }
 
 /// A meeting: a bar in its state, the time, the title with `now` or `maybe`,
