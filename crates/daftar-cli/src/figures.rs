@@ -187,8 +187,10 @@ fn gather(group: &Group, runs: &mut Vec<Run>, shapes: &mut Vec<Rect>) {
                     && is_box(path)
                     && path.fill().is_some_and(|f| f.opacity().get() >= TINT || path.stroke().is_some()) =>
             {
-                let shape = path.abs_bounding_box();
-                if shape.width() > 1.0 && shape.height() > 1.0 {
+                if let Some(shape) = path.abs_bounding_box()
+                    && shape.width() > 1.0
+                    && shape.height() > 1.0
+                {
                     shapes.push(shape);
                 }
             }
@@ -202,7 +204,8 @@ fn gather(group: &Group, runs: &mut Vec<Run>, shapes: &mut Vec<Rect>) {
 /// on the edge of its bounds. The coast of a map or the area under a curve
 /// is not: its bounds hold much that it does not.
 fn is_box(path: &usvg::Path) -> bool {
-    let bounds = path.bounding_box();
+    // A path with no area (usvg 0.50 gives it no bounds) holds no text.
+    let Some(bounds) = path.bounding_box() else { return false };
     let on_edge = |p: &Point| {
         let near = |a: f32, b: f32| (a - b).abs() < 0.5;
         near(p.x, bounds.left()) || near(p.x, bounds.right()) || near(p.y, bounds.top()) || near(p.y, bounds.bottom())

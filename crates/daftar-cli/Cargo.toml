@@ -18,7 +18,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 md-5 = "0.11.0"
 mermaid-rs-renderer = { version = "0.3.1", default-features = false }
 mitex = "0.2.4"
-notify = "8.2.1"
+notify = "8.2.2"
 percent-encoding = "2.3.2"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
 rayon = "1.12.0"
@@ -28,7 +28,7 @@ typst = "0.15.1"
 typst-layout = "0.15.1"
 typst-pdf = "0.15.1"
 unicode-width = "0.2.3"
-usvg = "0.49.0"
+usvg = "0.50.0"
 walkdir = "2.5.0"
 
 [dev-dependencies]

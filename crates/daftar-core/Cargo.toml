@@ -10,11 +10,11 @@ description = "Everything Daftar knows about a vault that needs no window: the p
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
 ego-tree = "0.11.1"
-fancy-regex = "0.20.0"
+fancy-regex = "0.20.2"
 percent-encoding = "2.3.2"
 rayon = "1.12.0"
 regex = "1.13.1"
-rusqlite = { version = "0.41.1", features = ["bundled"] }
+rusqlite = { version = "0.42.0", features = ["bundled"] }
 scraper = "0.29.0"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 unicode-normalization = "0.1.26"
@@ -28,7 +28,7 @@ markdown = "1.0.0"
 # fancy-regex, not Oniguruma, and its suffix arrays are not the C++ ones.
 tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"], optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
-sha2 = { version = "0.10.9", optional = true }
+sha2 = { version = "0.11.1", optional = true }
 
 [features]
 web = ["dep:ureq"]

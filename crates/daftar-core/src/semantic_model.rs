@@ -114,7 +114,7 @@ pub fn download(agent: &str, progress: &mut dyn FnMut(u64, u64)) -> Result<(), S
             progress(done + read, total);
         }
         file.sync_all().map_err(|e| format!("{}: {e}", part.display()))?;
-        let found = format!("{:x}", hasher.finalize());
+        let found = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
         if read != size || found != sum {
             let _ = fs::remove_file(&part);
             return Err(format!("{url}: got {read} bytes with SHA-256 {found}, not {size} with {sum}"));
