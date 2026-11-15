@@ -16,6 +16,7 @@ mod drill;
 mod export;
 mod figures;
 mod fmt;
+mod hook;
 mod images;
 mod jobs;
 mod lint;
@@ -34,6 +35,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
+
+use daftar_core::properties::PropertyValue;
 
 use daftar_core::{
     CalendarEvents, Candidate, Clock, ConfigFile, Day, Drill, DrillState, ExcludedFiles, Git, Place, QueryTask, QuickCapture,
@@ -90,6 +94,7 @@ enum Command {
     },
     /// The notes nearest to a note in meaning, that it does not link to yet.
     Related {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
         note: String,
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: usize,
@@ -136,6 +141,7 @@ enum Command {
         /// The note the query is in, which `{{query.file.path}}` and the
         /// others stand for.
         #[arg(long)]
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
         note: Option<String>,
         /// One JSON array, each task with the groups it is under.
         #[arg(long)]
@@ -158,6 +164,7 @@ enum Command {
     },
     /// Ticks or opens the task on a line of a note, as a click in the app does.
     Toggle {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
         note: String,
         /// The line, from 1, as `tasks` prints it.
         line: usize,
@@ -169,6 +176,7 @@ enum Command {
     /// Sets the status of the task on a line of a note, as the app's status
     /// menu does: `daftar-cli set-status Tasks/Work.md 12 r --reason 'waiting on review'`.
     SetStatus {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
         note: String,
         /// The line, from 1, as `tasks` prints it.
         line: usize,
@@ -182,6 +190,7 @@ enum Command {
     /// Cancels the task on a line of a note, with the reason why:
     /// `daftar-cli cancel Tasks/Work.md 12 --reason 'no budget left'`.
     Cancel {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
         note: String,
         /// The line, from 1, as `tasks` prints it.
         line: usize,
@@ -192,6 +201,7 @@ enum Command {
     /// as the outline's "Sort Headings Under This" does:
     /// `daftar-cli sort-headings Plants.md 'Plants'`.
     SortHeadings {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
         note: String,
         /// The heading's text, or a line, from 1, in its section.
         heading: String,
@@ -200,7 +210,10 @@ enum Command {
     /// the Tasks plugin's settings add, with their symbol and type.
     Statuses,
     /// The notes that link to a note.
-    Backlinks { note: String },
+    Backlinks {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
+        note: String,
+    },
     /// Links that go nowhere.
     Broken,
     /// Every tag, with how many notes have it.
@@ -249,6 +262,7 @@ enum Command {
     /// The commits that changed a note, newest first, across renames:
     /// the hash, the date, the author and the subject.
     History {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
         note: String,
         /// The note's text at this commit instead.
         #[arg(long)]
@@ -265,13 +279,87 @@ enum Command {
         #[arg(short, long)]
         task: bool,
     },
+    /// Adds a line under a heading of a note (at its end with none), as
+    /// the MCP's `append_to_note` does: `daftar-cli append Plants.md 'Water the basil' --heading Basil --task`.
+    Append {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
+        note: String,
+        /// The line; with none, read from stdin.
+        text: Vec<String>,
+        /// The heading to add it under, made at the end when the note has none.
+        #[arg(long)]
+        heading: Option<String>,
+        /// As a task, `- [ ] text`.
+        #[arg(short, long)]
+        task: bool,
+    },
+    /// A new note, never over one that is there: the text given, else stdin
+    /// when it is not a terminal. `.md` is added to a path without it. Prints its path.
+    New {
+        path: String,
+        /// Its text; `-` reads stdin.
+        text: Vec<String>,
+    },
+    /// Moves or renames a note or a file, and the links to it and its
+    /// bookmarks follow, as the app's Move does: `daftar-cli mv Inbox/Idea.md Projects/Idea`.
+    Mv {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
+        note: String,
+        /// The new path in the vault; a name with no folder stays in the vault's root.
+        to: String,
+        /// Says what would move and which notes' links would change, and changes nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Sets a property of a note's front matter, keeping every other line as
+    /// it was written: one value is text, several a list, none an empty
+    /// value. `daftar-cli set-property Plants.md tags garden herbs`.
+    SetProperty {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
+        note: String,
+        key: String,
+        values: Vec<String>,
+        /// A list even with one value.
+        #[arg(long, conflicts_with = "remove")]
+        list: bool,
+        /// Takes the property away.
+        #[arg(long)]
+        remove: bool,
+    },
+    /// A note's path, change time, aliases, tags, properties, outline, tasks,
+    /// the links it makes and the notes that link to it.
+    Info {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
+        note: String,
+    },
+    /// The vault at a glance, as an agent's first call (`vault_brief`) reads
+    /// it: tasks overdue, due and in progress, the job search's booked events,
+    /// the drill cards due, the audit and yesterday's commits.
+    Brief {
+        /// The audit with the vault's `[audit]` profile.
+        #[arg(long)]
+        audit: bool,
+    },
+    /// The script that completes this command in [shell] (bash, zsh, fish,
+    /// elvish or powershell), notes by their path in the vault included:
+    /// `daftar-cli completions zsh > ~/.zfunc/_daftar-cli`, or
+    /// `source <(daftar-cli completions zsh)` in .zshrc.
+    Completions { shell: String },
+    /// The vault's git hook: `install` writes one that runs `pre-commit`
+    /// before each commit, which formats, lints and audits the staged notes
+    /// (`check --strict` on them) and the whole vault for errors, as CI does.
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
     /// The branch, how far it is from its remote, and how many files changed.
     Status,
     /// What stands in a sync's way: an operation left open, conflicts, no
     /// upstream, commits not pushed or pulled, large untracked files. Fails
-    /// when anything would stop a sync.
+    /// when anything would stop a sync. The large files committed already
+    /// are listed too, largest first, as information.
     Doctor {
-        /// The size in MB over which an untracked file is named.
+        /// The size in MB over which a file is named.
         #[arg(long, default_value_t = 1)]
         large: u64,
     },
@@ -309,6 +397,7 @@ enum Command {
     /// Done and cancelled tasks first in each section of a note, as the Task
     /// Sorter plugin sorts them.
     SortTasks {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
         note: String,
         #[arg(long)]
         dry_run: bool,
@@ -316,6 +405,7 @@ enum Command {
     /// Moves a task's due date (else its scheduled, else its start date) on,
     /// as the Tasks plugin's Postpone does: by day, 2days, 3days, week, 2weeks or month.
     Postpone {
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
         note: String,
         /// The line, from 1, as `tasks` prints it.
         line: usize,
@@ -355,6 +445,7 @@ enum Command {
     /// its pictures drawn, its wiki links as their text. Prints the PDF's path.
     Export {
         /// The note: its path in the vault, or its name.
+        #[arg(add = ArgValueCandidates::new(note_candidates))]
         note: String,
         /// Where the PDF goes; else the note's name with .pdf, here.
         #[arg(short, long)]
@@ -522,6 +613,14 @@ enum Command {
         /// it dated within this many days (memory-quiet).
         #[arg(long = "quiet-days", requires = "active")]
         quiet_days: Option<i64>,
+        /// Warns of notes nothing links to that link to no note (orphan).
+        /// `orphans = true` in `.daftar.toml` does the same.
+        #[arg(long)]
+        orphans: bool,
+        /// With --orphans, a folder whose notes are left out (the week
+        /// notes, the daily notes); `orphan_skip` in `.daftar.toml` adds to it.
+        #[arg(long = "orphan-skip", requires = "orphans")]
+        orphan_skip: Vec<String>,
         /// A section of the vault's `.daftar.toml` to add to its `[check]`,
         /// as `audit`. The file's options are read first and the flags add
         /// to them.
@@ -587,11 +686,26 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum HookAction {
+    /// Writes the pre-commit hook where git looks for it (`core.hooksPath`,
+    /// else `.git/hooks`), never over a hook of your own without --force.
+    Install {
+        #[arg(long)]
+        force: bool,
+    },
+    /// What the hook runs: the staged notes formatted and staged again,
+    /// linted and audited strictly, and the vault audited for errors.
+    PreCommit,
+}
+
 /// The exit status of a command that searches by meaning when the model
 /// is not downloaded, so that a program running it can offer the download.
 const NO_MODEL: u8 = 3;
 
 fn main() -> ExitCode {
+    // A shell asking for completions (`COMPLETE=zsh daftar-cli -- …`) is answered here.
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
     let cli = Cli::parse();
     if cli.command.as_ref().is_some_and(needs_model) && !daftar_core::semantic_model::is_downloaded() {
         eprintln!("daftar-cli: {}", daftar_core::semantic_model::missing());
@@ -623,6 +737,16 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         return Cli::command().print_help().map_err(|e| e.to_string());
     };
+    if let Command::Completions { shell } = &command {
+        let shells = clap_complete::env::Shells::builtins();
+        let completer = shells
+            .completer(shell)
+            .ok_or_else(|| format!("no completions for {shell}: {}", shells.names().collect::<Vec<_>>().join(", ")))?;
+        let name = Cli::command().get_name().to_string();
+        return completer
+            .write_registration("COMPLETE", &name, &name, &name, &mut std::io::stdout())
+            .or_else(|e| if e.kind() == std::io::ErrorKind::BrokenPipe { Ok(()) } else { Err(e.to_string()) });
+    }
     let root = vault(cli.vault)?;
     // What the lists leave out, as in the app: links to them still resolve.
     let hidden = ExcludedFiles::from_config(&root, &config(), cli.hidden);
@@ -972,6 +1096,45 @@ fn run(cli: Cli) -> Result<(), String> {
             let path = capture(&root, &config(), &line)?;
             out!("{path}\t{line}");
         }
+        Command::Append { note, text, heading, task } => {
+            let index = Vault::index(&root, None);
+            let line = QuickCapture::line(&words_or_stdin(&text)?, task).ok_or("nothing to add")?;
+            let target = note_path(&index, &note).unwrap_or(note);
+            let path = QuickCapture::capture(&root, &target, heading.as_deref().unwrap_or_default(), &line, Day::today(), Clock::now())?;
+            out!("{path}\t{line}");
+        }
+        Command::New { path, text } => {
+            let text = if text.is_empty() && std::io::stdin().is_terminal() { String::new() } else { words_or_stdin(&text)? };
+            out!("{}", mcp::create_note(&root, &path, &text)?);
+        }
+        Command::Mv { note, to, dry_run } => {
+            let index = Vault::index(&root, None);
+            for line in mcp::move_note(&root, &index, &note, &to, dry_run)? {
+                out!("{line}");
+            }
+        }
+        Command::SetProperty { note, key, values, list, remove } => {
+            let index = Vault::index(&root, None);
+            out!("{}", mcp::property(&root, &index, &note, &key, property_value(values, list, remove))?);
+        }
+        Command::Info { note } => {
+            let index = Vault::index(&root, None);
+            for line in mcp::note_info(&index, &hidden, &note)? {
+                out!("{line}");
+            }
+        }
+        Command::Brief { audit } => {
+            let index = Vault::index(&root, None);
+            TaskStatuses::set_current(TaskStatuses::load(&root));
+            for line in mcp::vault_brief(&root, &DrillState::file(&root), &index, &hidden, audit)? {
+                out!("{line}");
+            }
+        }
+        Command::Completions { .. } => unreachable!("answered before the vault is read"),
+        Command::Hook { action: HookAction::Install { force } } => {
+            out!("{}", hook::install(&repository(&root)?, &root, force)?.display());
+        }
+        Command::Hook { action: HookAction::PreCommit } => hook::pre_commit(&root, &repository(&root)?)?,
         Command::Status => {
             let status = repository(&root)?.status().map_err(|e| e.to_string())?;
             out!("{}\tahead {}\tbehind {}\tchanged {}", status.branch, status.ahead, status.behind, status.changed);
@@ -1104,6 +1267,8 @@ fn run(cli: Cli) -> Result<(), String> {
             prep_note,
             active,
             quiet_days,
+            orphans,
+            orphan_skip,
             profile,
         } => {
             let vault = check::VaultOptions::read(&root, profile.as_deref())?;
@@ -1114,6 +1279,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let quiet_days = quiet_days.or(vault.quiet_days);
             let no_h1 = check::joined(vault.no_h1, no_h1);
             let callout = check::joined(vault.callouts, callout);
+            let orphans = (orphans || vault.orphans).then(|| check::joined(vault.orphan_skip, orphan_skip));
             let github_token = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).ok();
             // Given paths with no note of the vault in them (a file outside
             // it, a hidden folder, a picture) checked nothing: an error, not
@@ -1139,6 +1305,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     active: active.iter().filter_map(|a| memory::Rules::active_pair(a)).collect(),
                     quiet_days,
                 }),
+                orphans,
             };
             let outcome = check::run(&root, |path| hidden.contains(path), &options, |line| out!("{line}"));
             if fix {
@@ -1248,6 +1415,36 @@ fn side(side: Side) -> &'static str {
         Side::Added => "added",
         Side::Deleted => "deleted",
     }
+}
+
+/// The notes of the vault a completion is for (`$DAFTAR_VAULT`, else the
+/// one the shell is in, else the app's), by their path, without the hidden
+/// ones; none when there is no vault.
+fn note_candidates() -> Vec<CompletionCandidate> {
+    let Ok(root) = vault(std::env::var_os("DAFTAR_VAULT").map(PathBuf::from)) else { return Vec::new() };
+    let hidden = ExcludedFiles::from_config(&root, &config(), false);
+    Vault::scan(&root).into_iter().filter(|path| Vault::is_note(path) && !hidden.contains(path)).map(CompletionCandidate::new).collect()
+}
+
+/// What `set-property` sets: one value is text, several (or `--list`) a
+/// list, none an empty value; `--remove` is none at all.
+fn property_value(values: Vec<String>, list: bool, remove: bool) -> Option<PropertyValue> {
+    match (remove, list, values.as_slice()) {
+        (true, ..) => None,
+        (false, false, []) => Some(PropertyValue::Empty),
+        (false, false, [one]) => Some(PropertyValue::Text(one.clone())),
+        (false, ..) => Some(PropertyValue::List(values)),
+    }
+}
+
+/// The words given, joined by spaces; none, or `-` alone, reads stdin.
+fn words_or_stdin(words: &[String]) -> Result<String, String> {
+    if !words.is_empty() && words != ["-"] {
+        return Ok(words.join(" "));
+    }
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).map_err(|e| e.to_string())?;
+    Ok(input)
 }
 
 /// Adds [line] to the capture note of [config], as the app's quick capture does.
@@ -1480,5 +1677,17 @@ mod tests {
         assert_eq!(note_path(&index, "Notes/Inbox.md").unwrap(), "Notes/Inbox.md");
         assert_eq!(note_path(&index, "Inbox").unwrap(), "Notes/Inbox.md");
         assert!(note_path(&index, "Missing").is_err());
+    }
+
+    #[test]
+    fn set_property_reads_its_values_as_the_form_does() {
+        let words = |w: &[&str]| w.iter().map(|w| (*w).to_string()).collect::<Vec<_>>();
+        assert_eq!(property_value(words(&["growing"]), false, false), Some(PropertyValue::Text("growing".into())));
+        assert_eq!(property_value(words(&["north", "south"]), false, false), Some(PropertyValue::List(words(&["north", "south"]))));
+        assert_eq!(property_value(words(&["north"]), true, false), Some(PropertyValue::List(words(&["north"]))));
+        assert_eq!(property_value(Vec::new(), false, false), Some(PropertyValue::Empty));
+        assert_eq!(property_value(words(&["x"]), false, true), None);
+        let parsed = Cli::try_parse_from(["daftar-cli", "mv", "Inbox/Idea.md", "Projects/Idea", "--dry-run"]).unwrap();
+        assert!(matches!(parsed.command, Some(Command::Mv { dry_run: true, .. })));
     }
 }

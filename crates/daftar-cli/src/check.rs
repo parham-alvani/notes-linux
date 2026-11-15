@@ -23,7 +23,7 @@ use std::sync::LazyLock;
 use chrono::NaiveDate;
 use daftar_core::vault::LOGO_NAMES;
 use daftar_core::web_fetch::Answer;
-use daftar_core::{Day, ParsedTask, Recurrence, TaskReason, TaskStatuses, TaskType, Vault, VaultEdits};
+use daftar_core::{Day, ParsedTask, Recurrence, TaskReason, TaskStatuses, TaskType, Vault, VaultEdits, VaultIndex};
 use percent_encoding::percent_decode_str;
 use rayon::prelude::*;
 use regex::Regex;
@@ -54,6 +54,10 @@ pub struct VaultOptions {
     pub prep_notes: Vec<String>,
     pub active: Vec<String>,
     pub quiet_days: Option<i64>,
+    /// Warns of notes nothing links to that link to no note (`orphan`).
+    pub orphans: bool,
+    /// Folders whose notes are not orphans for that: the week notes, the daily notes.
+    pub orphan_skip: Vec<String>,
 }
 
 impl VaultOptions {
@@ -74,6 +78,10 @@ impl VaultOptions {
             options.event_properties.extend(list("event_properties"));
             options.prep_notes.extend(list("prep_notes"));
             options.active.extend(list("active"));
+            options.orphan_skip.extend(list("orphan_skip"));
+            if let Some(orphans) = file.bool(&format!("{section}.orphans")) {
+                options.orphans = orphans;
+            }
             if let Some(memory) = file.bool(&format!("{section}.memory")) {
                 options.memory = memory;
             }
@@ -136,6 +144,8 @@ pub struct Options {
     pub dry_run: bool,
     /// The memory warnings (`memory.rs`), with the vault's conventions.
     pub memory: Option<crate::memory::Rules>,
+    /// Warns of orphan notes, but in these folders.
+    pub orphans: Option<Vec<String>>,
 }
 
 pub struct Outcome {
@@ -263,7 +273,7 @@ fn written_anchors(line: &str, target: &str, parsed: &str) -> Vec<String> {
 }
 
 /// Whether the note at [to] has the heading or the `^block` [anchor] names.
-fn has_anchor(index: &daftar_core::VaultIndex, root: &Path, to: &str, anchor: &str, texts: &mut HashMap<String, String>) -> bool {
+fn has_anchor(index: &VaultIndex, root: &Path, to: &str, anchor: &str, texts: &mut HashMap<String, String>) -> bool {
     let Some(note) = index.notes.get(to) else { return true };
     if let Some(id) = anchor.strip_prefix('^') {
         let text = texts.entry(to.to_string()).or_insert_with(|| fs::read_to_string(root.join(to)).unwrap_or_default());
@@ -277,7 +287,7 @@ fn has_anchor(index: &daftar_core::VaultIndex, root: &Path, to: &str, anchor: &s
 /// The heading of the note at [to] that a broken [anchor] most likely
 /// meant: one that starts with it or holds it (a heading renamed longer),
 /// else one a few letters off (a typo). Compared as `plain` or `slug` do.
-fn closest(index: &daftar_core::VaultIndex, to: &str, anchor: &str) -> Option<String> {
+fn closest(index: &VaultIndex, to: &str, anchor: &str) -> Option<String> {
     let note = index.notes.get(to)?;
     let (wanted, slugged) = (plain(anchor), anchor.to_lowercase());
     if wanted.is_empty() || anchor.starts_with('^') {
@@ -440,7 +450,7 @@ fn shows_markdown(path: &str) -> bool {
 
 /// The shortest path, from the end of [to], that names [to] alone and that
 /// [source] resolves to it: `Folder/Note` for `Folder/Note.md`.
-fn unique_target(index: &daftar_core::VaultIndex, to: &str, source: &str) -> Option<String> {
+fn unique_target(index: &VaultIndex, to: &str, source: &str) -> Option<String> {
     let bare = to.strip_suffix(".md").unwrap_or(to);
     let segments: Vec<&str> = bare.split('/').collect();
     (2..=segments.len()).map(|k| segments[segments.len() - k..].join("/")).find(|target| {
@@ -546,6 +556,13 @@ pub(crate) fn task_problems(task: &ParsedTask, statuses: &TaskStatuses, today: &
     found
 }
 
+/// No note but [path] itself and the hidden ones links to it, and it
+/// links to no note: a picture or a web address is not a way in.
+fn is_orphan(index: &VaultIndex, path: &str, hidden: impl Fn(&str) -> bool) -> bool {
+    index.backlinks(path).iter().all(|link| link.source == path || hidden(&link.source))
+        && index.resolved_links(path).values().all(|to| to == path || !Vault::is_note(to))
+}
+
 fn stem(path: &str) -> &str {
     let name = path.rsplit('/').next().unwrap_or(path);
     name.strip_suffix(".md").unwrap_or(name)
@@ -588,6 +605,12 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
             for (kind, what) in task_problems(task, &statuses, &today) {
                 found.insert(((*path).clone(), task.line + 1, false, kind, what));
             }
+        }
+        if let Some(skip) = &options.orphans
+            && !skip.iter().any(|folder| path.starts_with(&format!("{}/", folder.trim_end_matches('/'))))
+            && is_orphan(&index, path, &hidden)
+        {
+            found.insert(((*path).clone(), 1, false, "orphan", "no note links here, and it links to no note".into()));
         }
         let source = fs::read_to_string(root.join(path.as_str())).unwrap_or_default();
         let source_lines: Vec<&str> = source.lines().collect();
@@ -1045,7 +1068,33 @@ mod tests {
             fix: false,
             dry_run: false,
             memory: None,
+            orphans: None,
         }
+    }
+
+    /// A note with no way in and none out is an orphan, but in a folder
+    /// left out; a link from a hidden note or to a picture is no way.
+    #[test]
+    fn an_orphan_is_a_note_with_no_link_in_or_out() {
+        let dir = vault(&[
+            ("Hub.md", "[[Spoke]]\n"),
+            ("Spoke.md", "Linked from Hub.\n"),
+            ("Alone.md", "Only ![[pic.png]] and [[Alone]] and <https://example.org>.\n"),
+            ("Calendar/2026-W46.md", "A week.\n"),
+            ("Hidden.md", "[[Shy]]\n"),
+            ("Shy.md", "Seen only by a hidden note.\n"),
+            ("pic.png", ""),
+        ]);
+        let mut with = options();
+        with.orphans = Some(vec!["Calendar/".into()]);
+        let mut lines = Vec::new();
+        run(dir.path(), |path| path == "Hidden.md", &with, |l| lines.push(l));
+        let orphans: Vec<&str> = lines.iter().filter(|l| l.contains("\torphan\t")).map(|l| l.split(':').next().unwrap()).collect();
+        assert_eq!(orphans, ["Alone.md", "Shy.md"], "{lines:#?}");
+        assert!(!findings(dir.path(), &options()).iter().any(|l| l.contains("orphan")));
+        fs::write(dir.path().join(".daftar.toml"), "[audit]\norphans = true\norphan_skip = [\"Calendar\"]\n").unwrap();
+        let vault = VaultOptions::read(dir.path(), Some("audit")).unwrap();
+        assert!(vault.orphans && vault.orphan_skip == ["Calendar"]);
     }
 
     #[test]

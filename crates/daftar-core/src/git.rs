@@ -269,7 +269,8 @@ impl Git {
 
     /// What stands in a sync's way, or will: an operation left open, files in
     /// conflict, no branch or no upstream, commits not yet pushed or pulled,
-    /// changes not committed, and untracked files over [large] bytes.
+    /// changes not committed, and untracked files over [large] bytes; and,
+    /// as information, the committed files over it.
     pub fn doctor(&self, large: u64) -> Result<Vec<Diagnosis>, GitFailure> {
         let mut found = Vec::new();
         if self.rebase_in_progress()? {
@@ -296,6 +297,18 @@ impl Git {
                     &format!("{path} is {:.1} MB and not committed yet", size as f64 / 1_048_576.0),
                 ));
             }
+        }
+        // Committed already, in every clone: said, largest first, but no warning.
+        let tracked = self.run_raw(&["ls-files", "-z"])?;
+        let mut large_tracked: Vec<(u64, &str)> = tracked
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .filter_map(|path| Some((std::fs::metadata(self.root.join(path)).ok()?.len(), path)))
+            .filter(|(size, _)| *size > large)
+            .collect();
+        large_tracked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+        for (size, path) in large_tracked {
+            found.push(Diagnosis::info("large-tracked", &format!("{path} is {:.1} MB, in every clone", size as f64 / 1_048_576.0)));
         }
         Ok(found)
     }
@@ -598,6 +611,10 @@ mod tests {
         let codes: Vec<&str> = two.doctor(1024).unwrap().iter().map(|d| d.code).collect();
         assert!(codes.starts_with(&["operation-open", "conflicts"]), "{codes:?}");
         assert!(codes.contains(&"large-file"), "{codes:?}");
+        assert!(!codes.contains(&"large-tracked"), "{codes:?}");
+        let found = two.doctor(4).unwrap();
+        let tracked: Vec<&str> = found.iter().filter(|d| d.code == "large-tracked").map(|d| d.message.as_str()).collect();
+        assert!(tracked.iter().any(|m| m.starts_with("a.md is")) && found.iter().all(|d| d.code != "large-tracked" || d.level == "info"));
     }
 
     #[test]

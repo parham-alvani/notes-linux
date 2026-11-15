@@ -193,6 +193,7 @@ impl Server {
                             .collect(),
                         quiet_days: args.0.get("quiet_days").and_then(Value::as_i64).or(vault.quiet_days),
                     }),
+                    orphans: vault.orphans.then(|| vault.orphan_skip.clone()),
                 };
                 let mut found = Vec::new();
                 let outcome = check::run(root, |path| hidden.contains(path), &options, |line| found.push(line));
@@ -212,7 +213,7 @@ impl Server {
             }
             "create_note" => vec![create_note(root, args.text("path")?, args.text("text")?)?],
             "note_context" => return note_context(root, &index, &hidden, args.text("note")?),
-            "move_note" => move_note(root, &index, args.text("note")?, args.text("to")?)?,
+            "move_note" => move_note(root, &index, args.text("note")?, args.text("to")?, false)?,
             "set_property" => vec![set_property(root, &index, args)?],
             "replace_in_note" => {
                 let new = args.0.get("new").and_then(Value::as_str).ok_or("new is needed (empty to delete)")?;
@@ -320,110 +321,8 @@ impl Server {
         Ok(if lines.is_empty() { "(nothing)".to_string() } else { lines.join("\n") })
     }
 
-    /// [vault_brief]: what an agent reads first, each part capped so it
-    /// stays one screen.
     fn vault_brief(&self, index: &VaultIndex, hidden: &ExcludedFiles, audit: bool) -> Result<Vec<String>, String> {
-        let root = &self.root;
-        let now = chrono::Local::now().naive_local();
-        let today = Day::today();
-        let week = today.adding_days(7).to_string();
-        let today_text = today.to_string();
-        let mut lines = vec![format!("now: {}", now.format("%Y-%m-%d %A %H:%M"))];
-
-        let open: Vec<VaultTask> = hidden.tasks(index).into_iter().filter(|t| !TaskLine::is_closed(t.task.status)).collect();
-        let when = |t: &VaultTask| t.task.due.clone().or_else(|| t.task.scheduled.clone());
-        let mut overdue: Vec<&VaultTask> = open.iter().filter(|t| t.task.due.as_ref().is_some_and(|d| *d < today_text)).collect();
-        overdue.sort_by_key(|t| when(t));
-        let due_today: Vec<&VaultTask> = open
-            .iter()
-            .filter(|t| {
-                t.task.due.as_deref() == Some(today_text.as_str())
-                    || (t.task.due.is_none() && t.task.scheduled.as_deref() == Some(today_text.as_str()))
-            })
-            .collect();
-        let mut slipped: Vec<&VaultTask> =
-            open.iter().filter(|t| t.task.due.is_none() && t.task.scheduled.as_ref().is_some_and(|d| *d < today_text)).collect();
-        slipped.sort_by_key(|t| t.task.scheduled.clone());
-        let doing: Vec<&VaultTask> = open.iter().filter(|t| t.task.status == '/').collect();
-        let ahead = open.iter().filter(|t| when(t).is_some_and(|d| d > today_text && d <= week)).count();
-        for (name, list, shown) in [
-            ("overdue (📅 passed)", &overdue, 15),
-            ("today (📅 or ⏳)", &due_today, 15),
-            ("in progress", &doing, 15),
-            ("scheduled on a day that passed (⏳, no 📅), oldest first", &slipped, 5),
-        ] {
-            lines.push(format!("\n## Tasks {name}: {}", list.len()));
-            lines.extend(list.iter().take(shown).map(|t| crate::task_line(t)));
-            if list.len() > shown {
-                lines.push(format!("… and {} more", list.len() - shown));
-            }
-        }
-        lines.push(format!("\n{ahead} more open tasks fall in the next 7 days."));
-
-        let keys = JobKeys::default();
-        let search = JobSearch::new(index, &keys, |path| !hidden.contains(path));
-        let events = search.upcoming(now, Some(now + chrono::Duration::days(7)));
-        lines.push(format!("\n## Job search: booked in the next 7 days ({})", events.len()));
-        for event in events {
-            let when =
-                event.next.map_or_default(|n| n.format(if event.next_has_time { "%a %Y-%m-%d %H:%M" } else { "%a %Y-%m-%d" }).to_string());
-            lines.push(format!(
-                "{when}\t{}\t{}\t{}\tprep: {}",
-                event.company,
-                event.stage,
-                event.next_step.as_deref().unwrap_or(""),
-                event.prep.as_deref().unwrap_or("none")
-            ));
-        }
-
-        if let Ok(notes) = crate::drill::notes(index, &[], |p| hidden.contains(p)) {
-            let deck = Drill::deck(root, &notes);
-            let state = DrillState::load(&self.drill_file());
-            let due = Drill::due(&deck, &state, today, 0, usize::MAX).len();
-            let fresh = deck.iter().filter(|c| state.due(c).is_none()).count();
-            lines.push(format!("\n## Drill\n{due} cards due, {fresh} never asked, of {} (drill_due asks them)", deck.len()));
-        }
-
-        let vault = check::VaultOptions::read(root, audit.then_some("audit"))?;
-        let options = check::Options {
-            strict: false,
-            no_h1: vault.no_h1,
-            callouts: vault.callouts,
-            urls: false,
-            unreachable: false,
-            github_token: None,
-            skip_urls: Vec::new(),
-            archive: false,
-            figures: false,
-            mode: crate::report::Mode::Plain,
-            only: None,
-            fix: false,
-            dry_run: false,
-            memory: Some(crate::memory::Rules {
-                event_properties: vault.event_properties,
-                prep_notes: vault.prep_notes,
-                active: vault.active.iter().filter_map(|a| crate::memory::Rules::active_pair(a)).collect(),
-                quiet_days: vault.quiet_days,
-            }),
-        };
-        let mut found = Vec::new();
-        let outcome = check::run(root, |path| hidden.contains(path), &options, |line| found.push(line));
-        let wanted: Vec<String> = found.into_iter().filter(|l| l.contains("\terror\t") || l.contains("\tmemory-")).collect();
-        lines.push(format!("\n## Audit: {} errors, {} warnings in {} notes", outcome.errors, outcome.warnings, outcome.notes));
-        lines.extend(wanted.iter().take(20).cloned());
-        if wanted.len() > 20 {
-            lines.push(format!("… and {} more (check_vault lists them)", wanted.len() - 20));
-        }
-
-        lines.push("\n## Commits since yesterday".to_string());
-        match crate::repository(root).and_then(|git| {
-            git.run(&["log", "--since=1.day", "--format=%h\t%ad\t%s", "--date=format:%Y-%m-%d %H:%M"]).map_err(|e| e.to_string())
-        }) {
-            Ok(log) if log.trim().is_empty() => lines.push("none".to_string()),
-            Ok(log) => lines.extend(log.lines().take(15).map(str::to_string)),
-            Err(error) => lines.push(format!("(no git: {error})")),
-        }
-        Ok(lines)
+        vault_brief(&self.root, &self.drill_file(), index, hidden, audit)
     }
 
     fn drill_file(&self) -> PathBuf {
@@ -452,6 +351,118 @@ impl Server {
             .map(|hit| format!("{}\t{}", hit.path, crate::snippet(&hit.snippet, false)))
             .collect()
     }
+}
+
+/// [vault_brief], and `daftar-cli brief`: what an agent reads first, each part capped so it
+/// stays one screen.
+pub(crate) fn vault_brief(
+    root: &Path,
+    drill: &Path,
+    index: &VaultIndex,
+    hidden: &ExcludedFiles,
+    audit: bool,
+) -> Result<Vec<String>, String> {
+    let now = chrono::Local::now().naive_local();
+    let today = Day::today();
+    let week = today.adding_days(7).to_string();
+    let today_text = today.to_string();
+    let mut lines = vec![format!("now: {}", now.format("%Y-%m-%d %A %H:%M"))];
+
+    let open: Vec<VaultTask> = hidden.tasks(index).into_iter().filter(|t| !TaskLine::is_closed(t.task.status)).collect();
+    let when = |t: &VaultTask| t.task.due.clone().or_else(|| t.task.scheduled.clone());
+    let mut overdue: Vec<&VaultTask> = open.iter().filter(|t| t.task.due.as_ref().is_some_and(|d| *d < today_text)).collect();
+    overdue.sort_by_key(|t| when(t));
+    let due_today: Vec<&VaultTask> = open
+        .iter()
+        .filter(|t| {
+            t.task.due.as_deref() == Some(today_text.as_str())
+                || (t.task.due.is_none() && t.task.scheduled.as_deref() == Some(today_text.as_str()))
+        })
+        .collect();
+    let mut slipped: Vec<&VaultTask> =
+        open.iter().filter(|t| t.task.due.is_none() && t.task.scheduled.as_ref().is_some_and(|d| *d < today_text)).collect();
+    slipped.sort_by_key(|t| t.task.scheduled.clone());
+    let doing: Vec<&VaultTask> = open.iter().filter(|t| t.task.status == '/').collect();
+    let ahead = open.iter().filter(|t| when(t).is_some_and(|d| d > today_text && d <= week)).count();
+    for (name, list, shown) in [
+        ("overdue (📅 passed)", &overdue, 15),
+        ("today (📅 or ⏳)", &due_today, 15),
+        ("in progress", &doing, 15),
+        ("scheduled on a day that passed (⏳, no 📅), oldest first", &slipped, 5),
+    ] {
+        lines.push(format!("\n## Tasks {name}: {}", list.len()));
+        lines.extend(list.iter().take(shown).map(|t| crate::task_line(t)));
+        if list.len() > shown {
+            lines.push(format!("… and {} more", list.len() - shown));
+        }
+    }
+    lines.push(format!("\n{ahead} more open tasks fall in the next 7 days."));
+
+    let keys = JobKeys::default();
+    let search = JobSearch::new(index, &keys, |path| !hidden.contains(path));
+    let events = search.upcoming(now, Some(now + chrono::Duration::days(7)));
+    lines.push(format!("\n## Job search: booked in the next 7 days ({})", events.len()));
+    for event in events {
+        let when =
+            event.next.map_or_default(|n| n.format(if event.next_has_time { "%a %Y-%m-%d %H:%M" } else { "%a %Y-%m-%d" }).to_string());
+        lines.push(format!(
+            "{when}\t{}\t{}\t{}\tprep: {}",
+            event.company,
+            event.stage,
+            event.next_step.as_deref().unwrap_or(""),
+            event.prep.as_deref().unwrap_or("none")
+        ));
+    }
+
+    if let Ok(notes) = crate::drill::notes(index, &[], |p| hidden.contains(p)) {
+        let deck = Drill::deck(root, &notes);
+        let state = DrillState::load(drill);
+        let due = Drill::due(&deck, &state, today, 0, usize::MAX).len();
+        let fresh = deck.iter().filter(|c| state.due(c).is_none()).count();
+        lines.push(format!("\n## Drill\n{due} cards due, {fresh} never asked, of {} (drill_due asks them)", deck.len()));
+    }
+
+    let vault = check::VaultOptions::read(root, audit.then_some("audit"))?;
+    let options = check::Options {
+        strict: false,
+        no_h1: vault.no_h1,
+        callouts: vault.callouts,
+        urls: false,
+        unreachable: false,
+        github_token: None,
+        skip_urls: Vec::new(),
+        archive: false,
+        figures: false,
+        mode: crate::report::Mode::Plain,
+        only: None,
+        fix: false,
+        dry_run: false,
+        memory: Some(crate::memory::Rules {
+            event_properties: vault.event_properties,
+            prep_notes: vault.prep_notes,
+            active: vault.active.iter().filter_map(|a| crate::memory::Rules::active_pair(a)).collect(),
+            quiet_days: vault.quiet_days,
+        }),
+        orphans: vault.orphans.then(|| vault.orphan_skip.clone()),
+    };
+    let mut found = Vec::new();
+    let outcome = check::run(root, |path| hidden.contains(path), &options, |line| found.push(line));
+    let wanted: Vec<String> = found.into_iter().filter(|l| l.contains("\terror\t") || l.contains("\tmemory-")).collect();
+    lines.push(format!("\n## Audit: {} errors, {} warnings in {} notes", outcome.errors, outcome.warnings, outcome.notes));
+    lines.extend(wanted.iter().take(20).cloned());
+    if wanted.len() > 20 {
+        lines.push(format!("… and {} more (check_vault lists them)", wanted.len() - 20));
+    }
+
+    lines.push("\n## Commits since yesterday".to_string());
+    match crate::repository(root).and_then(|git| {
+        git.run(&["log", "--since=1.day", "--format=%h\t%ad\t%s", "--date=format:%Y-%m-%d %H:%M"]).map_err(|e| e.to_string())
+    }) {
+        Ok(log) if log.trim().is_empty() => lines.push("none".to_string()),
+        Ok(log) => lines.extend(log.lines().take(15).map(str::to_string)),
+        Err(error) => lines.push(format!("(no git: {error})")),
+    }
+    Ok(lines)
 }
 
 /// The tools that write to the vault, which `--read-only` leaves out.
@@ -515,7 +526,7 @@ fn read_note(root: &Path, index: &VaultIndex, note: &str, heading: Option<&str>)
 }
 
 /// What the index knows of a note: properties, tags, outline, links and backlinks.
-fn note_info(index: &VaultIndex, hidden: &ExcludedFiles, note: &str) -> Result<Vec<String>, String> {
+pub(crate) fn note_info(index: &VaultIndex, hidden: &ExcludedFiles, note: &str) -> Result<Vec<String>, String> {
     let path = crate::note_path(index, note)?;
     let entry = &index.notes[&path];
     let parsed = &entry.parsed;
@@ -697,7 +708,7 @@ fn note_context(root: &Path, index: &VaultIndex, hidden: &ExcludedFiles, note: &
 /// Renames or moves a note to [to], a vault path (`.md` is added to a name
 /// without an extension), and rewrites every link to it in the vault, as the
 /// app's Rename and Move do; the vault's bookmarks follow it.
-fn move_note(root: &Path, index: &VaultIndex, note: &str, to: &str) -> Result<Vec<String>, String> {
+pub(crate) fn move_note(root: &Path, index: &VaultIndex, note: &str, to: &str, dry_run: bool) -> Result<Vec<String>, String> {
     let from = crate::note_path(index, note)
         .or_else(|_| if index.files.contains(note) { Ok(note.to_string()) } else { Err(format!("no note {note}")) })?;
     let to = to.trim().trim_start_matches("./");
@@ -712,6 +723,11 @@ fn move_note(root: &Path, index: &VaultIndex, note: &str, to: &str) -> Result<Ve
     let moves = VaultMoves::plan(&from, &to, &index.files).map_err(|e| e.to_string())?;
     // The notes whose links change, by their path after the move.
     let relinked = VaultMoves::relinked(index, &moves, |path| fs::read_to_string(root.join(path)).ok());
+    if dry_run {
+        let mut out = vec![format!("would move\t{from} → {to}")];
+        out.extend(relinked.into_keys().filter(|p| *p != to).map(|p| format!("would rewrite links\t{p}")));
+        return Ok(out);
+    }
     VaultMoves::perform(&from, &to, index, root).map_err(|e| e.to_string())?;
     let mut bookmarks = Bookmarks::load(root);
     if bookmarks.follow(&moves, None) {
@@ -726,8 +742,7 @@ fn move_note(root: &Path, index: &VaultIndex, note: &str, to: &str) -> Result<Ve
 /// matter, keeping every other line as it was written; the front matter is
 /// made when the note has none.
 fn set_property(root: &Path, index: &VaultIndex, args: &Arguments) -> Result<String, String> {
-    let path = crate::note_path(index, args.text("note")?)?;
-    let key = args.text("key")?.trim().to_string();
+    let key = args.text("key")?;
     let value = if args.flag("remove") {
         None
     } else if let Some(items) = args.0.get("value").and_then(Value::as_array) {
@@ -739,6 +754,14 @@ fn set_property(root: &Path, index: &VaultIndex, args: &Arguments) -> Result<Str
             None => return Err("value is needed: a string, a list of strings, or `remove`".into()),
         }
     };
+    property(root, index, args.text("note")?, key, value)
+}
+
+/// Sets [key] of [note]'s front matter to [value], or takes it away with
+/// none: `set_property` and `daftar-cli set-property`.
+pub(crate) fn property(root: &Path, index: &VaultIndex, note: &str, key: &str, value: Option<PropertyValue>) -> Result<String, String> {
+    let path = crate::note_path(index, note)?;
+    let key = key.trim().to_string();
     let mut why = None;
     VaultEdits::apply(&path, root, |text| {
         // A key the note has is set; a new one is added after the others.
@@ -863,7 +886,7 @@ fn commit(root: &Path, message: &str, paths: &[String], push: bool) -> Result<Ve
 
 /// Makes a note at [path] with [text]; never over a file that is there,
 /// never outside the vault.
-fn create_note(root: &Path, path: &str, text: &str) -> Result<String, String> {
+pub(crate) fn create_note(root: &Path, path: &str, text: &str) -> Result<String, String> {
     let path = path.trim();
     let path = if path.to_lowercase().ends_with(".md") { path.to_string() } else { format!("{path}.md") };
     if path.starts_with('/') || path.split('/').any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.')) {
@@ -878,7 +901,7 @@ fn create_note(root: &Path, path: &str, text: &str) -> Result<String, String> {
         text.push('\n');
     }
     let mut made = fs::OpenOptions::new().write(true).create_new(true).open(&file).map_err(|e| match e.kind() {
-        std::io::ErrorKind::AlreadyExists => format!("{path} is there already; use append_to_note"),
+        std::io::ErrorKind::AlreadyExists => format!("{path} is there already; add to it instead"),
         _ => format!("{path}: {e}"),
     })?;
     made.write_all(text.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
