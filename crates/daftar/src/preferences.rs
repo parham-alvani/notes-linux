@@ -257,6 +257,16 @@ fn editor_group(
         });
     }
     group.add(&live);
+    let format = adw::SwitchRow::builder()
+        .title("Format on leaving")
+        .subtitle("A note you typed in is formatted with daftar-cli fmt when you leave the editor, never while you type")
+        .active(file.bool("editor.format_on_save").unwrap_or(true))
+        .build();
+    {
+        let write = write.clone();
+        format.connect_active_notify(move |row| write("editor.format_on_save", Value::Bool(row.is_active())));
+    }
+    group.add(&format);
     let neovide = adw::SwitchRow::builder()
         .title("Edit in Neovide")
         .subtitle("Ctrl+E opens the note in Neovide's own window; the page follows what it writes")

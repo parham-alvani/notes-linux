@@ -18,7 +18,8 @@ impl Window {
             ("export-pdf", Window::export_pdf),
             ("neovide", Window::open_in_neovide),
             ("clip", Window::ask_clip),
-            ("check-vault", Window::check_vault),
+            ("problems", Window::toggle_problems),
+            ("format-note", Window::format_note),
             ("random-note", Window::open_random_note),
         ] {
             let action = gio::SimpleAction::new(name, None);
@@ -50,7 +51,8 @@ impl Window {
             command("Export the Note as PDF", "Note", "win.export-pdf", "Ctrl+Shift+E"),
             command("Quick Capture", "File", "app.capture", ""),
             command("Clip Web Page…", "File", "win.clip", "Ctrl+Shift+L"),
-            command("Check the Vault", "Vault", "win.check-vault", ""),
+            command(if self.problems.is_open() { "Hide Problems" } else { "Show Problems" }, "View", "win.problems", "Ctrl+Shift+M"),
+            command("Format Note", "Note", "win.format-note", "Ctrl+Alt+Shift+F"),
             command("Open Random Note", "Go", "win.random-note", "Ctrl+Shift+R"),
             command(
                 if self.hidden_settings().1 { "Hide Hidden Files" } else { "Show Hidden Files" },
@@ -192,7 +194,7 @@ impl Window {
         }
     }
 
-    fn notice(&self, text: &str) {
+    pub(super) fn notice(&self, text: &str) {
         self.toasts.add_toast(crate::toast(text));
     }
 
@@ -266,20 +268,6 @@ impl Window {
         let text = store.text(&path).unwrap_or_default();
         let toasts = self.toasts.clone();
         crate::read_aloud::toggle(&path, &tab.reader.view, text, move |text| toasts.add_toast(crate::toast(text)));
-    }
-
-    /// The vault's audit, `daftar-cli check`, each finding opening its line.
-    fn check_vault(&self) {
-        let Some(store) = self.store.borrow().clone() else { return };
-        // The command reads the files: what was typed goes there first.
-        self.save_editors();
-        let (this, toasts) = (self.clone(), self.toasts.clone());
-        crate::vault_check::present(
-            self.window.upcast_ref(),
-            &store.root,
-            move |path, line| this.go(path, None, Some(line), true),
-            move |text| toasts.add_toast(crate::toast(text)),
-        );
     }
 
     /// Ctrl+Shift+E: the note on screen as an A4 PDF, by `daftar-cli export`.

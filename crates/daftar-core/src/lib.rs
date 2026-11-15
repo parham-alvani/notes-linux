@@ -37,10 +37,12 @@ pub mod markdown_table;
 pub mod message_pack;
 pub mod month_grid;
 pub mod neovim;
+pub mod note_format;
 pub mod note_graph;
 pub mod note_parser;
 pub mod ordered_json;
 pub mod periodic_notes;
+pub mod problems;
 pub mod properties;
 pub mod quick_capture;
 pub mod quick_switcher;
@@ -103,10 +105,14 @@ pub use markdown_table::{MarkdownTable, TableTab};
 pub use message_pack::{MessagePack, MsgFailure, MsgStream, MsgValue};
 pub use month_grid::{Calendar, Month};
 pub use neovim::{BufferMirror, MirrorEdit, NeovimClient, NeovimFailure, NeovimNotification, VimKeys, VimModifiers};
+pub use note_format::{ChangedLines, Moment as FormatMoment, NoteFormat};
 pub use note_graph::{GraphEdge, GraphLayout, GraphNode, NoteGraph};
 pub use note_parser::{FrontMatter, Heading, Link, NoteParser, ParsedNote, ParsedTask, Wikilink};
 pub use ordered_json::{JsonFailure, OrderedJson};
 pub use periodic_notes::{Clock, DailyNotes, MomentFormat, Period, PeriodicNotes};
+pub use problems::{
+    Counts as ProblemCounts, Filter as ProblemFilter, Level as ProblemLevel, Note as ProblemNote, Problem, Problems, Tool as ProblemTool,
+};
 pub use quick_capture::QuickCapture;
 pub use quick_switcher::{Candidate, QuickSwitcher};
 pub use random_note::RandomNote;

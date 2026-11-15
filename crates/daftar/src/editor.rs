@@ -36,6 +36,8 @@ use daftar_core::{
 
 #[path = "editor_media.rs"]
 pub(crate) mod media;
+#[path = "editor_problems.rs"]
+mod problems;
 
 use crate::editor_popup::{Choice, Popup};
 use crate::editor_style::Styler;
@@ -66,13 +68,20 @@ impl Saved {
     }
 }
 
-/// The note open in the editor: its path, and the text the file had when it
-/// was loaded or last saved.
+/// The note open in the editor: its path, the text the file had when it was
+/// loaded or last saved, and the text it had when the editor took it.
 struct Open {
     path: String,
     file: PathBuf,
     on_disk: String,
+    /// The file when the editor loaded it, or last read it again: a note
+    /// whose file is not this when it is left was typed in, and is formatted
+    /// (`docs/specs/problems-and-format.md` §6).
+    loaded: String,
 }
+
+/// Hears a note the editor let go: its path, and the text it took.
+type LeftListener = Box<dyn Fn(String, String)>;
 
 /// What the list at the cursor is offering.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -147,6 +156,8 @@ pub struct Editor {
     pictures: media::Pictures,
     notice: Box<dyn Fn(&str)>,
     conflict: Box<dyn Fn(&str)>,
+    left: RefCell<Option<LeftListener>>,
+    marks: problems::Marks,
 }
 
 impl Editor {
@@ -258,7 +269,10 @@ impl Editor {
             pictures: media::Pictures::default(),
             notice: Box::new(notice),
             conflict: Box::new(conflict),
+            left: RefCell::new(None),
+            marks: problems::Marks::default(),
         });
+        editor.install_marks();
         install_schemes(&editor.buffer);
         editor.connect_buffer();
         editor.connect_keys();
@@ -305,7 +319,8 @@ impl Editor {
         self.buffer.set_modified(false);
         self.dirty.set(None);
         self.styler.restyle_all();
-        *self.open.borrow_mut() = Some(Open { path: path.to_string(), file, on_disk: text });
+        *self.open.borrow_mut() = Some(Open { path: path.to_string(), file, on_disk: text.clone(), loaded: text });
+        self.refresh_marks();
         let line = line.unwrap_or(0);
         self.go_to_line(line);
         self.update_counts();
@@ -402,13 +417,28 @@ impl Editor {
         self.vim.borrow().is_some()
     }
 
+    /// [left] hears each note the editor lets go, once its text is on disk,
+    /// for format on save.
+    pub fn connect_left(&self, left: impl Fn(String, String) + 'static) {
+        *self.left.borrow_mut() = Some(Box::new(left));
+    }
+
     /// Saves, then lets go of the note, unless the save kept the text.
     pub fn close(&self) -> Saved {
         let saved = self.save();
         if !saved.kept() {
+            let left = self.leaving();
             self.release();
+            if let (Some((path, loaded)), Some(listener)) = (left, self.left.borrow().as_ref()) {
+                listener(path, loaded);
+            }
         }
         saved
+    }
+
+    /// The note open and the text the editor took, for format on save at Quit.
+    pub fn leaving(&self) -> Option<(String, String)> {
+        self.open.borrow().as_ref().map(|open| (open.path.clone(), open.loaded.clone()))
     }
 
     /// Lets go of the note and what was typed into it since the last save:
@@ -456,11 +486,13 @@ impl Editor {
         self.buffer.end_irreversible_action();
         self.buffer.set_modified(false);
         if let Some(open) = self.open.borrow_mut().as_mut() {
-            open.on_disk = text;
+            open.on_disk.clone_from(&text);
+            open.loaded = text;
         }
         if let Some(at) = self.buffer.iter_at_line(line as i32) {
             self.buffer.place_cursor(&at);
         }
+        self.refresh_marks();
     }
 
     // The buffer
@@ -1515,6 +1547,7 @@ impl Editor {
                 }
                 self.set_bar("NORMAL", "");
                 self.tell_mode(Some("NORMAL"));
+                self.refresh_marks();
             }
             Event::Lines { first, last, lines } => {
                 let edit = {

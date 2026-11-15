@@ -14,8 +14,8 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [The holidays of a place, and the day picker](calendar-events.md) | Linux 0.14.0, macOS 0.16.0; not Android yet |
 | [Pictures from the web, only when asked](remote-images.md) | Linux 0.18.0, macOS 0.16.0, Android 0.61.0 |
 | [New Task, and the created date in the task form](new-task.md) | macOS 0.19.0, Linux 0.22.0, Android 0.62.0 |
-| [daftar-cli for a program: `--json` and `fmt --stdin`](cli-json.md) | not released yet (Linux's CLI; macOS runs it) |
-| [The Problems panel, and formatting a note on leaving the editor](problems-and-format.md) | not released yet (macOS first) |
+| [daftar-cli for a program: `--json` and `fmt --stdin`](cli-json.md) | Linux 0.23.0 (`daftar-cli`); macOS 0.20.0 and Linux run it |
+| [The Problems panel, and formatting a note on leaving the editor](problems-and-format.md) | macOS 0.20.0, Linux (not released yet); not Android, where `daftar-cli` cannot run |
 | [Review Cards: the drills in the app](drill-review.md) | not released yet (macOS first) |
 | [The job search's board](job-board.md) | not released yet (macOS first) |
 | [Search by meaning and related notes](meaning-search.md) | not released yet (macOS first) |

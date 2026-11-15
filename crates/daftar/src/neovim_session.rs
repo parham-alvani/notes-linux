@@ -321,7 +321,41 @@ impl NeovimSession {
         }
         matches!(answer.recv_timeout(limit), Ok(Ok(_)))
     }
+
+    /// Format Note: lines [lines] become [new] when the buffer is still
+    /// [expected]; the answer is `true` when they did.
+    pub fn replace_lines(
+        &self,
+        expected: &str,
+        lines: std::ops::Range<usize>,
+        new: Vec<String>,
+    ) -> Option<mpsc::Receiver<Result<MsgValue, NeovimFailure>>> {
+        let (reply, answer) = mpsc::channel();
+        let arguments = vec![
+            expected.into(),
+            MsgValue::Int(lines.start as i64),
+            MsgValue::Int(lines.end as i64),
+            MsgValue::Array(new.into_iter().map(MsgValue::from).collect()),
+        ];
+        let request = Command::Request("nvim_exec_lua".into(), vec![REPLACE_LINES.into(), MsgValue::Array(arguments)], reply);
+        self.commands.send(request).ok()?;
+        Some(answer)
+    }
 }
+
+/// Lines `first..last` of the buffer (from 0) become the ones given, only
+/// when the buffer is still the text expected, its lines joined by `\n`; then
+/// Neovim writes. One step of `u`, which keeps the cursor, the marks and the
+/// folds outside those lines.
+const REPLACE_LINES: &str = r"
+local expected, first, last, lines = ...
+if table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '\n') ~= expected then
+  return false
+end
+vim.api.nvim_buf_set_lines(0, first, last, false, lines)
+vim.cmd('silent! update')
+return true
+";
 
 /// Attaches as a UI (for the command line and messages), opens [path], and
 /// reads its lines; the autocommands follow. Blocks: the worker runs it.

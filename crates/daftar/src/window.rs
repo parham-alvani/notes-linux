@@ -19,6 +19,7 @@ use crate::home::{self, HomePage};
 use crate::inspector::Inspector;
 use crate::notifier::{Notifier, Wanted};
 use crate::palette::{self, Mode};
+use crate::problems_view::ProblemsView;
 use crate::reader::{OpenIn, Reader, Request};
 use crate::settings::AppSettings;
 use crate::sidebar::Sidebar;
@@ -27,11 +28,13 @@ use crate::sync::{GitSync, Run};
 use crate::task_edit;
 use crate::terminal::TerminalPane;
 use crate::today::Today;
+use crate::vault_checks::VaultChecks;
 use crate::watcher::FileWatcher;
 
 mod crumbs;
 mod extras;
 mod file_actions;
+mod problems;
 mod split;
 mod tab;
 mod vault_tools;
@@ -73,6 +76,12 @@ pub struct Window {
     /// On a periodic note: the earlier and later notes of the series, and a
     /// menu of the current one and the same time in earlier years.
     periodic_nav: PeriodicNav,
+    /// `daftar-cli`'s findings and format on save.
+    checks: Rc<VaultChecks>,
+    /// The Problems panel, under the note.
+    problems: Rc<ProblemsView>,
+    /// The header's count of findings, which opens the panel.
+    problems_count: gtk::Button,
 }
 
 #[derive(Clone)]
@@ -203,6 +212,28 @@ impl Window {
             widget.append(&next);
             PeriodicNav { widget, previous, menu, next }
         };
+        let problems_count = gtk::Button::builder().action_name("win.problems").visible(false).build();
+        let checks = VaultChecks::new();
+        let problems = {
+            let (open, closed) = (opener.clone(), opener.clone());
+            ProblemsView::new(
+                checks.clone(),
+                crate::problems_view::Actions {
+                    open: Box::new(move |path, line| {
+                        let window = open.borrow().clone();
+                        if let Some(window) = window {
+                            window.open_problem(path, line);
+                        }
+                    }),
+                    closed: Box::new(move || {
+                        let window = closed.borrow().clone();
+                        if let Some(window) = window {
+                            window.problems_closed();
+                        }
+                    }),
+                },
+            )
+        };
         let this = Window {
             window: window.clone(),
             settings,
@@ -224,7 +255,11 @@ impl Window {
             recent: Rc::new(RefCell::new(Vec::new())),
             periodic_nav: periodic_nav.clone(),
             recent_commands: Rc::new(RefCell::new(Vec::new())),
+            checks,
+            problems: problems.clone(),
+            problems_count: problems_count.clone(),
         };
+        this.install_problems();
         *opener.borrow_mut() = Some(this.clone());
         {
             let opener = opener;
@@ -289,13 +324,18 @@ impl Window {
                 .build(),
         );
         header.pack_end(&periodic_nav.widget);
+        header.pack_end(&problems_count);
+        let notes = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
+        tab_view.set_vexpand(true);
+        notes.append(&tab_view);
+        notes.append(&problems.widget);
         let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(true).build();
         let content = adw::ToolbarView::new();
         content.add_top_bar(&header);
         content.add_top_bar(&tab_bar);
         let panes = gtk::Paned::builder()
             .orientation(gtk::Orientation::Vertical)
-            .start_child(&tab_view)
+            .start_child(&notes)
             .end_child(&terminal.widget)
             .resize_end_child(false)
             .shrink_end_child(false)
@@ -326,6 +366,7 @@ impl Window {
                 let tabs = this.tabs.borrow().clone();
                 let unsaved: Vec<Rc<Tab>> = tabs.iter().filter(|tab| tab.editor.save().kept()).cloned().collect();
                 if unsaved.is_empty() {
+                    this.format_open_notes();
                     // What runs on its own, off the window's widgets, stops with
                     // it: the watcher's loop holds the window (so `destroy` never
                     // comes), and the timed syncs and alerts would go on for a
@@ -398,6 +439,7 @@ impl Window {
                     },
                 )
             };
+            self.wire_editor(&editor);
             let today = {
                 let (open, toggle, edit) = (self.clone(), self.clone(), self.clone());
                 Today::new(
@@ -761,6 +803,7 @@ impl Window {
             };
             this.git.attach(folder.clone(), pull, interval);
             this.terminal.set_folder(folder.clone());
+            this.checks.opened(&folder);
             *this.store.borrow_mut() = Some(store.clone());
             this.after_load(&store);
             this.refresh_updated();
@@ -1354,6 +1397,7 @@ impl Window {
             (index.files.clone(), index.empty_folders.clone())
         };
         store.refresh(&changed.iter().cloned().collect::<Vec<_>>());
+        self.checks.changed(&changed);
         self.refresh_updated();
         self.git.refresh();
         self.plan_notifications();

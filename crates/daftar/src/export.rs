@@ -49,7 +49,7 @@ pub fn arguments<'a>(root: &'a Path, path: &'a str, output: &'a Path, options: O
 }
 
 pub fn pdf(window: &gtk::Window, settings: Rc<RefCell<AppSettings>>, root: &Path, path: &str, notice: impl Fn(&str) + 'static) {
-    let Some(cli) = cli() else {
+    let Some(cli) = crate::daftar_cli::locate() else {
         notice("Export as PDF runs daftar-cli, which is neither beside Daftar nor on $PATH.");
         return;
     };
@@ -139,16 +139,6 @@ pub fn failure(errors: &str) -> String {
         return format!("daftar-cli: {usage}");
     }
     lines.last().map_or_else(|| "daftar-cli failed.".to_string(), |line| line.trim_start_matches("daftar-cli: ").to_string())
-}
-
-/// The `daftar-cli` beside this binary (both packages install the two
-/// together), else the one on $PATH.
-pub fn cli() -> Option<PathBuf> {
-    let beside = std::env::current_exe().ok()?.with_file_name("daftar-cli");
-    if beside.is_file() {
-        return Some(beside);
-    }
-    glib::find_program_in_path("daftar-cli")
 }
 
 #[cfg(test)]

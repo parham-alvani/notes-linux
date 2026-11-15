@@ -226,6 +226,11 @@ place = ""
 live_preview = true
 # Ctrl+E opens the note in Neovide's own window instead of the editor.
 neovide = false
+# Format a note you typed in with daftar-cli fmt (the vault's
+# .prettierrc) when you leave the editor: back to the reader, another
+# note, closing it, quitting. Never while you type. Edit › Format Note
+# (Ctrl+Alt+Shift+F) formats at any time. Needs daftar-cli 0.23.0 or later.
+format_on_save = true
 # Edit with your own Neovim: it owns the buffer and the file, and the
 # editor shows it. Needs `nvim` (pacman -S neovim).
 vim_mode = false
