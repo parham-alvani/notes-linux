@@ -27,7 +27,7 @@ markdown = "1.0.0"
 # fancy-regex, not Oniguruma, and its suffix arrays are not the C++ ones.
 tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"], optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
-sha2 = { version = "0.10.9", optional = true }
+sha2 = { version = "0.11.1", optional = true }
 
 [features]
 web = ["dep:ureq"]
