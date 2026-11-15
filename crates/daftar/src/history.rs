@@ -212,7 +212,7 @@ impl State {
     fn draw_list(self: &Rc<Self>) {
         let revisions = self.revisions.borrow().clone();
         let selection = self.selection.borrow().clone();
-        let current = revisions.first().map(|r| r.path.clone()).unwrap_or_default();
+        let current = revisions.first().map_or_default(|r| r.path.clone());
         let mut rows = Vec::new();
         if *self.uncommitted.borrow() {
             rows.push((WORKING.to_string(), row("Not committed yet", "The text on disk", "document-edit-symbolic", "t-accent", None)));
@@ -413,12 +413,7 @@ fn diff_row(line: &DiffLine) -> gtk::Box {
         row.add_css_class(class);
     }
     let number = |n: Option<usize>| {
-        gtk::Label::builder()
-            .label(n.map(|n| n.to_string()).unwrap_or_default())
-            .width_chars(4)
-            .xalign(1.0)
-            .css_classes(["diff-number"])
-            .build()
+        gtk::Label::builder().label(n.map_or_default(|n| n.to_string())).width_chars(4).xalign(1.0).css_classes(["diff-number"]).build()
     };
     row.append(&number(line.old));
     row.append(&number(line.new));

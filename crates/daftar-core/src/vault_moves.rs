@@ -84,7 +84,7 @@ impl VaultMoves {
     /// The name with `.md` added when it names no other kind of file.
     pub fn note_name(name: &str) -> String {
         let trimmed = name.trim();
-        let extension = trimmed.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+        let extension = trimmed.rsplit_once('.').map_or_default(|(_, e)| e.to_lowercase());
         if ["md", "base", "canvas"].contains(&extension.as_str()) { trimmed.into() } else { format!("{trimmed}.md") }
     }
 
@@ -272,7 +272,7 @@ fn parent_parts(path: &str) -> Vec<&str> {
 /// A change of case only goes through a free name, for a disk that folds case.
 fn move_item(from: &Path, to: &Path) -> Result<(), MoveFailure> {
     if slugs::fold(&from.to_string_lossy()) == slugs::fold(&to.to_string_lossy()) {
-        let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = to.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
         let step = to.with_file_name(format!("{name}.daftar-{}", std::process::id()));
         fs::rename(from, &step)?;
         fs::rename(&step, to)?;

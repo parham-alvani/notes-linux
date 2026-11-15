@@ -338,8 +338,7 @@ fn open(client: &NeovimClient, path: &str, rows: i64, columns: i64) -> Result<(V
     let lines = client
         .request("nvim_buf_get_lines", vec![MsgValue::Int(0), MsgValue::Int(0), MsgValue::Int(-1), false.into()])?
         .as_array()
-        .map(|items| items.iter().filter_map(|l| l.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+        .map_or_default(|items| items.iter().filter_map(|l| l.as_str().map(String::from)).collect());
     let eol = client.request("nvim_get_option_value", vec!["eol".into(), MsgValue::Map(vec![])])?.as_bool().unwrap_or(true);
     client.request("nvim_buf_attach", vec![MsgValue::Int(0), false.into(), MsgValue::Map(vec![])])?;
     client.request("nvim_exec_lua", vec![SETUP.into(), MsgValue::Array(vec![MsgValue::Int(channel)])])?;
@@ -356,8 +355,7 @@ fn translate(note: &NeovimNotification) -> Vec<Event> {
                 .params
                 .get(4)
                 .and_then(MsgValue::as_array)
-                .map(|items| items.iter().filter_map(|l| l.as_str().map(String::from)).collect())
-                .unwrap_or_default();
+                .map_or_default(|items| items.iter().filter_map(|l| l.as_str().map(String::from)).collect());
             vec![Event::Lines { first: first.max(0) as usize, last, lines }]
         }
         "daftar_cursor" => {
@@ -366,7 +364,7 @@ fn translate(note: &NeovimNotification) -> Vec<Event> {
             let visual = int(3).zip(int(4)).map(|(r, c)| (r.max(1) as usize, c.max(0) as usize));
             vec![Event::Cursor { mode, row: row.max(1) as usize, column: column.max(0) as usize, visual }]
         }
-        "daftar_scroll" => int(0).map(|top| vec![Event::Scroll(top.max(1) as usize)]).unwrap_or_default(),
+        "daftar_scroll" => int(0).map_or_default(|top| vec![Event::Scroll(top.max(1) as usize)]),
         "redraw" => redraw(&note.params),
         _ => vec![],
     }
@@ -412,20 +410,16 @@ fn redraw(batches: &[MsgValue]) -> Vec<Event> {
                     }
                 }
                 "popupmenu_show" => {
-                    let items = args
-                        .first()
-                        .and_then(MsgValue::as_array)
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(MsgValue::as_array)
-                                .map(|item| {
-                                    let field = |at: usize| item.get(at).and_then(MsgValue::as_str).unwrap_or("").to_string();
-                                    MenuItem { word: field(0), kind: field(1), menu: field(2) }
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let items = args.first().and_then(MsgValue::as_array).map_or_default(|items| {
+                        items
+                            .iter()
+                            .filter_map(MsgValue::as_array)
+                            .map(|item| {
+                                let field = |at: usize| item.get(at).and_then(MsgValue::as_str).unwrap_or("").to_string();
+                                MenuItem { word: field(0), kind: field(1), menu: field(2) }
+                            })
+                            .collect()
+                    });
                     let selected = int(1).filter(|i| *i >= 0).map(|i| i as usize);
                     out.push(Event::Menu { items, selected, cmdline: int(4) == Some(-1) });
                 }
@@ -443,12 +437,9 @@ fn redraw(batches: &[MsgValue]) -> Vec<Event> {
 
 /// `[[attr, text, …], …]`, the chunks a message or a command line is made of.
 fn chunks(value: Option<&MsgValue>) -> String {
-    value
-        .and_then(MsgValue::as_array)
-        .map(|items| {
-            items.iter().filter_map(|chunk| chunk.as_array().filter(|c| c.len() >= 2).and_then(|c| c[1].as_str())).collect::<String>()
-        })
-        .unwrap_or_default()
+    value.and_then(MsgValue::as_array).map_or_default(|items| {
+        items.iter().filter_map(|chunk| chunk.as_array().filter(|c| c.len() >= 2).and_then(|c| c[1].as_str())).collect::<String>()
+    })
 }
 
 /// The mode as the bar names it.

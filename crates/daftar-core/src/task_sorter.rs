@@ -83,7 +83,7 @@ fn sort_section<'a>(lines: &[&'a str]) -> Option<Vec<&'a str>> {
     for element in &elements {
         match element {
             Element::Other(lines) => out.extend_from_slice(lines),
-            Element::Task { .. } => out.extend_from_slice(next.next().map(Vec::as_slice).unwrap_or_default()),
+            Element::Task { .. } => out.extend_from_slice(next.next().map_or_default(Vec::as_slice)),
         }
     }
     Some(out)

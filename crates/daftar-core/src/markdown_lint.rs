@@ -311,7 +311,7 @@ impl Document {
         for (event, range) in Parser::new_ext(text, options).into_offset_iter() {
             let line = doc.line_of(range.start);
             match event {
-                Event::Start(Tag::Heading { level, .. }) => heading = Some((level as usize, range.clone())),
+                Event::Start(Tag::Heading { level, .. }) => heading = Some((level as usize, range)),
                 Event::End(TagEnd::Heading(_)) => {
                     if let Some((level, start)) = heading.take() {
                         let first = doc.line_of(start.start);
@@ -373,7 +373,7 @@ impl Document {
                     for l in line..=last.min(doc.lines.len() - 1) {
                         doc.opaque[l] = true;
                     }
-                    doc.skip.push(range.clone());
+                    doc.skip.push(range);
                 }
                 Event::Start(Tag::Table(_)) => table = Some(line),
                 Event::End(TagEnd::Table) => {
@@ -705,7 +705,7 @@ fn headings(doc: &Document, config: &LintConfig, push: &mut Push) {
         } else {
             seen.push((parents, text.clone()));
         }
-        path.push((h.level, text.clone()));
+        path.push((h.level, text));
         // MD025
         if h.level == level {
             top += 1;

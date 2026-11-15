@@ -318,7 +318,7 @@ fn distance(a: &str, b: &str) -> usize {
 
 /// `; did you mean “X”?` for [closest]'s answer, or nothing.
 fn meant(heading: Option<String>) -> String {
-    heading.map(|h| format!("; did you mean “{h}”?")).unwrap_or_default()
+    heading.map_or_default(|h| format!("; did you mean “{h}”?"))
 }
 
 /// A heading's anchor as GitHub writes it, `#my-heading`: lower case, the

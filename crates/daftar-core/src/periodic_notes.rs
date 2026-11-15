@@ -223,7 +223,7 @@ impl DailyNotes {
 
     /// The settings of the vault at [root].
     pub fn read(root: &Path) -> DailyNotes {
-        std::fs::read_to_string(root.join(".obsidian/daily-notes.json")).map(|t| DailyNotes::from_json(&t)).unwrap_or_default()
+        std::fs::read_to_string(root.join(".obsidian/daily-notes.json")).map_or_default(|t| DailyNotes::from_json(&t))
     }
 }
 

@@ -157,7 +157,7 @@ impl ConfigFile {
                 && name == key
             {
                 let indent: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-                let comment = trailing_comment(&line).map(|c| format!(" {c}")).unwrap_or_default();
+                let comment = trailing_comment(&line).map_or_default(|c| format!(" {c}"));
                 lines[index] = format!("{indent}{key} = {}{comment}", new.toml());
                 self.text = lines.join("\n");
                 return;

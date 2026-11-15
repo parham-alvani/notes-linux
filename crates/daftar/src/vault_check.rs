@@ -56,7 +56,7 @@ pub fn present(window: &gtk::Window, root: &Path, open: impl Fn(&str, usize) + '
     let window = window.clone();
     glib::spawn_future_local(async move {
         let (found, said) = match process.communicate_utf8_future(None).await {
-            Ok((found, said)) => (found.map(|f| f.to_string()).unwrap_or_default(), said.map(|s| s.to_string()).unwrap_or_default()),
+            Ok((found, said)) => (found.map_or_default(|f| f.to_string()), said.map_or_default(|s| s.to_string())),
             Err(error) => {
                 notice(&format!("The vault was not checked: {error}"));
                 return;

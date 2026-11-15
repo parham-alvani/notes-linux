@@ -141,7 +141,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, center: Op
             };
             let name = match center.as_deref().filter(|_| !whole.get()) {
                 Some(path) => format!("Graph of {}", Vault::title(path)),
-                None => format!("Graph of {}", store.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+                None => format!("Graph of {}", store.root.file_name().map_or_default(|n| n.to_string_lossy().into_owned())),
             };
             title.set_title(&name);
             title.set_subtitle(&format!("{} notes · {} links", graph.nodes.len(), graph.edges.len()));

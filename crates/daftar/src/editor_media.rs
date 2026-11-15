@@ -105,9 +105,8 @@ pub fn picture_lines(text: &str) -> BTreeMap<usize, Vec<(String, Hint)>> {
     let mut hints: HashMap<usize, Vec<(String, Hint)>> = HashMap::new();
     for link in NoteParser::parse(text).links.into_iter().filter(|l| l.embed && is_picture(&l.target)) {
         // The size is in the line's text: the parser keeps the target only.
-        let written = hints
-            .entry(link.line)
-            .or_insert_with(|| all.get(link.line).map(|line| daftar_core::embed_size::embeds(line)).unwrap_or_default());
+        let written =
+            hints.entry(link.line).or_insert_with(|| all.get(link.line).map_or_default(|line| daftar_core::embed_size::embeds(line)));
         let hint = written.iter().position(|(target, _)| *target == link.target).and_then(|at| written.remove(at).1);
         lines.entry(link.line).or_default().push((link.target, hint));
     }

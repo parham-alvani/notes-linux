@@ -210,13 +210,13 @@ fn changed(root: &Path, path: &str) -> Option<String> {
 }
 
 fn logo_name(name: &str, file: &Path) -> String {
-    let extension = file.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let extension = file.extension().map_or_default(|e| e.to_string_lossy().to_lowercase());
     format!("/logos/{name}.{extension}")
 }
 
 /// Through a temporary file and a rename, as every write of Daftar's.
 fn write(output: &Path, pdf: &[u8]) -> Result<(), String> {
-    let name = output.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = output.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let temporary = output.with_file_name(format!(".{name}.daftar-{}", std::process::id()));
     fs::write(&temporary, pdf).map_err(|e| format!("{}: {e}", temporary.display()))?;
     fs::rename(&temporary, output).map_err(|e| {

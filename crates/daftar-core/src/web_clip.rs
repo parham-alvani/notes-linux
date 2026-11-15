@@ -274,7 +274,7 @@ impl WebClip {
             return Some(format!("{scheme}://{rest}"));
         }
         if href.starts_with('#') {
-            let query = query.map(|q| format!("?{q}")).unwrap_or_default();
+            let query = query.map_or_default(|q| format!("?{q}"));
             return Some(format!("{origin}{}{query}{href}", if path.is_empty() { "/" } else { path }));
         }
         if href.starts_with('?') {
@@ -347,7 +347,7 @@ impl WebClip {
     /// The extension a picture is saved with, from its media type, else its
     /// address; `None` for what is not a picture.
     pub fn picture_extension(url: &str, content_type: Option<&str>) -> Option<String> {
-        let media = content_type.map(|t| t.split(';').next().unwrap_or("").trim().to_lowercase()).unwrap_or_default();
+        let media = content_type.map_or_default(|t| t.split(';').next().unwrap_or("").trim().to_lowercase());
         let known = ["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp"];
         let from_type = match media.as_str() {
             "image/png" => Some("png"),

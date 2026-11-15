@@ -61,7 +61,7 @@ impl TitleBar {
             return;
         };
         let parts: Vec<&str> = path.split('/').collect();
-        let vault = store.root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let vault = store.root.file_name().map_or_default(|n| n.to_string_lossy().to_string());
         self.crumbs.append(&self.folder_crumb(&store, "", &vault, "user-bookmarks-symbolic"));
         for at in 0..parts.len().saturating_sub(1) {
             self.crumbs.append(&separator());

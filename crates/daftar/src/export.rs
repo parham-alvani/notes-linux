@@ -114,12 +114,12 @@ fn save(window: &gtk::Window, cli: PathBuf, root: PathBuf, path: String, options
                 return;
             }
         };
-        let name = output.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = output.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
         glib::spawn_future_local(async move {
             let said = process.communicate_utf8_future(None).await;
             match said {
                 Ok(_) if process.is_successful() => notice(&format!("Saved {name}.")),
-                Ok((_, errors)) => notice(&failure(&errors.map(|e| e.to_string()).unwrap_or_default())),
+                Ok((_, errors)) => notice(&failure(&errors.map_or_default(|e| e.to_string()))),
                 Err(error) => notice(&format!("The PDF was not made: {error}")),
             }
         });

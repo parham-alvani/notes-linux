@@ -1264,7 +1264,7 @@ fn find(index: &VaultIndex, hidden: &ExcludedFiles, query: &str, limit: usize) -
         .iter()
         .filter(|path| !hidden.contains(path))
         .map(|path| {
-            let aliases = index.notes.get(path).map(|n| n.parsed.aliases.clone()).unwrap_or_default();
+            let aliases = index.notes.get(path).map_or_default(|n| n.parsed.aliases.clone());
             Candidate::new(path, &Vault::title(path), &aliases)
         })
         .collect();

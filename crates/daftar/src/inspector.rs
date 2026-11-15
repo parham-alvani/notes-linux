@@ -432,7 +432,7 @@ impl Inspector {
             if let Some(found) = found {
                 item.set_activatable(true);
                 item.set_tooltip_text(Some(&found));
-                let (this, found) = (self.clone(), found.clone());
+                let (this, found) = (self.clone(), found);
                 let click = gtk::GestureClick::new();
                 click.connect_released(move |_, _, _, _| (this.open)(&found, 0));
                 item.add_controller(click);
@@ -449,12 +449,9 @@ impl Inspector {
     /// The addresses the note writes, each opening a map, and its tags,
     /// each searching for the notes with it.
     fn places_and_tags(self: &Rc<Self>, store: &Rc<VaultStore>, path: &str, note: &daftar_core::NoteEntry) {
-        let places: Vec<String> = store
-            .text(path)
-            .map(|text| {
-                Detected::find(&text).into_iter().filter(|item| item.kind == DetectedKind::Address).map(|item| item.value).collect()
-            })
-            .unwrap_or_default();
+        let places: Vec<String> = store.text(path).map_or_default(|text| {
+            Detected::find(&text).into_iter().filter(|item| item.kind == DetectedKind::Address).map(|item| item.value).collect()
+        });
         if !places.is_empty() {
             self.content.append(&title("Places in this note", places.len()));
             let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();

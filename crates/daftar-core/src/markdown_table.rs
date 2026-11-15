@@ -70,7 +70,7 @@ impl MarkdownTable {
     /// cells in each row as the widest row has. The indent of the first row
     /// is kept.
     pub fn format(lines: &[String]) -> Vec<String> {
-        let indent: String = lines.first().map(|l| l.chars().take_while(|c| *c == ' ' || *c == '\t').collect()).unwrap_or_default();
+        let indent: String = lines.first().map_or_default(|l| l.chars().take_while(|c| *c == ' ' || *c == '\t').collect());
         let mut rows: Vec<Vec<String>> = lines.iter().map(|l| Self::cells(l)).collect();
         // Known before the rows are filled out: a filled-in separator is one still.
         let separators: Vec<bool> = rows.iter().map(|r| Self::is_separator(r)).collect();

@@ -72,23 +72,19 @@ impl Beautitab {
         out.show_search = flag("showInlineSearch").unwrap_or(out.show_search);
         out.show_recent_files = flag("showRecentFiles").unwrap_or(out.show_recent_files);
         out.show_bookmarks = flag("showBookmarks").unwrap_or(out.show_bookmarks);
-        out.quotes = root
-            .get("customQuotes")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| {
-                        let text = item.get("text")?.as_str()?.trim();
-                        if text.is_empty() {
-                            return None;
-                        }
-                        let author = item.get("author").and_then(Value::as_str).unwrap_or("").trim();
-                        Some(Quote { text: text.to_string(), author: author.to_string() })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        out.quotes = root.get("customQuotes").and_then(Value::as_array).map_or_default(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let text = item.get("text")?.as_str()?.trim();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let author = item.get("author").and_then(Value::as_str).unwrap_or("").trim();
+                    Some(Quote { text: text.to_string(), author: author.to_string() })
+                })
+                .collect()
+        });
         let source = root.get("quoteSource").and_then(Value::as_str);
         out.show_quote = flag("showQuote").unwrap_or(false) && (source.is_none() || source == Some("My quotes")) && !out.quotes.is_empty();
         let local = root.get("localBackgrounds").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -109,9 +105,7 @@ impl Beautitab {
 
     /// The settings of the vault at [root]; the defaults when there are none.
     pub fn read(root: &Path) -> Beautitab {
-        std::fs::read_to_string(root.join(".obsidian/plugins/beautitab/data.json"))
-            .map(|json| Beautitab::from_json(&json))
-            .unwrap_or_default()
+        std::fs::read_to_string(root.join(".obsidian/plugins/beautitab/data.json")).map_or_default(|json| Beautitab::from_json(&json))
     }
 }
 

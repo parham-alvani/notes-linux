@@ -1106,7 +1106,7 @@ impl Editor {
                 .files
                 .iter()
                 .map(|path| {
-                    let aliases = index.notes.get(path).map(|n| n.parsed.aliases.clone()).unwrap_or_default();
+                    let aliases = index.notes.get(path).map_or_default(|n| n.parsed.aliases.clone());
                     Candidate::new(path, &Vault::title(path), &aliases)
                 })
                 .collect();
@@ -1198,7 +1198,7 @@ impl Editor {
     /// the same name, and the cursor past the `]]`.
     fn insert_completion(self: &Rc<Self>, path: &str) {
         let Some(query) = EditorCommands::link_query(&self.text(), self.cursor()) else { return };
-        let files: BTreeSet<String> = self.store.borrow().as_ref().map(|s| s.index().files.clone()).unwrap_or_default();
+        let files: BTreeSet<String> = self.store.borrow().as_ref().map_or_default(|s| s.index().files.clone());
         let link = EditorCommands::link(path, &files);
         let target = link.trim_start_matches('!').trim_start_matches("[[").trim_end_matches("]]").to_string();
         let end = query.start + target.chars().count();
@@ -1749,7 +1749,7 @@ impl Editor {
         // A message over the bar goes with the next key, as a hit-enter prompt does.
         self.long_message.popdown();
         let key = self.vim_persian_key(key, keycode);
-        let name = key.name().map(|n| n.to_string()).unwrap_or_default();
+        let name = key.name().map_or_default(|n| n.to_string());
         if let Some(keys) = neovim_session::vim_key(&name, key.to_unicode(), control, alt, super_, shift)
             && let Some(vim) = self.vim.borrow().as_ref()
         {

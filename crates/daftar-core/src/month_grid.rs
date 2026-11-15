@@ -47,7 +47,7 @@ impl Month {
     /// `November 2026`, or `آبان ۱۴۰۵`.
     pub fn title(self) -> String {
         match self.calendar {
-            Calendar::Gregorian => self.first().map(|d| d.date().format("%B %Y").to_string()).unwrap_or_default(),
+            Calendar::Gregorian => self.first().map_or_default(|d| d.date().format("%B %Y").to_string()),
             Calendar::Jalali => jalali::persian_digits(&format!("{} {}", jalali::MONTHS[(self.month as usize - 1) % 12], self.year)),
         }
     }

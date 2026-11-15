@@ -213,7 +213,7 @@ impl SemanticIndex {
         let mut wanted: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for &(path, time) in &changed {
-            let text = fs::read(root.join(path)).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default();
+            let text = fs::read(root.join(path)).map_or_default(|bytes| String::from_utf8_lossy(&bytes).into_owned());
             let chunks = chunks(path, &text);
             for chunk in &chunks {
                 let hash = hash(&chunk.text);

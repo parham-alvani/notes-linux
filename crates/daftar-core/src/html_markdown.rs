@@ -308,7 +308,7 @@ fn table(node: Ref) -> Option<String> {
 
 fn language(pre: Ref) -> String {
     let classes: Vec<&str> = std::iter::once(pre).chain(pre.children()).filter_map(|n| attr(n, "class")).collect();
-    LANGUAGE.captures(&classes.join(" ")).map(|c| c[1].to_string()).unwrap_or_default()
+    LANGUAGE.captures(&classes.join(" ")).map_or_default(|c| c[1].to_string())
 }
 
 #[cfg(test)]

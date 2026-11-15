@@ -150,7 +150,7 @@ impl VaultStore {
 
     /// [template]'s text filled for a note named [name], made now.
     pub fn filled(&self, template: &str, name: &str) -> String {
-        self.text(template).map(|text| self.templates.fill(&text, name, Day::today(), Clock::now())).unwrap_or_default()
+        self.text(template).map_or_default(|text| self.templates.fill(&text, name, Day::today(), Clock::now()))
     }
 
     /// The notes read before that changed on disk since, by a pull or

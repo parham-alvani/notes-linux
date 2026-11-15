@@ -765,7 +765,7 @@ impl Window {
             this.after_load(&store);
             this.refresh_updated();
             this.plan_notifications();
-            let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = folder.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
             if let Some(page) = this.split.sidebar() {
                 page.set_title(&name);
             }
@@ -1575,8 +1575,7 @@ impl Window {
         let paths: Vec<String> = saved
             .get("tabs")
             .and_then(|t| t.as_array())
-            .map(|t| t.iter().filter_map(|p| p.as_str().map(String::from)).collect())
-            .unwrap_or_default();
+            .map_or_default(|t| t.iter().filter_map(|p| p.as_str().map(String::from)).collect());
         let chosen = saved.get("chosen").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
         let at_index = |key: &str, at: usize| saved.get(key).and_then(|list| list.get(at)).cloned();
         // The chosen tab is drawn now; the others when they are first chosen.

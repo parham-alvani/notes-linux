@@ -365,10 +365,8 @@ impl Server {
         let events = search.upcoming(now, Some(now + chrono::Duration::days(7)));
         lines.push(format!("\n## Job search: booked in the next 7 days ({})", events.len()));
         for event in events {
-            let when = event
-                .next
-                .map(|n| n.format(if event.next_has_time { "%a %Y-%m-%d %H:%M" } else { "%a %Y-%m-%d" }).to_string())
-                .unwrap_or_default();
+            let when =
+                event.next.map_or_default(|n| n.format(if event.next_has_time { "%a %Y-%m-%d %H:%M" } else { "%a %Y-%m-%d" }).to_string());
             lines.push(format!(
                 "{when}\t{}\t{}\t{}\tprep: {}",
                 event.company,
@@ -949,11 +947,7 @@ impl Arguments<'_> {
     }
 
     fn list(&self, name: &str) -> Vec<String> {
-        self.0
-            .get(name)
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-            .unwrap_or_default()
+        self.0.get(name).and_then(Value::as_array).map_or_default(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
     }
 
     fn day(&self, name: &str) -> Result<Day, String> {

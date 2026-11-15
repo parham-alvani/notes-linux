@@ -176,7 +176,7 @@ impl DrillState {
 
     /// The state in [file]; empty when there is none or it cannot be read.
     pub fn load(file: &Path) -> DrillState {
-        fs::read_to_string(file).map(|data| DrillState::from_data(&data)).unwrap_or_default()
+        fs::read_to_string(file).map_or_default(|data| DrillState::from_data(&data))
     }
 
     pub fn from_data(data: &str) -> DrillState {
@@ -184,8 +184,7 @@ impl DrillState {
         let reviews = value
             .get("cards")
             .and_then(Value::as_object)
-            .map(|cards| cards.iter().filter_map(|(id, review)| Some((id.clone(), Review::from_json(review)?))).collect())
-            .unwrap_or_default();
+            .map_or_default(|cards| cards.iter().filter_map(|(id, review)| Some((id.clone(), Review::from_json(review)?))).collect());
         DrillState { reviews }
     }
 

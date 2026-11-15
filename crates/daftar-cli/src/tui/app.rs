@@ -350,7 +350,7 @@ impl App {
     /// Opens the folders above [path] and puts the tree's selection on it.
     fn reveal(&mut self, path: &str) {
         let mut folder = String::new();
-        for part in path.split('/').collect::<Vec<_>>().split_last().map(|(_, dirs)| dirs.to_vec()).unwrap_or_default() {
+        for part in path.split('/').collect::<Vec<_>>().split_last().map_or_default(|(_, dirs)| dirs.to_vec()) {
             folder = if folder.is_empty() { part.to_string() } else { format!("{folder}/{part}") };
             self.expanded.insert(folder.clone());
         }
@@ -484,8 +484,7 @@ impl App {
         let mut lists = Vec::new();
         if settings.show_recent_files {
             let read = fs::read_to_string(reading_places::state_file(&self.root, "places"))
-                .map(|data| ReadingPlaces::from_data(&data).recently_read(40))
-                .unwrap_or_default();
+                .map_or_default(|data| ReadingPlaces::from_data(&data).recently_read(40));
             let recent = home::recent(&self.recent, &read, |p| files.contains(p) && !self.hidden.contains(p), 8);
             if !recent.is_empty() {
                 lists.push(("Recent", recent));
@@ -833,7 +832,7 @@ impl App {
             .iter()
             .filter(|path| !self.is_hidden(path))
             .map(|path| {
-                let aliases = self.index.notes.get(path).map(|n| n.parsed.aliases.clone()).unwrap_or_default();
+                let aliases = self.index.notes.get(path).map_or_default(|n| n.parsed.aliases.clone());
                 Candidate::new(path, &Vault::title(path), &aliases)
             })
             .collect();
@@ -1048,7 +1047,7 @@ impl App {
             return closed.clone();
         }
         let places = fs::read_to_string(reading_places::state_file(&self.root, "places")).map(|data| ReadingPlaces::from_data(&data));
-        let closed = places.map(|p| p.closed(path)).unwrap_or_default();
+        let closed = places.map_or_default(|p| p.closed(path));
         self.closed.insert(path.to_string(), closed.clone());
         closed
     }
@@ -1063,7 +1062,7 @@ impl App {
     /// Space in the outline: the heading closed if open, opened if closed.
     pub fn outline_toggle(&mut self) {
         let Some((path, index)) = self.outline_selected() else { return };
-        let headings = self.note.as_ref().map(|n| Sections::headings(&n.text)).unwrap_or_default();
+        let headings = self.note.as_ref().map_or_default(|n| Sections::headings(&n.text));
         if !Sections::has_children(index, &headings) {
             return;
         }
@@ -1189,7 +1188,7 @@ impl App {
     pub fn open_drill(&mut self) {
         let open: Vec<String> = self.note.iter().map(|n| n.path.clone()).collect();
         let mut deck = Drill::deck(&self.root, &open);
-        let mut title = open.first().map(|p| Vault::title(p)).unwrap_or_default();
+        let mut title = open.first().map_or_default(|p| Vault::title(p));
         if deck.is_empty() {
             deck = Drill::deck(&self.root, &Drill::notes_in(&self.index, Drill::FOLDER, |p| self.hidden.contains(p)));
             title = Drill::FOLDER.to_string();

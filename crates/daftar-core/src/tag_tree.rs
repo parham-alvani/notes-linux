@@ -63,12 +63,8 @@ impl Arena {
             .map(|&child| {
                 let node = &self.nodes[child];
                 // The spelling with more notes; on a tie, the first by code point.
-                let name = node
-                    .spelled
-                    .iter()
-                    .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
-                    .map(|(name, _)| name.clone())
-                    .unwrap_or_default();
+                let name =
+                    node.spelled.iter().max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0))).map_or_default(|(name, _)| name.clone());
                 let tag = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
                 let kids = self.build(child, &tag);
                 TagNode { name, tag, count: node.count, children: (!kids.is_empty()).then_some(kids) }

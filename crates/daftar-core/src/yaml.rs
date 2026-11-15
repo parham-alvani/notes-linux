@@ -269,7 +269,7 @@ mod tests {
     use super::*;
 
     fn strings(node: Option<&YamlNode>) -> Vec<String> {
-        node.map(|n| n.items().iter().filter_map(|i| i.string().map(String::from)).collect()).unwrap_or_default()
+        node.map_or_default(|n| n.items().iter().filter_map(|i| i.string().map(String::from)).collect())
     }
 
     #[test]

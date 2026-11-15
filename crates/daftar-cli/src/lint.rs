@@ -155,7 +155,7 @@ pub fn run(
                 print(line);
                 continue;
             }
-            let column = p.column.map(|c| format!(":{c}")).unwrap_or_default();
+            let column = p.column.map_or_default(|c| format!(":{c}"));
             print(format!("{path}:{}{column} {}/{} {}{detail}", p.line, p.rule, p.name(), p.description()));
         }
     }

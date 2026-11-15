@@ -46,7 +46,7 @@ impl Templates {
     }
 
     pub fn read(root: &Path) -> Templates {
-        std::fs::read_to_string(root.join(".obsidian/templates.json")).map(|t| Templates::from_json(&t)).unwrap_or_default()
+        std::fs::read_to_string(root.join(".obsidian/templates.json")).map_or_default(|t| Templates::from_json(&t))
     }
 
     /// The notes of [paths] that are templates: those in the folder, or,

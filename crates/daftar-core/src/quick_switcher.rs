@@ -45,9 +45,7 @@ pub struct QuickSwitcher;
 impl QuickSwitcher {
     /// The folders a path is in, as the switcher shows them: `A/B`.
     pub fn folder(path: &str) -> String {
-        path.rsplit_once('/')
-            .map(|(folder, _)| folder.split('/').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("/"))
-            .unwrap_or_default()
+        path.rsplit_once('/').map_or_default(|(folder, _)| folder.split('/').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("/"))
     }
 
     pub fn rank(query: &str, candidates: &[Candidate], recent: &[String], limit: usize) -> Vec<String> {
@@ -97,7 +95,7 @@ impl QuickSwitcher {
         let start = if folder.is_empty() { 0 } else { folder.chars().count() + 1 };
         for word in query.split_whitespace() {
             if word.contains('/') {
-                for at in Fuzzy::matches(word, &whole).map(|m| m.positions).unwrap_or_default() {
+                for at in Fuzzy::matches(word, &whole).map_or_default(|m| m.positions) {
                     if at >= start {
                         in_title.insert(at - start);
                     } else {

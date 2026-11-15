@@ -138,7 +138,7 @@ pub struct VaultReplace;
 impl VaultReplace {
     /// The matches of [find] in [text], in order.
     pub fn matches(text: &str, find: &str, replace: &str, options: ReplaceOptions) -> Result<Vec<ReplaceMatch>, ReplaceFailure> {
-        Ok(ReplacePattern::new(find, replace, options)?.map(|p| Self::matches_of(text, &p)).unwrap_or_default())
+        Ok(ReplacePattern::new(find, replace, options)?.map_or_default(|p| Self::matches_of(text, &p)))
     }
 
     pub fn matches_of(text: &str, pattern: &ReplacePattern) -> Vec<ReplaceMatch> {

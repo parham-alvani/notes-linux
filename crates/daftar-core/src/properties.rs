@@ -528,7 +528,7 @@ impl PropertySheet {
     /// [note] with this front matter, or none when the note's front matter
     /// is no longer the one this sheet was read from.
     pub fn applied(&self, note: &str) -> Option<String> {
-        let now = FrontMatterBlock::new(note).map(|b| b.text).unwrap_or_default();
+        let now = FrontMatterBlock::new(note).map_or_default(|b| b.text);
         if now != self.original {
             return None;
         }

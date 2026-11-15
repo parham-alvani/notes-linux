@@ -656,7 +656,7 @@ fn register_schemes() {
         });
         context.register_uri_scheme("vault", |request| {
             let path = request.path().unwrap_or_default();
-            let path = glib::Uri::unescape_string(&path, None::<&str>).map(|p| p.to_string()).unwrap_or_default();
+            let path = glib::Uri::unescape_string(&path, None::<&str>).map_or_default(|p| p.to_string());
             let inside = path.trim_start_matches('/');
             // `.git`, `.obsidian` and the like are not the vault's notes.
             let hidden = inside.split('/').any(|part| part.starts_with('.'));

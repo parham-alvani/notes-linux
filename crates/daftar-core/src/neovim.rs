@@ -185,7 +185,7 @@ fn received(message: MsgValue, pending: &Waiters, input: &Mutex<ChildStdin>, not
         }
         (Some(2), 3) => {
             let method = parts[1].as_str().unwrap_or("").to_string();
-            let params = parts[2].as_array().map(<[MsgValue]>::to_vec).unwrap_or_default();
+            let params = parts[2].as_array().map_or_default(<[MsgValue]>::to_vec);
             let _ = notify.send(NeovimNotification { method, params });
         }
         (Some(0), 4) => {

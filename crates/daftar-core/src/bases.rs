@@ -152,19 +152,17 @@ impl Base {
             }
         }
         let descending = |node: Option<&YamlNode>| node.and_then(YamlNode::string).is_some_and(|d| d.eq_ignore_ascii_case("DESC"));
-        for node in root.get("views").map(YamlNode::items).unwrap_or_default() {
+        for node in root.get("views").map_or_default(YamlNode::items) {
             let mut view = BaseView {
                 kind: node.get("type").and_then(YamlNode::string).unwrap_or("table").to_string(),
                 name: node.get("name").and_then(YamlNode::string).map_or_else(|| format!("View {}", base.views.len() + 1), String::from),
                 filter: node.get("filters").and_then(BaseFilter::new),
                 ..BaseView::default()
             };
-            view.order =
-                node.get("order").map(YamlNode::items).unwrap_or_default().iter().filter_map(|i| i.string().map(String::from)).collect();
+            view.order = node.get("order").map_or_default(YamlNode::items).iter().filter_map(|i| i.string().map(String::from)).collect();
             view.sort = node
                 .get("sort")
-                .map(YamlNode::items)
-                .unwrap_or_default()
+                .map_or_default(YamlNode::items)
                 .iter()
                 .filter_map(|item| {
                     item.get("property").and_then(YamlNode::string).map(|p| (p.to_string(), !descending(item.get("direction"))))
@@ -450,7 +448,7 @@ impl<'a> BaseEngine<'a> {
             names
                 .into_iter()
                 .map(|name| {
-                    let rows = by_name.remove(&name).map(|g| g.1).unwrap_or_default();
+                    let rows = by_name.remove(&name).map_or_default(|g| g.1);
                     BaseGroup { name: Some(if name.is_empty() { "None".into() } else { name }), rows }
                 })
                 .collect()
@@ -473,7 +471,7 @@ impl<'a> BaseEngine<'a> {
     /// of a list. A link to a note is no cover.
     fn image(&self, value: &BaseValue, from: &str) -> Option<BaseImage> {
         let picture = |file: &str| {
-            let extension = file.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+            let extension = file.rsplit_once('.').map_or_default(|(_, e)| e.to_lowercase());
             IMAGE_TYPES.contains(&extension.as_str()).then(|| BaseImage::File(file.to_string()))
         };
         match value {
@@ -802,11 +800,7 @@ impl<'a> BaseEngine<'a> {
             "size" => self.file_stat(path).map_or(BaseValue::Null, |s| BaseValue::Number(s.size as f64)),
             "properties" => BaseValue::Object(self.properties(path)),
             "tags" => BaseValue::List(
-                self.index
-                    .notes
-                    .get(path)
-                    .map(|n| n.parsed.tags.iter().map(|t| BaseValue::String(t.clone())).collect())
-                    .unwrap_or_default(),
+                self.index.notes.get(path).map_or_default(|n| n.parsed.tags.iter().map(|t| BaseValue::String(t.clone())).collect()),
             ),
             "links" | "embeds" => {
                 let mut seen = HashSet::new();
@@ -1096,7 +1090,7 @@ impl<'a> BaseEngine<'a> {
                 BaseValue::List(parts.into_iter().map(BaseValue::String).collect())
             }
             "replace" => {
-                let replacement = values.get(1).map(Self::display).unwrap_or_default();
+                let replacement = values.get(1).map_or_default(Self::display);
                 match &first {
                     BaseValue::Regex(regex, true) => string(regex.replace_all(text, replacement.as_str()).into_owned()),
                     BaseValue::Regex(regex, false) => string(regex.replace(text, replacement.as_str()).into_owned()),
@@ -1124,7 +1118,7 @@ impl<'a> BaseEngine<'a> {
                 BaseValue::Bool(note.is_some_and(|n| n.parsed.properties.iter().any(|(k, _)| *k == key)))
             }
             "hasTag" => {
-                let tags: Vec<String> = note.map(|n| n.parsed.tags.iter().map(|t| t.to_lowercase()).collect()).unwrap_or_default();
+                let tags: Vec<String> = note.map_or_default(|n| n.parsed.tags.iter().map(|t| t.to_lowercase()).collect());
                 BaseValue::Bool(values.iter().any(|v| {
                     let wanted = Self::display(v).to_lowercase();
                     let wanted = wanted.trim_matches('#');

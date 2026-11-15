@@ -35,12 +35,12 @@ fn place() -> Option<Place> {
 
 /// The holidays and feasts of `calendar.place` from [from] to [to].
 pub fn events(from: Day, to: Day) -> Vec<Happening> {
-    place().map(|place| CalendarEvents::between(place, from, to)).unwrap_or_default()
+    place().map_or_default(|place| CalendarEvents::between(place, from, to))
 }
 
 /// The holidays and feasts of `calendar.place` on [day].
 pub fn events_on(day: Day) -> Vec<&'static CalendarEvent> {
-    place().map(|place| CalendarEvents::on(place, day)).unwrap_or_default()
+    place().map_or_default(|place| CalendarEvents::on(place, day))
 }
 
 pub struct AppSettings {

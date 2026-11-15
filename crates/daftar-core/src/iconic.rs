@@ -49,7 +49,7 @@ impl Iconic {
     }
 
     pub fn load(root: &Path) -> Iconic {
-        fs::read_to_string(Self::file(root)).map(|text| Self::parse(&text)).unwrap_or_default()
+        fs::read_to_string(Self::file(root)).map_or_default(|text| Self::parse(&text))
     }
 
     pub fn parse(data: &str) -> Iconic {

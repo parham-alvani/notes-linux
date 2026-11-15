@@ -317,7 +317,7 @@ impl<F: Fn(&str, &str) -> Option<String>> Writer<'_, F> {
                 None => format!("[{inner}]"),
             });
         }
-        let first = list.children.first().map(|item| plain(std::slice::from_ref(item))).unwrap_or_default();
+        let first = list.children.first().map_or_default(|item| plain(std::slice::from_ref(item)));
         let body = if list.ordered {
             format!("#enum(start: {}, tight: {}, {})", list.start.unwrap_or(1), !list.spread, items.join(", "))
         } else {
@@ -632,7 +632,7 @@ fn is_web(url: &str) -> bool {
 
 fn capitalized(word: &str) -> String {
     let mut chars = word.chars();
-    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+    chars.next().map_or_default(|first| first.to_uppercase().chain(chars).collect())
 }
 
 /// [text] without Obsidian's `%%comments%%`, but in code.

@@ -592,13 +592,10 @@ fn date_row(name: &str, tint: &str, value: Option<String>, changed: impl Fn(Opti
         let (how_far, entry) = (how_far, entry.clone());
         move |on: bool| {
             let day = on.then(|| parse(&entry.text())).flatten();
-            how_far.set_label(
-                &day.map(|d| match crate::settings::persian_date(d) {
-                    Some(persian) => format!("{} · {persian}", relative(d, today)),
-                    None => relative(d, today),
-                })
-                .unwrap_or_default(),
-            );
+            how_far.set_label(&day.map_or_default(|d| match crate::settings::persian_date(d) {
+                Some(persian) => format!("{} · {persian}", relative(d, today)),
+                None => relative(d, today),
+            }));
             how_far.set_visible(day.is_some());
             entry.remove_css_class("error");
             if on && day.is_none() {

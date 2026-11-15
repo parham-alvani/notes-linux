@@ -35,7 +35,7 @@ impl Conflict {
 
     /// The conflict as git wrote it, marks and all.
     pub fn marked(&self) -> String {
-        let base = self.base_mark.as_ref().map(|mark| format!("{mark}{}", self.base.as_deref().unwrap_or(""))).unwrap_or_default();
+        let base = self.base_mark.as_ref().map_or_default(|mark| format!("{mark}{}", self.base.as_deref().unwrap_or("")));
         format!("{}{}{base}{}{}{}", self.open, self.remote, self.separator, self.mine, self.close)
     }
 }

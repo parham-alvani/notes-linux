@@ -227,7 +227,7 @@ pub struct FrontMatter {
 
 impl FrontMatter {
     pub fn values(&self, key: &str) -> Vec<String> {
-        self.properties.iter().find(|(k, _)| k.to_lowercase() == key).map(|(_, v)| v.clone()).unwrap_or_default()
+        self.properties.iter().find(|(k, _)| k.to_lowercase() == key).map_or_default(|(_, v)| v.clone())
     }
 
     pub fn parse(lines: &[&str]) -> FrontMatter {

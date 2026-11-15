@@ -214,7 +214,7 @@ impl Viewer {
             tick.remove();
         }
         let file = &self.files[self.at.get()];
-        let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = file.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
         self.title.set_title(&name);
         let count = if self.files.len() > 1 { format!("{} / {}", self.at.get() + 1, self.files.len()) } else { String::new() };
         let loaded = Loaded::load(file);

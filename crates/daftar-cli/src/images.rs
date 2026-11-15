@@ -186,7 +186,7 @@ fn optimize(picture: &Picture, dry_run: bool) -> io::Result<Option<(PathBuf, boo
     let (bytes, quality) = compress(&image);
     if !jpeg && size <= TARGET_SIZE && bytes.len() as u64 >= size {
         // A JPEG would weigh more: the picture keeps its format, renamed.
-        let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let extension = path.extension().map_or_default(|e| e.to_string_lossy().to_lowercase());
         let to = path.with_file_name(format!("{base}_{}.{extension}", hash(&fs::read(path)?)));
         let verb = if dry_run { "would rename" } else { "renamed" };
         if !dry_run {
@@ -210,7 +210,7 @@ fn optimize(picture: &Picture, dry_run: bool) -> io::Result<Option<(PathBuf, boo
 /// so a picture shown by several notes is not renamed after another one on
 /// each run, else the first note that shows it, without spaces.
 fn base_name(path: &Path, notes: &[PathBuf]) -> String {
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = path.file_stem().map_or_default(|s| s.to_string_lossy().into_owned());
     if let Some((name, hash)) = stem.rsplit_once('_')
         && !name.is_empty()
         && is_hash(hash)
@@ -268,7 +268,7 @@ fn is_optimized(path: &Path) -> io::Result<bool> {
     if fs::metadata(path)?.len() > TARGET_SIZE {
         return Ok(false);
     }
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = path.file_stem().map_or_default(|s| s.to_string_lossy().into_owned());
     let Some((_, named)) = stem.rsplit_once('_') else { return Ok(false) };
     if !is_hash(named) {
         return Ok(false);
@@ -412,7 +412,7 @@ fn is_jpeg(path: &Path) -> bool {
 }
 
 fn file_name(path: &Path) -> String {
-    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    path.file_name().map_or_default(|n| n.to_string_lossy().into_owned())
 }
 
 fn kb(bytes: u64) -> String {

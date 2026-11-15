@@ -233,7 +233,7 @@ pub fn present(
     done: impl Fn(Done) + 'static,
     failed: impl Fn(String) + 'static,
 ) {
-    let vault = store.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let vault = store.root.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let place = |folder: &str| if folder.is_empty() { vault.clone() } else { folder.replace('/', " › ") };
     let (heading, body, primary, appearance) = match &action {
         Action::NewNote { folder } => {

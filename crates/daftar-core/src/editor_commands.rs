@@ -91,7 +91,7 @@ impl EditorCommands {
         let short = if note { &name[..name.len() - 3] } else { name };
         let same = files.iter().filter(|f| f.rsplit('/').next().unwrap_or(f).to_lowercase() == name.to_lowercase()).count();
         let target = if same > 1 { if note { &path[..path.len() - 3] } else { path } } else { short };
-        let extension = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+        let extension = name.rsplit_once('.').map_or_default(|(_, e)| e.to_lowercase());
         let bang = if MEDIA.contains(&extension.as_str()) { "!" } else { "" };
         format!("{bang}[[{target}]]")
     }

@@ -18,7 +18,7 @@ thread_local! {
 /// The `wakatime-cli` to run: [configured], or the one the plugins install
 /// in `~/.wakatime` (with its platform's name), or one on `$PATH`.
 pub fn cli(configured: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME").map_or_default(PathBuf::from);
     let configured = configured.trim();
     let mut candidates = Vec::new();
     if !configured.is_empty() {
@@ -57,7 +57,7 @@ pub fn heartbeat(config: &ConfigFile, root: &Path, path: &str, write: bool) {
         return;
     }
     LAST.with(|last| *last.borrow_mut() = Some((file.clone(), now)));
-    let project = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let project = root.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let mut command = Command::new(cli);
     command.args(arguments(&file, &project, write, std::time::SystemTime::now()));
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -69,7 +69,7 @@ pub fn heartbeat(config: &ConfigFile, root: &Path, path: &str, write: bool) {
 
 fn arguments(file: &Path, project: &str, write: bool, at: std::time::SystemTime) -> Vec<String> {
     let version = env!("CARGO_PKG_VERSION");
-    let time = at.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or_default();
+    let time = at.duration_since(std::time::UNIX_EPOCH).map_or_default(|d| d.as_secs_f64());
     let mut out = vec![
         "--entity".to_string(),
         file.to_string_lossy().into_owned(),

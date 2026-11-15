@@ -844,7 +844,7 @@ fn split_text(text: &str) -> Vec<Tok> {
             }
             if !cjk {
                 if !part.is_empty() {
-                    let last_char = part.chars().last().map(String::from).unwrap_or_default();
+                    let last_char = part.chars().last().map_or_default(String::from);
                     append(
                         &mut nodes,
                         Tok::Word {
@@ -897,7 +897,7 @@ fn html_trim_end(s: &str) -> &str {
 /// taken off, as the parser's value has them.
 fn blockquote_raw_text(raw: &str, value: Option<&str>) -> String {
     static BRACKETS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[ \t]*>[ \t]*)*").unwrap());
-    let values: Vec<&str> = value.map(|v| v.split('\n').collect()).unwrap_or_default();
+    let values: Vec<&str> = value.map_or_default(|v| v.split('\n').collect());
     raw.split('\n')
         .enumerate()
         .map(|(i, line)| {
@@ -1237,7 +1237,7 @@ impl Fmt<'_> {
             Kind::RawText(value) => lines_of(value, Doc::Hard),
             Kind::Emphasis => {
                 let style = if node.children.first().is_some_and(|c| self.is_autolink(c)) {
-                    self.src[node.start..].chars().next().map(String::from).unwrap_or_default()
+                    self.src[node.start..].chars().next().map_or_default(String::from)
                 } else if prev_or_next_word(parent, index) || cx.strong_by_word || cx.in_emphasis {
                     "*".to_string()
                 } else {
@@ -1328,8 +1328,7 @@ impl Fmt<'_> {
                     return align(4, concat(vec![text("    "), lines_of(value, Doc::Hard)]));
                 }
                 let style = "`".repeat(3.max(max_run(value, '`') + 1));
-                let head =
-                    text(format!("{style}{}{}", lang.as_deref().unwrap_or(""), meta.as_ref().map(|m| format!(" {m}")).unwrap_or_default()));
+                let head = text(format!("{style}{}{}", lang.as_deref().unwrap_or(""), meta.as_ref().map_or_default(|m| format!(" {m}"))));
                 let body = match lang.as_deref() {
                     Some(l) if is_markdown_language(l) => match document(value, self.config) {
                         Some(Doc::Concat(mut parts)) => {
@@ -1372,7 +1371,7 @@ impl Fmt<'_> {
             }
             Kind::Definition { url, title, label } => {
                 let url = if url.is_empty() { "<>".to_string() } else { print_url(url, &[" "]) };
-                let title = title.as_deref().map(|t| format!(" {}", self.print_title(Some(t), false))).unwrap_or_default();
+                let title = title.as_deref().map_or_default(|t| format!(" {}", self.print_title(Some(t), false)));
                 text(format!("{}: {url}{title}", print_link_reference(label)))
             }
             Kind::FootnoteReference(label) => text(format!("[^{label}]")),
@@ -1401,7 +1400,7 @@ impl Fmt<'_> {
                 }
             }
             Kind::Math { value, meta } => {
-                let mut parts = vec![text(format!("$${}", meta.as_ref().map(|m| format!(" {m}")).unwrap_or_default())), Doc::Hard];
+                let mut parts = vec![text(format!("$${}", meta.as_ref().map_or_default(|m| format!(" {m}")))), Doc::Hard];
                 if !value.is_empty() {
                     parts.push(lines_of(value, Doc::Hard));
                     parts.push(Doc::Hard);

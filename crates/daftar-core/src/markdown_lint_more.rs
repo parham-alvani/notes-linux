@@ -137,8 +137,7 @@ fn html(view: &View, config: &LintConfig, push: &mut Push) {
     let allowed: HashSet<String> = config
         .option("MD033", "allowed_elements")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|e| e.as_str()).map(str::to_lowercase).collect())
-        .unwrap_or_default();
+        .map_or_default(|a| a.iter().filter_map(|e| e.as_str()).map(str::to_lowercase).collect());
     for (start, text) in view.html {
         for m in OPEN.captures_iter(text) {
             let element = m[1].to_lowercase();
@@ -169,7 +168,7 @@ fn fragments(view: &View, config: &LintConfig, push: &mut Push) {
     for (_, text) in &view.headings {
         let base = slug(text);
         let count = seen.entry(base.clone()).or_default();
-        known.insert(if *count == 0 { base.clone() } else { format!("{base}-{count}") });
+        known.insert(if *count == 0 { base } else { format!("{base}-{count}") });
         *count += 1;
     }
     for (_, html) in view.html {
@@ -288,9 +287,9 @@ fn tables(view: &View, config: &LintConfig, push: &mut Push) {
             "no_leading_or_trailing" => (false, false),
             _ => (lead, trail),
         };
-        for n in first..=last.min(view.lines.len() - 1) {
-            let (row, leading, trailing) = cells(&view.lines[n]);
-            let column = view.lines[n].len() - view.lines[n].trim_start().len() + 1;
+        for (n, line) in view.lines.iter().enumerate().take(last + 1).skip(first) {
+            let (row, leading, trailing) = cells(line);
+            let column = line.len() - line.trim_start().len() + 1;
             if leading != want_lead {
                 let expected = if want_lead { "leading_and_trailing" } else { "no_leading_or_trailing" };
                 push(
@@ -301,7 +300,7 @@ fn tables(view: &View, config: &LintConfig, push: &mut Push) {
                 );
             }
             if trailing != want_trail {
-                push(n, Some(view.lines[n].trim_end().chars().count()), "MD055", "[Trailing pipe]".to_string());
+                push(n, Some(line.trim_end().chars().count()), "MD055", "[Trailing pipe]".to_string());
             }
             if n != first + 1 && row.len() != header.len() {
                 let (expected, actual) = (header.len(), row.len());
