@@ -102,7 +102,9 @@ pub struct VaultChecks {
     asked: Cell<bool>,
     said: Cell<bool>,
     scope: RefCell<Scope>,
-    soon: RefCell<Option<glib::SourceId>>,
+    /// The audit waiting to start: a future on this thread's main loop, as
+    /// every piece of work of the checks is, so a test can give them a loop of their own.
+    soon: RefCell<Option<glib::JoinHandle<()>>>,
     fixing: Cell<bool>,
     /// A `daftar-cli` that said it has no `fmt --stdin`: format on save does
     /// not ask it again at every leave, until the panel checks again.
@@ -222,7 +224,7 @@ impl VaultChecks {
     /// any other only once the panel asks.
     pub fn opened(self: &Rc<Self>, root: &Path) {
         if let Some(soon) = self.soon.take() {
-            soon.remove();
+            soon.abort();
         }
         self.cancel.replace(gio::Cancellable::new()).cancel();
         self.running.set(false);
@@ -257,23 +259,24 @@ impl VaultChecks {
         *self.scope.borrow_mut() = Scope::Vault;
         self.asking.set(true);
         if let Some(soon) = self.soon.take() {
-            soon.remove();
+            soon.abort();
         }
         self.start();
     }
 
     fn schedule(self: &Rc<Self>, delay: Duration) {
         if let Some(soon) = self.soon.take() {
-            soon.remove();
+            soon.abort();
         }
         let this = Rc::downgrade(self);
-        let id = glib::timeout_add_local_once(delay, move || {
+        let soon = glib::spawn_future_local(async move {
+            glib::timeout_future(delay).await;
             if let Some(this) = this.upgrade() {
                 this.soon.take();
                 this.start();
             }
         });
-        *self.soon.borrow_mut() = Some(id);
+        *self.soon.borrow_mut() = Some(soon);
     }
 
     fn start(self: &Rc<Self>) {
@@ -438,13 +441,14 @@ impl VaultChecks {
         let cancel = gio::Cancellable::new();
         let timer = limit.map(|limit| {
             let cancel = cancel.clone();
-            glib::timeout_add_local_once(limit, move || cancel.cancel())
+            glib::spawn_future_local(async move {
+                glib::timeout_future(limit).await;
+                cancel.cancel();
+            })
         });
         let result = daftar_cli::run(&cli, &daftar_cli::format_arguments(&root, path), &root, Some(text), false, &cancel).await;
-        if let Some(timer) = timer
-            && !cancel.is_cancelled()
-        {
-            timer.remove();
+        if let Some(timer) = timer {
+            timer.abort();
         }
         let output: Output = result?;
         if output.too_old() {
@@ -647,10 +651,10 @@ done
     impl Drop for Fake {
         fn drop(&mut self) {
             if let Some(soon) = self.checks.soon.take() {
-                soon.remove();
+                soon.abort();
             }
             self.checks.cancel.borrow().cancel();
-            let context = glib::MainContext::default();
+            let context = glib::MainContext::ref_thread_default();
             for _ in 0..100 {
                 while context.iteration(false) {}
                 std::thread::sleep(Duration::from_millis(5));
@@ -681,20 +685,24 @@ done
         test(&context);
     }
 
-    /// [test] on the one thread that owns the default main loop for every
-    /// test of this module, one after another: a GLib callback a test left
-    /// behind (a subprocess's end, a cancel) is guarded to the thread that
-    /// made it, and run on another test's thread it aborts the run.
+    /// [test] on one thread, with a main loop of its own as that thread's
+    /// default, for every test of this module one after another: a GLib
+    /// callback is guarded to the thread that made it, and one that another
+    /// test left on a loop it shares, run on this thread, aborts the run.
     pub(crate) fn on_one_thread(test: fn(&glib::MainContext)) {
         type Job = (fn(&glib::MainContext), std::sync::mpsc::Sender<std::thread::Result<()>>);
         static WORKER: std::sync::LazyLock<std::sync::Mutex<std::sync::mpsc::Sender<Job>>> = std::sync::LazyLock::new(|| {
             let (send, receive) = std::sync::mpsc::channel::<Job>();
             std::thread::spawn(move || {
-                let context = glib::MainContext::default();
+                // A loop of its own, not GLib's default one, which other
+                // tests' timers reach from their threads.
+                let context = glib::MainContext::new();
                 let _owner = context.acquire().unwrap();
-                for (test, done) in receive {
-                    let _ = done.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&context))));
-                }
+                context.with_thread_default(|| {
+                    for (test, done) in receive {
+                        let _ = done.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&context))));
+                    }
+                })
             });
             std::sync::Mutex::new(send)
         });
