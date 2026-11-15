@@ -681,13 +681,37 @@ done
         test(&context);
     }
 
+    /// [test] on the one thread that owns the default main loop for every
+    /// test of this module, one after another: a GLib callback a test left
+    /// behind (a subprocess's end, a cancel) is guarded to the thread that
+    /// made it, and run on another test's thread it aborts the run.
+    pub(crate) fn on_one_thread(test: fn(&glib::MainContext)) {
+        type Job = (fn(&glib::MainContext), std::sync::mpsc::Sender<std::thread::Result<()>>);
+        static WORKER: std::sync::LazyLock<std::sync::Mutex<std::sync::mpsc::Sender<Job>>> = std::sync::LazyLock::new(|| {
+            let (send, receive) = std::sync::mpsc::channel::<Job>();
+            std::thread::spawn(move || {
+                let context = glib::MainContext::default();
+                let _owner = context.acquire().unwrap();
+                for (test, done) in receive {
+                    let _ = done.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&context))));
+                }
+            });
+            std::sync::Mutex::new(send)
+        });
+        let (done, result) = std::sync::mpsc::channel();
+        WORKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send((test, done)).unwrap();
+        if let Err(panic) = result.recv().unwrap() {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
     pub(crate) fn idle(checks: &VaultChecks) -> bool {
         !checks.running() && !checks.fixing() && !checks.formatting.get() && checks.soon.borrow().is_none()
     }
 
     #[test]
     fn the_audit_lists_what_the_three_tools_found() {
-        on_a_loop_of_its_own(|context| {
+        on_one_thread(|context| {
             let fake = Fake::new(NEW);
             fake.checks.opened(fake.vault.path());
             assert!(wait(context, || fake.checks.state() == State::Done && idle(&fake.checks)));
@@ -704,7 +728,7 @@ done
     /// whole vault. A note that is gone is not named, and loses its findings.
     #[test]
     fn a_save_lints_only_the_notes_saved() {
-        on_a_loop_of_its_own(|context| {
+        on_one_thread(|context| {
             let fake = Fake::new(NEW);
             fake.checks.opened(fake.vault.path());
             assert!(wait(context, || fake.checks.state() == State::Done && idle(&fake.checks)));
@@ -723,7 +747,7 @@ done
 
     #[test]
     fn an_old_command_line_says_to_upgrade_once() {
-        on_a_loop_of_its_own(|context| {
+        on_one_thread(|context| {
             let fake = Fake::new(OLD);
             fake.checks.opened(fake.vault.path());
             assert!(wait(context, || fake.checks.state() == State::TooOld && idle(&fake.checks)));
@@ -746,7 +770,7 @@ done
 
     #[test]
     fn no_command_line_is_said() {
-        on_a_loop_of_its_own(|context| {
+        on_one_thread(|context| {
             let fake = Fake::new(NEW);
             *fake.checks.locate.borrow_mut() = Rc::new(|| None);
             fake.checks.opened(fake.vault.path());
@@ -758,7 +782,7 @@ done
 
     #[test]
     fn fix_all_of_a_note_runs_the_three_fixes_after_the_editors_save() {
-        on_a_loop_of_its_own(|context| {
+        on_one_thread(|context| {
             let fake = Fake::new(NEW);
             fake.checks.opened(fake.vault.path());
             assert!(wait(context, || fake.checks.state() == State::Done && idle(&fake.checks)));
@@ -774,7 +798,7 @@ done
 
     #[test]
     fn leaving_a_note_typed_in_formats_its_file() {
-        on_a_loop_of_its_own(|context| {
+        on_one_thread(|context| {
             let fake = Fake::new(NEW);
             fake.checks.opened(fake.vault.path());
             std::fs::write(fake.vault.path().join("Home.md"), "# Home\n*  item\n").unwrap();
@@ -787,7 +811,7 @@ done
 
     #[test]
     fn a_note_only_read_in_the_editor_is_left_as_it_is() {
-        on_a_loop_of_its_own(|context| {
+        on_one_thread(|context| {
             let fake = Fake::new(NEW);
             fake.checks.opened(fake.vault.path());
             let unformatted = "# Home\n*  item\n";
@@ -811,7 +835,7 @@ done
 
     #[test]
     fn with_an_old_command_line_leaving_says_nothing() {
-        on_a_loop_of_its_own(|context| {
+        on_one_thread(|context| {
             let fake = Fake::new(OLD);
             fake.checks.opened(fake.vault.path());
             assert!(wait(context, || idle(&fake.checks)));
@@ -833,7 +857,7 @@ done
     /// already" the second time.
     #[test]
     fn format_note_in_the_reader_says_when_it_is_formatted_already() {
-        on_a_loop_of_its_own(|context| {
+        on_one_thread(|context| {
             let fake = Fake::new(NEW);
             fake.checks.opened(fake.vault.path());
             std::fs::write(fake.vault.path().join("Home.md"), "# Home\n*  item\n").unwrap();

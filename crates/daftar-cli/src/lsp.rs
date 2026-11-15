@@ -35,6 +35,30 @@ use links::Typing;
 /// What a `file:` URI's path keeps unencoded.
 const IN_PATH: &AsciiSet = &NON_ALPHANUMERIC.remove(b'/').remove(b'-').remove(b'.').remove(b'_').remove(b'~');
 
+/// A file's `file://` URI. On Windows the path's `\\` are `/`, a drive
+/// is `/C:/…` (its colon kept, as Neovim and VS Code read it), and a
+/// canonical path's `\\?\` is dropped.
+fn uri_of_file(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/");
+    let text = if text.starts_with('/') { text } else { format!("/{text}") };
+    format!("file://{}", utf8_percent_encode(&text, IN_PATH).to_string().replacen("%3A", ":", usize::from(is_drive(&text))))
+}
+
+/// The file a `file://` URI names: `/C:/…` (or `/c%3A/…`) is `C:/…`.
+fn file_of_uri(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let path = percent_decode_str(rest).decode_utf8().ok()?.into_owned();
+    Some(if is_drive(&path) { path[1..].to_string() } else { path })
+}
+
+/// `/C:/…` or `/C:`: a Windows drive written as a URI's path.
+fn is_drive(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' && bytes.get(3).is_none_or(|b| *b == b'/')
+}
+
 /// How many notes a completion offers; the editor asks again as more is typed.
 const COMPLETIONS: usize = 50;
 /// How many lines of a note a hover shows.
@@ -323,7 +347,7 @@ impl Server {
 
     /// The vault path of a `file:` URI in the vault.
     fn path_of(&self, uri: &str) -> Option<String> {
-        let path = PathBuf::from(percent_decode_str(uri.strip_prefix("file://")?).decode_utf8().ok()?.into_owned());
+        let path = PathBuf::from(file_of_uri(uri)?);
         let relative =
             path.strip_prefix(&self.root).or_else(|_| path.strip_prefix(&self.canonical)).map(Path::to_path_buf).ok().or_else(|| {
                 // A file the editor reached through a symlink, or that is not there yet.
@@ -335,7 +359,7 @@ impl Server {
     }
 
     fn uri_of(&self, path: &str) -> String {
-        format!("file://{}", utf8_percent_encode(&self.root.join(path).to_string_lossy(), IN_PATH))
+        uri_of_file(&self.root.join(path))
     }
 
     /// The note at [path]: the editor's text when it is open, else the file's.
@@ -1055,8 +1079,20 @@ mod tests {
         assert_eq!(server.path_of(&uri).as_deref(), Some("Garden/یادداشت تازه.md"));
         assert_eq!(server.path_of("file:///etc/passwd"), None);
         assert_eq!(server.path_of("untitled:1"), None);
-        let canonical = format!("file://{}", dir.path().canonicalize().unwrap().join("Seeds.md").display());
+        let canonical = uri_of_file(&dir.path().canonicalize().unwrap().join("Seeds.md"));
         assert_eq!(server.path_of(&canonical).as_deref(), Some("Seeds.md"));
+    }
+
+    /// A Windows path is `file:///C:/…`, whichever way an editor writes the colon.
+    #[test]
+    fn a_windows_path_is_a_uri_with_its_drive() {
+        assert_eq!(uri_of_file(Path::new(r"C:\Users\a b\x.md")), "file:///C:/Users/a%20b/x.md");
+        assert_eq!(uri_of_file(Path::new(r"\\?\C:\v\x.md")), "file:///C:/v/x.md");
+        assert_eq!(file_of_uri("file:///C:/Users/a%20b/x.md").as_deref(), Some("C:/Users/a b/x.md"));
+        assert_eq!(file_of_uri("file:///c%3A/v/x.md").as_deref(), Some("c:/v/x.md"));
+        assert_eq!(uri_of_file(Path::new("/home/a:b/x.md")), "file:///home/a%3Ab/x.md");
+        assert_eq!(file_of_uri("file:///home/a%3Ab/x.md").as_deref(), Some("/home/a:b/x.md"));
+        assert_eq!(file_of_uri("untitled:1"), None);
     }
 
     #[test]
