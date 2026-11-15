@@ -247,7 +247,7 @@ fn split_code(text: &str) -> (Vec<String>, Vec<(usize, Vec<String>)>) {
 
 /// The reader's rule for a heading a link names: compared without marks,
 /// spaces made one, case folded.
-fn plain(text: &str) -> String {
+pub(crate) fn plain(text: &str) -> String {
     let kept: String = text.chars().filter(|c| !"*_`=~[]#|^:%".contains(*c)).collect();
     kept.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
@@ -333,7 +333,7 @@ fn meant(heading: Option<String>) -> String {
 
 /// A heading's anchor as GitHub writes it, `#my-heading`: lower case, the
 /// marks left out, a dash for each space.
-fn slug(heading: &str) -> String {
+pub(crate) fn slug(heading: &str) -> String {
     heading
         .to_lowercase()
         .chars()
@@ -581,8 +581,12 @@ pub fn given_notes(root: &Path, paths: &[PathBuf]) -> Result<HashSet<String>, St
     Ok(notes)
 }
 
-pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut print: impl FnMut(String)) -> Outcome {
-    let index = Vault::index(root, None);
+pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, print: impl FnMut(String)) -> Outcome {
+    run_on(&Vault::index(root, None), root, hidden, options, print)
+}
+
+/// [run] on an index already built: the language server keeps one.
+pub fn run_on(index: &VaultIndex, root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut print: impl FnMut(String)) -> Outcome {
     let mut by_name: HashMap<&str, usize> = HashMap::new();
     for path in index.notes.keys() {
         *by_name.entry(stem(path)).or_default() += 1;
@@ -595,7 +599,10 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
     let mut blocks_of: HashMap<String, String> = HashMap::new();
     let mut web: HashMap<String, Vec<(String, usize)>> = HashMap::new();
     let mut fixes: BTreeSet<(String, usize, &'static str, String, String)> = BTreeSet::new();
-    let mut paths: Vec<&String> = index.notes.keys().filter(|p| !hidden(p)).collect();
+    // With notes given, only they are read: what the others would add is
+    // the vault's pictures and addresses, which are left out then anyway.
+    let mut paths: Vec<&String> =
+        index.notes.keys().filter(|p| !hidden(p) && options.only.as_ref().is_none_or(|only| only.contains(p.as_str()))).collect();
     paths.sort();
     let statuses = TaskStatuses::load(root);
     let today = Day::today().to_string();
@@ -608,7 +615,7 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
         }
         if let Some(skip) = &options.orphans
             && !skip.iter().any(|folder| path.starts_with(&format!("{}/", folder.trim_end_matches('/'))))
-            && is_orphan(&index, path, &hidden)
+            && is_orphan(index, path, &hidden)
         {
             found.insert(((*path).clone(), 1, false, "orphan", "no note links here, and it links to no note".into()));
         }
@@ -628,10 +635,10 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
             match index.resolve(&link.target, path) {
                 Some(to) => {
                     if let Some(anchor) = link.anchor.as_deref().filter(|a| !a.is_empty())
-                        && !has_anchor(&index, root, &to, anchor, &mut blocks_of)
+                        && !has_anchor(index, root, &to, anchor, &mut blocks_of)
                         && !written_anchors(source_lines.get(link.line).copied().unwrap_or(""), &link.target, anchor)
                             .iter()
-                            .any(|a| has_anchor(&index, root, &to, a, &mut blocks_of))
+                            .any(|a| has_anchor(index, root, &to, a, &mut blocks_of))
                     {
                         let mark = if link.embed { "!" } else { "" };
                         let what = if anchor.starts_with('^') { "block" } else { "heading" };
@@ -640,13 +647,13 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
                             line,
                             false,
                             "missing-anchor",
-                            format!("{mark}[[{}#{anchor}]]: {to} has no such {what}{}", link.target, meant(closest(&index, &to, anchor))),
+                            format!("{mark}[[{}#{anchor}]]: {to} has no such {what}{}", link.target, meant(closest(index, &to, anchor))),
                         ));
                     }
                     if !link.target.contains('/') && by_name.get(link.target.trim_end_matches(".md")).is_some_and(|&n| n > 1) {
                         let n = by_name[link.target.trim_end_matches(".md")];
                         if options.fix
-                            && let Some(new) = unique_target(&index, &to, path)
+                            && let Some(new) = unique_target(index, &to, path)
                         {
                             fixes.insert(((*path).clone(), link.line, "ambiguous-link", link.target.clone(), new));
                         } else {
@@ -686,14 +693,14 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut pr
             let code = INLINE_CODE.replace_all(line, "");
             for m in FRAGMENT.captures_iter(&code) {
                 let anchor = percent_decode_str(&m[2]).decode_utf8_lossy().into_owned();
-                if !anchor.is_empty() && !has_anchor(&index, root, path, &anchor, &mut blocks_of) {
+                if !anchor.is_empty() && !has_anchor(index, root, path, &anchor, &mut blocks_of) {
                     let what = if anchor.starts_with('^') { "block" } else { "heading" };
                     found.insert((
                         (*path).clone(),
                         i + 1,
                         false,
                         "missing-anchor",
-                        format!("{}: this note has no such {what}{}", &m[0][m[1].len()..], meant(closest(&index, path, &anchor))),
+                        format!("{}: this note has no such {what}{}", &m[0][m[1].len()..], meant(closest(index, path, &anchor))),
                     ));
                 }
             }

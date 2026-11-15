@@ -22,6 +22,7 @@ mod ics;
 mod images;
 mod jobs;
 mod lint;
+mod lsp;
 mod mcp;
 mod meaning;
 mod memory;
@@ -699,6 +700,12 @@ enum Command {
         #[arg(long)]
         read_only: bool,
     },
+    /// The vault as a language server on stdin and stdout, for Neovim, Helix
+    /// and other editors: the lint and the audit as diagnostics, formatting,
+    /// `[[` completion, a link's note, hover and references, and renaming a
+    /// note with every link to it. In Neovim: `vim.lsp.start({ name =
+    /// 'daftar', cmd = { 'daftar-cli', 'lsp', '--vault', vim.fn.expand('~/org') } })`.
+    Lsp,
     /// Removes pictures no note names, makes the others JPEGs under 1 MB and
     /// renames them in the notes, as notes-cli does.
     Images {
@@ -1422,6 +1429,7 @@ fn run(cli: Cli) -> Result<(), String> {
             ics::put(&ics::calendar(&events, chrono::Utc::now()), output.as_deref())?;
         }
         Command::Mcp { read_only } => mcp::run(root, cli.hidden, read_only)?,
+        Command::Lsp => lsp::run(&root, cli.hidden)?,
         Command::Images { folder, dry_run, keep_originals, trash } => {
             let folder = if folder.is_absolute() { folder } else { root.join(folder) };
             if !folder.is_dir() {
