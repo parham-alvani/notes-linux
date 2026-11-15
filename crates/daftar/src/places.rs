@@ -101,9 +101,13 @@ impl PlaceBook {
         if let Some(id) = self.pending.take() {
             id.remove();
         }
-        // The timer needs the main context; a thread without it never waits.
-        let context = glib::MainContext::default();
-        let Ok(_owner) = context.acquire() else { return };
+        // The timer needs the main loop of the thread that runs it: the app's
+        // main thread owns it. A thread that does not (a test) leaves the
+        // write to `flush`: a timer it put there would fire on another
+        // thread, and GLib aborts on that.
+        if !glib::MainContext::default().is_owner() {
+            return;
+        }
         let this = std::rc::Rc::downgrade(self);
         let id = glib::timeout_add_local_once(Duration::from_secs(1), move || {
             if let Some(this) = this.upgrade() {
