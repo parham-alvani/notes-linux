@@ -89,14 +89,63 @@ pub fn steps(notes: &[String]) -> Vec<Vec<String>> {
     out
 }
 
+/// The hook's own lines on stderr, in color on a terminal (not with
+/// `NO_COLOR`), so a commit shows each step run; a GUI client gets plain text.
+struct Paint {
+    on: bool,
+}
+
+impl Paint {
+    fn new() -> Self {
+        use std::io::IsTerminal;
+        Self { on: std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()) }
+    }
+
+    fn paint(&self, code: &str, text: &str) -> String {
+        if self.on { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() }
+    }
+
+    /// The hook's name, before each of its lines.
+    fn name(&self) -> String {
+        self.paint("1;35", "daftar pre-commit")
+    }
+
+    fn start(&self, what: &str) -> String {
+        format!("{} {} {what}", self.name(), self.paint("1;36", "▸"))
+    }
+
+    fn passed(&self, what: &str) -> String {
+        format!("{} {}", self.name(), self.paint("1;32", &format!("✓ {what}")))
+    }
+
+    fn failed(&self, what: &str) -> String {
+        format!("{} {}", self.name(), self.paint("1;31", &format!("✗ {what}")))
+    }
+}
+
+/// What a step does, in words.
+fn label(step: &[String], notes: usize) -> String {
+    let notes = if notes == 1 { "1 staged note".to_string() } else { format!("{notes} staged notes") };
+    match (step[0].as_str(), step.get(1).map(String::as_str)) {
+        ("fmt", _) => format!("formatting {notes}"),
+        ("lint", _) => format!("linting {notes}"),
+        ("check", Some("--strict")) => format!("auditing {notes}"),
+        _ => "auditing the vault for errors".to_string(),
+    }
+}
+
 /// Runs the check on what is staged; an error stops the commit.
 pub fn pre_commit(root: &Path, git: &Git) -> Result<(), String> {
     let (notes, gone) = staged(git)?;
     if notes.is_empty() && !gone {
         return Ok(());
     }
+    let paint = Paint::new();
+    let began = std::time::Instant::now();
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     for step in steps(&notes) {
+        let what = label(&step, notes.len());
+        eprintln!("{}", paint.start(&what));
         let quiet = step[0] == "fmt";
         let mut command = Command::new(&me);
         command.arg("--vault").arg(root).args(&step).current_dir(root);
@@ -105,10 +154,8 @@ pub fn pre_commit(root: &Path, git: &Git) -> Result<(), String> {
         }
         let status = command.status().map_err(|e| format!("{}: {e}", me.display()))?;
         if !status.success() {
-            return Err(format!(
-                "pre-commit: `daftar-cli {}` failed; `git commit --no-verify` commits anyway",
-                step[..step.len().min(2)].join(" ")
-            ));
+            eprintln!("{}", paint.failed(&format!("{what} failed; `git commit --no-verify` commits anyway")));
+            return Err(format!("pre-commit stopped the commit at `daftar-cli {}`", step[..step.len().min(2)].join(" ")));
         }
         if quiet {
             // The formatted notes are what is committed.
@@ -117,6 +164,7 @@ pub fn pre_commit(root: &Path, git: &Git) -> Result<(), String> {
             git.run(&add).map_err(|e| e.to_string())?;
         }
     }
+    eprintln!("{}", paint.passed(&format!("all checks passed in {:.1}s", began.elapsed().as_secs_f64())));
     Ok(())
 }
 
@@ -147,9 +195,26 @@ mod tests {
         git(root, &["add", "."]);
         let repository = Git::new(root);
         assert_eq!(staged(&repository).unwrap(), (vec!["A.md".to_string(), "B.md".to_string()], false));
-        git(root, &["-c", "user.name=T", "-c", "user.email=t@example.org", "commit", "-qm", "one"]);
+        git(root, &["-c", "user.name=T", "-c", "user.email=t@example.org", "-c", "commit.gpgsign=false", "commit", "-qm", "one"]);
         git(root, &["rm", "-q", "B.md"]);
         assert_eq!(staged(&repository).unwrap(), (Vec::new(), true));
+    }
+
+    #[test]
+    fn each_step_is_named_and_colored_only_on_a_terminal() {
+        let notes = ["A.md".to_string()];
+        let steps = steps(&notes);
+        let labels: Vec<String> = steps.iter().map(|step| label(step, 1)).collect();
+        assert_eq!(
+            labels,
+            ["formatting 1 staged note", "linting 1 staged note", "auditing 1 staged note", "auditing the vault for errors"]
+        );
+        assert_eq!(label(&steps[0], 2), "formatting 2 staged notes");
+        let plain = Paint { on: false };
+        assert_eq!(plain.start("linting"), "daftar pre-commit ▸ linting");
+        assert_eq!(plain.failed("x"), "daftar pre-commit ✗ x");
+        let colored = Paint { on: true };
+        assert_eq!(colored.passed("ok"), "\x1b[1;35mdaftar pre-commit\x1b[0m \x1b[1;32m✓ ok\x1b[0m");
     }
 
     #[test]
