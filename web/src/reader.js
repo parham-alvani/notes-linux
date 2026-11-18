@@ -1663,7 +1663,12 @@ const reading = {
     if (!this.box) {
       this.box = Object.assign(document.createElement("div"), { id: "reading-cursor" });
       this.band = Object.assign(document.createElement("div"), { id: "reading-line" });
-      document.body.append(this.box, this.band);
+      // A layer as tall as the note, which cuts off what is under its end: a
+      // band that is off keeps its place, and one left far down by a longer
+      // note (or by a section since folded) made this page as long as that.
+      const layer = Object.assign(document.createElement("div"), { id: "reading-layer" });
+      layer.append(this.box, this.band);
+      document.body.append(layer);
     }
     if (!this.block?.isConnected) {
       this.box.classList.remove("is-on");

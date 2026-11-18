@@ -749,6 +749,11 @@ li.task-list-item.is-checked .query-date { text-decoration: none; opacity: 0.75;
 .preview-body h1, .preview-body h2, .preview-body h3 { margin-top: 0.8em; }
 .preview-empty { color: var(--text-faint); font-style: italic; }
 
+/* The reading cursor's layer is the note's size and shows nothing outside
+   it, so a cursor or a band that is off (clear, but still at its place)
+   never makes the page longer than the note. */
+body { position: relative; }
+#reading-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 /* The reading cursor: the block being read, as the editor tints its line. */
 #reading-cursor {
   position: absolute;
