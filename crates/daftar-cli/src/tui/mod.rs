@@ -4,7 +4,8 @@
 //!
 //! `app.rs` keeps the state and is tested without a terminal; `render.rs`
 //! draws it; `keys.rs` maps keys to it; `markdown.rs` turns a note into
-//! rows; `theme.rs` has the colors of `web/src/reader.css`.
+//! rows; `theme.rs` has the colors of `web/src/reader.css`; the vault is
+//! watched by `crate::watching`, as `check --watch` and `lint --watch` watch it.
 
 mod app;
 mod drill;
@@ -13,7 +14,6 @@ mod markdown;
 mod mouse;
 mod render;
 mod theme;
-mod watch;
 
 use std::io::stdout;
 use std::path::{Path, PathBuf};
@@ -26,10 +26,10 @@ use ratatui::crossterm::execute;
 
 use daftar_core::{ConfigFile, ExcludedFiles};
 
+use crate::watching::Watch;
 pub use app::App;
 use app::Job;
 pub use theme::Theme;
-use watch::Watch;
 
 /// Runs the TUI on [root] until `q`. The vault is read on a worker thread,
 /// and watched: a change on disk shows as it lands. The hidden files are

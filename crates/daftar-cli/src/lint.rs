@@ -131,13 +131,23 @@ pub fn run(
     }
     let (mut problems, mut with) = (0, 0);
     for path in &notes {
-        let Ok(bytes) = fs::read(root.join(path)) else { continue };
-        let found = MarkdownLint::lint_bytes(&bytes, &config);
+        let found = findings(root, path, &config, mode);
         if !found.is_empty() {
             with += 1;
         }
-        for p in &found {
-            problems += 1;
+        problems += found.len();
+        found.into_iter().for_each(&mut print);
+    }
+    Ok(Outcome { problems, notes: with, fixed, checked: notes.len() })
+}
+
+/// The problems of the note at [path] as [mode] prints them, a line each;
+/// none when it cannot be read.
+fn findings(root: &Path, path: &str, config: &LintConfig, mode: report::Mode) -> Vec<String> {
+    let Ok(bytes) = fs::read(root.join(path)) else { return Vec::new() };
+    MarkdownLint::lint_bytes(&bytes, config)
+        .iter()
+        .map(|p| {
             let detail = if p.detail.is_empty() { String::new() } else { format!(" {}", p.detail) };
             let code = format!("{}/{}", p.rule, p.name());
             let message = format!("{}{detail}", p.description());
@@ -151,15 +161,66 @@ pub fn run(
                 message: &message,
                 fixable: p.fixable(),
             };
-            if let Some(line) = finding.printed(mode) {
-                print(line);
-                continue;
-            }
-            let column = p.column.map_or_default(|c| format!(":{c}"));
-            print(format!("{path}:{}{column} {}/{} {}{detail}", p.line, p.rule, p.name(), p.description()));
-        }
+            finding.printed(mode).unwrap_or_else(|| {
+                let column = p.column.map_or_default(|c| format!(":{c}"));
+                format!("{path}:{}{column} {}/{} {}{detail}", p.line, p.rule, p.name(), p.description())
+            })
+        })
+        .collect()
+}
+
+/// `lint --watch`'s findings, kept by note: the first pass lints every note
+/// [paths] covers, a later one only the notes that changed, and drops the
+/// ones gone.
+pub struct Watched {
+    root: PathBuf,
+    paths: Vec<PathBuf>,
+    ignore: Vec<String>,
+    mode: report::Mode,
+    config: LintConfig,
+    by_note: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl Watched {
+    pub fn new(root: &Path, paths: &[PathBuf], ignore: &[String], mode: report::Mode) -> Result<Watched, String> {
+        let mut watched = Watched {
+            root: root.to_path_buf(),
+            paths: paths.to_vec(),
+            ignore: ignore.to_vec(),
+            mode,
+            config: config(root)?,
+            by_note: std::collections::BTreeMap::new(),
+        };
+        watched.update(&std::collections::BTreeSet::new())?;
+        Ok(watched)
     }
-    Ok(Outcome { problems, notes: with, fixed, checked: notes.len() })
+
+    /// Lints again the notes of [changed] that are still to be linted, or
+    /// every note when [changed] is empty, and forgets the notes gone. The
+    /// list of notes is walked again, as a note may have come or gone.
+    pub fn update(&mut self, changed: &std::collections::BTreeSet<String>) -> Result<(), String> {
+        let notes = notes(&self.root, &self.paths, &self.ignore)?;
+        self.by_note.retain(|path, _| notes.binary_search(path).is_ok());
+        for path in notes {
+            if changed.is_empty() || changed.contains(&path) || !self.by_note.contains_key(&path) {
+                let found = findings(&self.root, &path, &self.config, self.mode);
+                self.by_note.insert(path, found);
+            }
+        }
+        Ok(())
+    }
+
+    /// Every finding, by note.
+    pub fn lines(&self) -> Vec<String> {
+        self.by_note.values().flatten().cloned().collect()
+    }
+
+    /// `N problems in M of K notes`, as a run ends.
+    pub fn summary(&self) -> String {
+        let problems: usize = self.by_note.values().map(Vec::len).sum();
+        let with = self.by_note.values().filter(|f| !f.is_empty()).count();
+        format!("{problems} problems in {with} of {} notes", self.by_note.len())
+    }
 }
 
 #[cfg(test)]
@@ -196,6 +257,28 @@ mod tests {
         let outcome = run(dir.path(), &[PathBuf::from("Notes/A.md")], &[], true, report::Mode::Json, |_| {}).unwrap();
         assert_eq!((outcome.fixed, outcome.problems), (1, 1));
         assert_eq!(fs::read_to_string(dir.path().join("Notes/A.md")).unwrap(), "# One\n\n# Two\n");
+    }
+
+    #[test]
+    fn watching_lints_again_only_the_notes_that_changed() {
+        let dir = vault(&[("A.md", "# A \n"), ("B.md", "# B\n"), (".hidden/C.md", "# C \n")]);
+        let mut watched = Watched::new(dir.path(), &[], &[], report::Mode::Plain).unwrap();
+        assert_eq!(watched.summary(), "1 problems in 1 of 2 notes");
+        assert!(watched.lines()[0].starts_with("A.md:1:4 MD009/no-trailing-spaces"), "{:?}", watched.lines());
+
+        // B breaks; A is broken on disk too but not reported changed, so its
+        // finding is kept as it was.
+        fs::write(dir.path().join("B.md"), "# B \n\n# Again\n").unwrap();
+        fs::write(dir.path().join("A.md"), "# A\n").unwrap();
+        watched.update(&["B.md".to_string()].into()).unwrap();
+        assert_eq!(watched.summary(), "3 problems in 2 of 2 notes");
+
+        // A is mended, B is gone and a new note came: one not linted yet is.
+        fs::remove_file(dir.path().join("B.md")).unwrap();
+        fs::write(dir.path().join("D.md"), "# D \n").unwrap();
+        watched.update(&["A.md".to_string(), "B.md".to_string()].into()).unwrap();
+        assert_eq!(watched.summary(), "1 problems in 1 of 2 notes");
+        assert!(watched.lines()[0].starts_with("D.md:1"), "{:?}", watched.lines());
     }
 
     #[test]

@@ -4,7 +4,8 @@
 //! the free time), the tasks overdue, due and in progress
 //! (`daftar_core::DueTasks`, as the MCP's `vault_brief`), and the job
 //! search's events of the day with their prep notes. As plain lines, one
-//! JSON object, or one line for a Waybar custom module.
+//! JSON object, or one line for a Waybar custom module. `--notify` is
+//! `alerts.rs`, which reads the week notes through [meetings] too.
 
 use std::fs;
 use std::path::Path;
@@ -250,7 +251,7 @@ impl What {
 
 /// The meetings of [day]'s week note and of the day before's (a meeting is
 /// listed on the day it starts, and the night's one runs into [day]).
-fn meetings(root: &Path, day: Day) -> Vec<Meeting> {
+pub fn meetings(root: &Path, day: Day) -> Vec<Meeting> {
     let before = day.adding_days(-1);
     let mut paths = vec![CalendarWeek::path(before), CalendarWeek::path(day)];
     paths.dedup();

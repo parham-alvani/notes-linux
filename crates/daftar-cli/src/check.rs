@@ -585,6 +585,14 @@ pub fn run(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, print:
     run_on(&Vault::index(root, None), root, hidden, options, print)
 }
 
+/// One pass of `check --watch`: the vault audited whole again, whatever
+/// changed, as a note's links and embeds hang on other notes.
+pub fn pass(root: &Path, hidden: impl Fn(&str) -> bool, options: &Options) -> crate::watching::Pass {
+    let mut lines = Vec::new();
+    let outcome = run(root, hidden, options, |line| lines.push(line));
+    crate::watching::Pass { summary: format!("{} errors, {} warnings in {} notes", outcome.errors, outcome.warnings, outcome.notes), lines }
+}
+
 /// [run] on an index already built: the language server keeps one.
 pub fn run_on(index: &VaultIndex, root: &Path, hidden: impl Fn(&str) -> bool, options: &Options, mut print: impl FnMut(String)) -> Outcome {
     let mut by_name: HashMap<&str, usize> = HashMap::new();
@@ -1077,6 +1085,19 @@ mod tests {
             memory: None,
             orphans: None,
         }
+    }
+
+    /// A watched pass audits the whole vault again: a note that came mends
+    /// a link in another note.
+    #[test]
+    fn a_watched_pass_audits_the_whole_vault() {
+        let dir = vault(&[("A.md", "[[B]]\n")]);
+        let first = pass(dir.path(), |_| false, &options());
+        assert_eq!(first.summary, "0 errors, 1 warnings in 1 notes");
+        assert!(first.lines[0].starts_with("A.md:1") && first.lines[0].contains("dangling-link"), "{:?}", first.lines);
+        fs::write(dir.path().join("B.md"), "Here.\n").unwrap();
+        let second = pass(dir.path(), |_| false, &options());
+        assert_eq!((second.summary.as_str(), second.lines.len()), ("0 errors, 0 warnings in 2 notes", 0));
     }
 
     /// A note with no way in and none out is an orphan, but in a folder

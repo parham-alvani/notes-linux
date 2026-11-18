@@ -11,6 +11,7 @@ macro_rules! out {
 }
 
 mod agenda;
+mod alerts;
 mod check;
 mod clip;
 mod drill;
@@ -30,6 +31,7 @@ mod report;
 mod review;
 mod tui;
 mod vault_commands;
+mod watching;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -500,6 +502,10 @@ enum Command {
         /// A folder or file of the vault to leave out (as .markdownlintignore).
         #[arg(long)]
         ignore: Vec<String>,
+        /// Lints, then lints again the notes that change, under a line with
+        /// the time and the count, until Ctrl+C.
+        #[arg(long, conflicts_with_all = ["json", "fix"])]
+        watch: bool,
     },
     /// Formats the notes as Prettier does with the vault's .prettierrc (its
     /// Markdown, and YAML front matter): the whole vault, or the files and
@@ -629,6 +635,10 @@ enum Command {
         /// to them.
         #[arg(long)]
         profile: Option<String>,
+        /// Audits, then audits the vault again whenever a note changes,
+        /// under a line with the time and the counts, until Ctrl+C.
+        #[arg(long, conflicts_with_all = ["json", "fix"])]
+        watch: bool,
     },
     /// The week before a day as a note: tasks done and cancelled, overdue,
     /// due in the week ahead and in progress, the meetings of the week
@@ -677,6 +687,23 @@ enum Command {
         /// due; the class `soon`, `overdue` or `clear`; the rest in the tooltip.
         #[arg(long, conflicts_with = "json")]
         waybar: bool,
+        /// Sends a desktop notification for each meeting of the week notes
+        /// and each booked job event that starts within --before minutes,
+        /// once (what was sent is kept in Daftar's state folder), with its
+        /// prep note; for a timer that runs it every minute.
+        #[arg(long, conflicts_with_all = ["json", "waybar", "day"])]
+        notify: bool,
+        /// With --notify or --install-timer, the minutes of notice; else
+        /// `notifications.meeting_lead` in the config file, else 5.
+        #[arg(long)]
+        before: Option<i64>,
+        /// Writes the systemd user units daftar-agenda-notify.service and
+        /// .timer, which run `agenda --notify` every minute (Linux), never
+        /// over units of your own without --force.
+        #[arg(long, conflicts_with_all = ["json", "waybar", "day", "notify"])]
+        install_timer: bool,
+        #[arg(long, requires = "install_timer")]
+        force: bool,
     },
     /// An iCalendar file of the open tasks with a 📅 or ⏳ day ahead (all
     /// day, or at the time their text starts with) and the job search's
@@ -1266,7 +1293,18 @@ fn run(cli: Cli) -> Result<(), String> {
             };
             out!("{}", vault_commands::daily(&root, &index.files, day, !no_create, Clock::now())?);
         }
-        Command::Lint { paths, json, fix, ignore } => {
+        Command::Lint { paths, ignore, watch: true, .. } => {
+            let mut watched = lint::Watched::new(&root, &paths, &ignore, report::Mode::Plain)?;
+            watching::run(&root, |changed| {
+                if !changed.is_empty()
+                    && let Err(error) = watched.update(changed)
+                {
+                    return watching::Pass { summary: error, lines: Vec::new() };
+                }
+                watching::Pass { summary: watched.summary(), lines: watched.lines() }
+            })?;
+        }
+        Command::Lint { paths, json, fix, ignore, .. } => {
             let outcome = lint::run(&root, &paths, &ignore, fix, report::Mode::of(json), |line| out!("{line}"))?;
             if fix && outcome.fixed > 0 {
                 eprintln!("daftar-cli: fixed {} of {} notes", outcome.fixed, outcome.checked);
@@ -1309,6 +1347,7 @@ fn run(cli: Cli) -> Result<(), String> {
             orphans,
             orphan_skip,
             profile,
+            watch,
         } => {
             let vault = check::VaultOptions::read(&root, profile.as_deref())?;
             let memory = memory || vault.memory;
@@ -1346,6 +1385,9 @@ fn run(cli: Cli) -> Result<(), String> {
                 }),
                 orphans,
             };
+            if watch {
+                return watching::run(&root, |_| check::pass(&root, |path| hidden.contains(path), &options));
+            }
             let outcome = check::run(&root, |path| hidden.contains(path), &options, |line| out!("{line}"));
             if fix {
                 let verb = if dry_run { "would fix" } else { "fixed" };
@@ -1406,7 +1448,22 @@ fn run(cli: Cli) -> Result<(), String> {
                 out!("{line}");
             }
         }
-        Command::Agenda { day, json, waybar } => {
+        Command::Agenda { install_timer: true, before, force, .. } => {
+            if !cfg!(target_os = "linux") {
+                return Err("--install-timer writes systemd units: on this system, run `daftar-cli agenda --notify` every minute from its own scheduler".into());
+            }
+            for file in alerts::install_timer(&alerts::units_folder(), &alerts::command(&root, before), force)? {
+                out!("{}", file.display());
+            }
+            out!("Now run: systemctl --user enable --now {}.timer", alerts::UNIT);
+        }
+        Command::Agenda { notify: true, before, .. } => {
+            let lead = before.or_else(|| config().int("notifications.meeting_lead")).unwrap_or(alerts::LEAD).max(0);
+            let index = Vault::index(&root, None);
+            let search = daftar_core::JobSearch::new(&index, &daftar_core::JobKeys::default(), |path| !hidden.contains(path));
+            alerts::run(&root, &search, lead, &chrono::Local, chrono::Utc::now())?;
+        }
+        Command::Agenda { day, json, waybar, .. } => {
             let (zone, now) = (chrono::Local, chrono::Utc::now());
             let day = match day {
                 Some(text) => Day::parse(&text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,

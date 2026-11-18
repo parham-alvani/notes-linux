@@ -1,11 +1,13 @@
 //! The vault's files, watched, as the app's `watcher.rs` does: vault paths,
 //! only ones the index reads, gathered until the vault is quiet, so a `git
-//! pull` of a hundred files is one update. The loop asks; nothing here
-//! touches the app.
+//! pull` of a hundred files is one update. The TUI's loop asks with
+//! [Watch::poll]; `check --watch` and `lint --watch` wait with [Watch::wait]
+//! in [run], which clears the terminal and shows each pass under a header.
 
 use std::collections::BTreeSet;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use notify::{RecursiveMode, Watcher};
@@ -52,6 +54,60 @@ impl Watch {
         }
         self.debounce.due(now)
     }
+
+    /// Blocks until paths changed and the vault is quiet again, and gives
+    /// them; `None` when the watcher stopped.
+    pub fn wait(&mut self) -> Option<BTreeSet<String>> {
+        loop {
+            // Asleep until something comes, then awake to see the vault quiet.
+            let timeout = if self.debounce.waiting() { Duration::from_millis(50) } else { Duration::from_secs(3600) };
+            match self.receiver.recv_timeout(timeout) {
+                Ok(path) => {
+                    if let Some(path) = relative(&self.base, &path) {
+                        self.debounce.add(path, Instant::now());
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return None,
+            }
+            if let Some(changed) = self.debounce.due(Instant::now()) {
+                return Some(changed);
+            }
+        }
+    }
+}
+
+/// What one pass of a watched command found: its summary for the header
+/// and its lines.
+pub struct Pass {
+    pub summary: String,
+    pub lines: Vec<String>,
+}
+
+/// Runs [pass] on the vault at [root], first with no paths (the whole of
+/// what it covers), then with the paths that changed each time the vault
+/// is quiet after a change, until Ctrl+C. On a terminal each pass clears
+/// the screen first.
+pub fn run(root: &Path, mut pass: impl FnMut(&BTreeSet<String>) -> Pass) -> Result<(), String> {
+    let mut watch = Watch::new(root).map_err(|e| format!("cannot watch {}: {e}", root.display()))?;
+    let clear = std::io::stdout().is_terminal();
+    let mut changed = BTreeSet::new();
+    loop {
+        let shown = pass(&changed);
+        if clear {
+            print!("\x1b[2J\x1b[H");
+        }
+        out!("{}", header(&chrono::Local::now().format("%H:%M:%S").to_string(), &shown.summary));
+        for line in shown.lines {
+            out!("{line}");
+        }
+        changed = watch.wait().ok_or("the watcher stopped")?;
+    }
+}
+
+/// The line above a pass: when it ran and what it found.
+pub fn header(time: &str, summary: &str) -> String {
+    format!("[{time}] {summary} (watching; Ctrl+C stops)")
 }
 
 /// Changes gathered until none came for [quiet], or for [longest] at most.
@@ -138,6 +194,20 @@ mod tests {
         // The rest start a wait of their own.
         assert_eq!(debounce.due(start + ms(2950)), None);
         assert_eq!(debounce.due(start + ms(3200)).map(|d| d.len()), Some(9));
+    }
+
+    #[test]
+    fn the_header_says_when_and_what() {
+        assert_eq!(header("14:02:09", "2 problems in 1 of 3 notes"), "[14:02:09] 2 problems in 1 of 3 notes (watching; Ctrl+C stops)");
+    }
+
+    #[test]
+    fn a_change_on_disk_comes_out_of_wait() {
+        let root = tempfile::tempdir().unwrap();
+        let mut watch = Watch::new(root.path()).unwrap();
+        std::fs::write(root.path().join("A.md"), "# A\n").unwrap();
+        let changed = watch.wait().unwrap();
+        assert!(changed.contains("A.md"), "{changed:?}");
     }
 
     #[test]
