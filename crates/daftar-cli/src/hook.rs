@@ -597,7 +597,9 @@ mod tests {
             fs::set_permissions(&stand_in, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let repository = Git::new(&mine);
-        install(&repository, &mine, false, &[]).unwrap();
+        // Only the hooks after a pull: a pre-commit hook would run the
+        // daftar-cli of $PATH at each commit of mine, which CI has not.
+        install(&repository, &mine, false, &["post-merge".into(), "post-rewrite".into()]).unwrap();
         let push = |file: &str, text: &str| {
             git(&theirs, &["pull", "-q", "--no-rebase"]);
             if text.is_empty() {
