@@ -106,6 +106,32 @@ impl SearchIndex {
         hits
     }
 
+    /// Notes that hold any of [words], best first by how many and how rare,
+    /// the title counting most: what a passage is likely about, where
+    /// [search] would want every word. Words of fewer than three letters
+    /// and English's commonest are left out, and a word of five or more
+    /// matches as a prefix.
+    pub fn search_any(&self, words: &str, limit: usize) -> Vec<Hit> {
+        let words = persian(words);
+        let mut terms: Vec<String> = Vec::new();
+        for word in words.split(|c: char| !c.is_alphanumeric()) {
+            let count = word.chars().count();
+            if count < 3 || COMMON.contains(&word.to_lowercase().as_str()) {
+                continue;
+            }
+            let term = format!("\"{word}\"{}", if count >= 5 { "*" } else { "" });
+            if !terms.contains(&term) {
+                terms.push(term);
+            }
+        }
+        if terms.is_empty() {
+            return vec![];
+        }
+        terms.truncate(48);
+        let db = self.db.lock().unwrap();
+        Self::run(&db, &terms.join(" OR "), limit)
+    }
+
     /// The FTS5 expressions [search] runs, best first: with two or more
     /// unquoted words, the words as one phrase (the last one a prefix, as it
     /// may be half typed) and the words within ten of each other, before
@@ -206,6 +232,13 @@ impl SearchIndex {
     }
 }
 
+/// Words [SearchIndex::search_any] leaves out, as nearly every note has them.
+const COMMON: [&str; 40] = [
+    "the", "and", "for", "with", "about", "from", "this", "that", "these", "those", "are", "was", "were", "has", "have", "had", "not",
+    "but", "our", "you", "your", "will", "would", "should", "can", "could", "let", "know", "into", "them", "they", "their", "there",
+    "what", "when", "which", "who", "all", "also", "its",
+];
+
 /// Persian letters as `slugs::persian_letter` makes them one, with the half
 /// space (ZWNJ) taken out: `می‌خواهم` is found as `میخواهم` too, while the
 /// tokenizer, which splits at a ZWNJ, finds `می خواهم` in the text.
@@ -245,6 +278,22 @@ pub fn readable(snippet: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn any_word_finds_a_note_and_more_words_rank_it_higher() {
+        let index = SearchIndex::new();
+        index.put("Queues.md", "Queues", "The broker keeps the consumer lag low.");
+        index.put("Garden.md", "Garden", "Basil and mint by the window.");
+        index.put("Kafka.md", "Kafka", "A broker of messages.");
+        index.put("Persian.md", "Persian", "می‌خواهم کتاب بخوانم");
+        let paths = |words: &str| index.search_any(words, 5).into_iter().map(|h| h.path).collect::<Vec<_>>();
+        assert_eq!(paths("Ask about consumer lag on the broker"), ["Queues.md", "Kafka.md"]);
+        assert_eq!(paths("brokers"), Vec::<String>::new());
+        assert_eq!(paths("the consume"), ["Queues.md"]);
+        assert_eq!(paths("garden: basil!"), ["Garden.md"]);
+        assert_eq!(paths("میخواهم"), ["Persian.md"]);
+        assert!(paths("a an of").is_empty());
+    }
 
     #[test]
     fn a_snippet_reads_as_text() {

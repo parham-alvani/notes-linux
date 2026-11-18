@@ -21,6 +21,7 @@ mod fmt;
 mod hook;
 mod ics;
 mod images;
+mod inbox;
 mod jobs;
 mod lint;
 mod lsp;
@@ -241,6 +242,31 @@ enum Command {
         /// was due or `new`, a tab, the heading), and asks nothing.
         #[arg(long)]
         list: bool,
+    },
+    /// Triage of the capture inbox (`scratchpad.note` in the config file,
+    /// else `Scratchpad.md`): each item, a line each (`path:line`, a tab,
+    /// its text, then a tab before each note it likely belongs to: the
+    /// notes it links to, then search by meaning when the model is there,
+    /// else by words). On a terminal it walks them: 1-3 moves an item to
+    /// that note, / names another, s skips, q stops.
+    Inbox {
+        #[command(subcommand)]
+        action: Option<inbox::Action>,
+        /// The inbox note, over the config file's.
+        #[arg(long)]
+        inbox: Option<String>,
+        /// One array of `{path, line, heading, text, lines, suggestions: [{path, by}]}`.
+        #[arg(long)]
+        json: bool,
+        /// Lists the items and asks nothing, on a terminal too.
+        #[arg(long, conflicts_with = "interactive")]
+        list: bool,
+        /// Walks the items, reading the answers from stdin even when it is not a terminal.
+        #[arg(short, long)]
+        interactive: bool,
+        /// Notes suggested for each item, at most.
+        #[arg(short = 'n', long, default_value_t = 3)]
+        limit: usize,
     },
     /// The path of a note picked at random, as Obsidian's "Open random note".
     Random {
@@ -1080,6 +1106,10 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             let outcome = drill::session(&due, &mut state, &file, today, &mut std::io::stdin().lock(), &mut std::io::stdout())?;
             eprintln!("\ndaftar-cli: {} rated, {} forgotten, {} left", outcome.rated, outcome.again, outcome.left);
+        }
+        Command::Inbox { action, inbox: named, json, list, interactive, limit } => {
+            let setting = named.or_else(|| config().string("scratchpad.note"));
+            inbox::run(&root, &hidden, setting.as_deref(), action, &inbox::Options { json, list, interactive, limit })?;
         }
         Command::Random { folder, tag } => {
             let index = Vault::index(&root, None);
