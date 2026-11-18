@@ -73,6 +73,22 @@ pub struct Nearby {
     pub snippet: String,
 }
 
+/// Two notes that say nearly the same thing, as [SemanticIndex::similar]
+/// finds them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Similar {
+    pub a: String,
+    pub b: String,
+    /// The cosine of the two notes' vectors (each the mean of its chunks).
+    pub score: f32,
+    /// The zero-based lines of the pair's nearest two sections, one in
+    /// each note: where to look first.
+    pub a_line: usize,
+    pub b_line: usize,
+    /// The cosine of those two sections.
+    pub section: f32,
+}
+
 /// What an [SemanticIndex::update] did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Updated {
@@ -306,14 +322,74 @@ impl SemanticIndex {
     pub fn related(&self, path: &str, leave_out: &HashSet<String>, limit: usize) -> Vec<Nearby> {
         let own: Vec<&Row> = self.rows.iter().filter(|row| row.path == path).collect();
         let Some(first) = own.first() else { return Vec::new() };
-        let mut mean = vec![0.0; first.vector.len()];
-        for row in &own {
-            for (sum, value) in mean.iter_mut().zip(&row.vector) {
-                *sum += value;
-            }
-        }
-        normalize(&mut mean);
+        let mean = mean_of(own.iter().map(|row| row.vector.as_slice()), first.vector.len());
         self.nearest(&mean, |row| row.path != path && !leave_out.contains(&row.path), limit)
+    }
+
+    /// The pairs of notes whose vectors (the mean of each note's chunks, as
+    /// [related] takes it) have a cosine of [threshold] or more, best first,
+    /// each with its nearest two sections. Only the notes [keep] keeps are
+    /// compared, and a note whose one chunk is its title (a note with no
+    /// text) is left out, as two of those are near by their names alone.
+    /// With [with], only the pairs with that note, which comes first in
+    /// each; else the two of a pair are in the order of their paths.
+    ///
+    /// The note vectors are put in one flat list, so all the pairs of a
+    /// vault of 3,000 notes are 4.5 million dot products, well under a
+    /// second; the sections are compared only for the pairs found.
+    pub fn similar(&self, keep: impl Fn(&str) -> bool, with: Option<&str>, threshold: f32) -> Vec<Similar> {
+        let mut by_note: HashMap<&str, Vec<&Row>> = HashMap::new();
+        for row in self.rows.iter().filter(|row| keep(&row.path)) {
+            by_note.entry(row.path.as_str()).or_default().push(row);
+        }
+        by_note.retain(|_, rows| rows.iter().any(|row| !row.snippet.is_empty()));
+        let mut paths: Vec<&str> = by_note.keys().copied().collect();
+        paths.sort_unstable();
+        let Some(dim) = self.rows.first().map(|row| row.vector.len()) else { return Vec::new() };
+        let mut flat: Vec<f32> = Vec::with_capacity(paths.len() * dim);
+        for path in &paths {
+            flat.extend(mean_of(by_note[path].iter().map(|row| row.vector.as_slice()), dim));
+        }
+        let vector = |at: usize| &flat[at * dim..(at + 1) * dim];
+
+        let count = paths.len();
+        let above = |i: usize, others: &mut dyn Iterator<Item = usize>| -> Vec<(f32, usize, usize)> {
+            others.map(|j| (dot(vector(i), vector(j)), i, j)).filter(|(score, _, _)| *score >= threshold).collect()
+        };
+        let mut found: Vec<(f32, usize, usize)> = if let Some(path) = with {
+            let Ok(i) = paths.binary_search(&path) else { return Vec::new() };
+            above(i, &mut (0..count).filter(|j| *j != i))
+        } else {
+            // Each thread takes every n-th note and the notes after it, so
+            // the threads' shares are even.
+            let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get).min(16);
+            std::thread::scope(|scope| {
+                #[expect(clippy::needless_collect, reason = "every thread is started before the first is joined")]
+                let workers: Vec<_> = (0..threads)
+                    .map(|first| {
+                        scope.spawn(move || (first..count).step_by(threads).flat_map(|i| above(i, &mut (i + 1..count))).collect::<Vec<_>>())
+                    })
+                    .collect();
+                workers.into_iter().flat_map(|worker| worker.join().unwrap_or_default()).collect()
+            })
+        };
+        found.sort_by(|x, y| y.0.total_cmp(&x.0).then_with(|| (paths[x.1], paths[x.2]).cmp(&(paths[y.1], paths[y.2]))));
+        found
+            .into_iter()
+            .map(|(score, i, j)| {
+                let (a, b) = (paths[i], paths[j]);
+                let (mut section, mut a_line, mut b_line) = (f32::MIN, 0, 0);
+                for x in &by_note[a] {
+                    for y in &by_note[b] {
+                        let cosine = dot(&x.vector, &y.vector);
+                        if cosine > section {
+                            (section, a_line, b_line) = (cosine, x.line, y.line);
+                        }
+                    }
+                }
+                Similar { a: a.to_string(), b: b.to_string(), score, a_line, b_line, section }
+            })
+            .collect()
     }
 
     /// The best chunk of each note that [keep] keeps, by cosine with [vector].
@@ -538,6 +614,18 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+/// The mean of [vectors], each [dim] long, scaled to length 1.
+fn mean_of<'a>(vectors: impl Iterator<Item = &'a [f32]>, dim: usize) -> Vec<f32> {
+    let mut mean = vec![0.0; dim];
+    for vector in vectors {
+        for (sum, value) in mean.iter_mut().zip(vector) {
+            *sum += value;
+        }
+    }
+    normalize(&mut mean);
+    mean
+}
+
 /// [vector] scaled to length 1, unless it is all zeros.
 pub fn normalize(vector: &mut [f32]) {
     let length = dot(vector, vector).sqrt();
@@ -736,6 +824,42 @@ mod tests {
         assert_eq!(near[0].heading, "Queue");
         assert!(paths(&near).iter().all(|p| *p != "Incident.md" && *p != "Kafka.md"));
         assert!(index.related("Nowhere.md", &HashSet::new(), 5).is_empty());
+    }
+
+    #[test]
+    fn similar_notes_are_paired_by_their_mean_and_shown_at_their_nearest_sections() {
+        let root = vault(&[
+            ("Work/Lag.md", "# Broker\n\nThe broker queue and its consumer lag.\n\n# Aside\n\nBasil.\n"),
+            ("Work/Lag again.md", "Intro.\n\n# Queue\n\nConsumer lag on the broker queue.\n\n# Garden\n\nMint.\n"),
+            ("Kafka.md", "Kafka, a broker with a queue.\n"),
+            ("Garden.md", "Basil and mint and tomato.\n"),
+            ("Empty one.md", "# \n"),
+            ("Empty two.md", "# \n"),
+            ("Templates/Lag.md", "broker queue consumer lag\n"),
+        ]);
+        let mut index = SemanticIndex::in_memory("fake");
+        index.update(root.path(), &notes(root.path()), &Fake, &mut |_, _| {}).unwrap();
+        let keep = |path: &str| !path.starts_with("Templates/");
+        let found = index.similar(keep, None, 0.9);
+        let pairs: Vec<(&str, &str)> = found.iter().map(|s| (s.a.as_str(), s.b.as_str())).collect();
+        // Two notes with no text are not paired by their titles, nor is a
+        // note [keep] leaves out; the best pair comes first.
+        assert_eq!(pairs[0], ("Work/Lag again.md", "Work/Lag.md"));
+        assert!(pairs.iter().all(|(a, b)| a < b && !a.starts_with("Empty") && !b.starts_with("Templates/")), "{pairs:?}");
+        assert!(found.windows(2).all(|w| w[0].score >= w[1].score));
+        let best = &found[0];
+        assert!(best.score > 0.95, "{best:?}");
+        // The broker sections, not the lines above or the gardens.
+        assert_eq!((best.a_line, best.b_line), (4, 2));
+        assert!(best.section > 0.99);
+
+        // Only the pairs with one note, that note first.
+        let with = index.similar(keep, Some("Kafka.md"), 0.9);
+        let others: Vec<&str> = with.iter().map(|s| s.b.as_str()).collect();
+        assert!(others.contains(&"Work/Lag.md") && !others.contains(&"Garden.md"), "{others:?}");
+        assert!(with.iter().all(|s| s.a == "Kafka.md"));
+        assert!(index.similar(keep, Some("Nowhere.md"), 0.0).is_empty());
+        assert!(index.similar(keep, None, 1.01).is_empty());
     }
 
     #[test]

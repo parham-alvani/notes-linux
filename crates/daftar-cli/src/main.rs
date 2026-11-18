@@ -30,6 +30,7 @@ mod meaning;
 mod memory;
 mod report;
 mod review;
+mod similar;
 mod tui;
 mod vault_commands;
 mod watching;
@@ -106,6 +107,28 @@ enum Command {
         limit: usize,
         /// One JSON array of `{"path", "line", "score", "snippet"}`, `score`
         /// the cosine.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pairs of notes that say nearly the same thing, to merge: `a.md`, `b.md`
+    /// and the cosine of their vectors (each the mean of the note's
+    /// sections), best first. Hidden notes, the week notes of `Calendar/`
+    /// and the templates are left out. Needs the model, as `related` does.
+    Similar {
+        /// The cosine a pair needs, from -1 to 1.
+        #[arg(long, default_value_t = similar::THRESHOLD)]
+        threshold: f32,
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: usize,
+        /// Only the pairs with this note, which comes first in each.
+        #[arg(long, add = ArgValueCandidates::new(note_candidates))]
+        note: Option<String>,
+        /// Only the pairs with a note under this folder.
+        #[arg(long)]
+        folder: Option<String>,
+        /// One JSON array of `{"a", "b", "score", "a_line", "b_line",
+        /// "section"}`: the lines (from 1) of the two nearest sections and
+        /// their cosine.
         #[arg(long)]
         json: bool,
     },
@@ -816,7 +839,7 @@ fn main() -> ExitCode {
 fn needs_model(command: &Command) -> bool {
     match command {
         Command::Search { meaning, meaning_only, .. } => *meaning || *meaning_only,
-        Command::Related { .. } => true,
+        Command::Related { .. } | Command::Similar { .. } => true,
         Command::SemanticIndex { download_model } => !download_model,
         _ => false,
     }
@@ -898,6 +921,21 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             for near in semantic.related(&index, &hidden, &path, limit) {
                 out!("{}", meaning::line(&near));
+            }
+        }
+        Command::Similar { threshold, limit, note, folder, json } => {
+            let index = Vault::index(&root, None);
+            let note = note.map(|note| note_path(&index, &note)).transpose()?;
+            let mut semantic = meaning::Meaning::open(&root)?;
+            semantic.update(&root, &index, true)?;
+            let options = similar::Options { threshold, limit, note: note.as_deref(), folder: folder.as_deref() };
+            let found = similar::pairs(&semantic, &index, &root, &hidden, &options);
+            if json {
+                out!("{}", serde_json::Value::Array(found.iter().map(similar::json).collect()));
+                return Ok(());
+            }
+            for pair in &found {
+                out!("{}", similar::line(pair));
             }
         }
         Command::SemanticIndex { download_model } => {
@@ -1782,6 +1820,7 @@ mod tests {
         assert!(needs_model(&search(true, false)));
         assert!(needs_model(&search(false, true)));
         assert!(needs_model(&Command::Related { note: "A".into(), limit: 1, json: false }));
+        assert!(needs_model(&Command::Similar { threshold: 0.9, limit: 1, note: None, folder: None, json: false }));
         assert!(needs_model(&Command::SemanticIndex { download_model: false }));
         assert!(!needs_model(&Command::SemanticIndex { download_model: true }));
     }
