@@ -137,7 +137,7 @@ pub use tasks_query::{DateRange, QueryTask, TaskState, TasksQuery};
 pub use templates::Templates;
 pub use timeline::{Entry as TimelineEntry, TaskTime, Timeline, TimelineItem};
 pub use typst_note::TypstNote;
-pub use unlinked_mentions::{Mention, UnlinkedMentions};
+pub use unlinked_mentions::{Mention, MentionFinder, UnlinkedMentions};
 pub use vault::{Backlink, ExcludedFiles, HIDDEN_NAMES, NoteEntry, TreeNode, Vault, VaultIndex, VaultTask};
 pub use vault_edits::{Failure, VaultEdits};
 pub use vault_moves::{MoveFailure, VaultMoves};

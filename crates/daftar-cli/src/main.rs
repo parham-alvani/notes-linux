@@ -28,6 +28,7 @@ mod lsp;
 mod mcp;
 mod meaning;
 mod memory;
+mod mentions;
 mod report;
 mod review;
 mod similar;
@@ -688,6 +689,52 @@ enum Command {
         /// under a line with the time and the counts, until Ctrl+C.
         #[arg(long, conflicts_with_all = ["json", "fix"])]
         watch: bool,
+    },
+    /// Unlinked mentions: the places where a note's title or alias is
+    /// written in another note without a link, `path:line`, the link and
+    /// the line around it. A name that is short, has no letter or names
+    /// more than one note is left out, as are the hidden files, the week
+    /// notes and the notes that link to the note already.
+    Mentions {
+        /// Only the mentions of this note.
+        #[arg(long, add = ArgValueCandidates::new(note_candidates))]
+        note: Option<String>,
+        /// Only the mentions in these notes (from the current folder, else
+        /// from the vault's).
+        #[arg(long = "in")]
+        within: Vec<PathBuf>,
+        /// The fewest characters a title or alias has to be looked for.
+        #[arg(long, default_value_t = mentions::Options::MIN_LENGTH)]
+        min_length: usize,
+        /// A name more notes than this write is a common word and is left
+        /// out; 0 is no limit.
+        #[arg(long, default_value_t = mentions::Options::MAX_NOTES)]
+        max_notes: usize,
+        /// A one-word name with a capital counts written in small letters
+        /// too ("code" for Code), as Obsidian lists it.
+        #[arg(long)]
+        any_case: bool,
+        /// Every mention, not only the first of each note in each other note.
+        #[arg(long)]
+        every: bool,
+        /// Only the mentions of notes no note links to that link to no note.
+        #[arg(long)]
+        orphans: bool,
+        /// One JSON array of `{"path", "line", "column", "target", "link",
+        /// "text", "excerpt"}`, line and column from 1.
+        #[arg(long)]
+        json: bool,
+        /// Makes the first mention of each note in each other note a link,
+        /// showing the text as written; a note that changed since it was
+        /// read is left as it is. Needs --note, --in or --all.
+        #[arg(long)]
+        fix: bool,
+        /// With --fix, every note of the vault.
+        #[arg(long, requires = "fix")]
+        all: bool,
+        /// With --fix, prints the links and writes nothing.
+        #[arg(long, requires = "fix")]
+        dry_run: bool,
     },
     /// The week before a day as a note: tasks done and cancelled, overdue,
     /// due in the week ahead and in progress, the meetings of the week
@@ -1464,6 +1511,31 @@ fn run(cli: Cli) -> Result<(), String> {
             eprintln!("daftar-cli: {} errors, {} warnings in {} notes", outcome.errors, outcome.warnings, outcome.notes);
             if outcome.errors > 0 || (options.strict && outcome.warnings > 0) {
                 return Err("check failed".to_string());
+            }
+        }
+        Command::Mentions { note, within, min_length, max_notes, any_case, every, orphans, json, fix, all, dry_run } => {
+            if fix && note.is_none() && within.is_empty() && !all {
+                return Err("--fix links in every note only with --all; give --note or --in to link fewer".to_string());
+            }
+            let index = Vault::index(&root, None);
+            let note = note.map(|n| note_path(&index, &n)).transpose()?;
+            let only = if within.is_empty() { None } else { Some(check::given_notes(&root, &within)?) };
+            let options = mentions::Options { note, only, min_length, max_notes, orphans, any_case, every };
+            let mut found = mentions::find(&root, &index, |path| hidden.contains(path), &options);
+            found.sort_by(|a, b| (&a.path, a.mention.line, a.mention.column).cmp(&(&b.path, b.mention.line, b.mention.column)));
+            if fix {
+                let (made, refused) = mentions::fix(&root, &found, dry_run, &mut |line| out!("{line}"));
+                let verb = if dry_run { "would link" } else { "linked" };
+                eprintln!("daftar-cli: {verb} {made} mentions in {} notes", found.iter().map(|f| &f.path).collect::<BTreeSet<_>>().len());
+                if !refused.is_empty() {
+                    return Err(format!("{} notes changed since they were read; run it again", refused.len()));
+                }
+            } else if json {
+                out!("{}", serde_json::Value::Array(found.iter().map(mentions::Found::json).collect()));
+            } else {
+                for item in &found {
+                    out!("{}", item.line());
+                }
             }
         }
         Command::Export { note, output, logo, no_folder_logo, sections, contents, landscape } => {

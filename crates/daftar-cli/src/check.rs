@@ -450,7 +450,7 @@ fn shows_markdown(path: &str) -> bool {
 
 /// The shortest path, from the end of [to], that names [to] alone and that
 /// [source] resolves to it: `Folder/Note` for `Folder/Note.md`.
-fn unique_target(index: &VaultIndex, to: &str, source: &str) -> Option<String> {
+pub(crate) fn unique_target(index: &VaultIndex, to: &str, source: &str) -> Option<String> {
     let bare = to.strip_suffix(".md").unwrap_or(to);
     let segments: Vec<&str> = bare.split('/').collect();
     (2..=segments.len()).map(|k| segments[segments.len() - k..].join("/")).find(|target| {
@@ -558,7 +558,7 @@ pub(crate) fn task_problems(task: &ParsedTask, statuses: &TaskStatuses, today: &
 
 /// No note but [path] itself and the hidden ones links to it, and it
 /// links to no note: a picture or a web address is not a way in.
-fn is_orphan(index: &VaultIndex, path: &str, hidden: impl Fn(&str) -> bool) -> bool {
+pub(crate) fn is_orphan(index: &VaultIndex, path: &str, hidden: impl Fn(&str) -> bool) -> bool {
     index.backlinks(path).iter().all(|link| link.source == path || hidden(&link.source))
         && index.resolved_links(path).values().all(|to| to == path || !Vault::is_note(to))
 }
