@@ -400,9 +400,11 @@ enum Command {
     /// `daftar-cli completions zsh > ~/.zfunc/_daftar-cli`, or
     /// `source <(daftar-cli completions zsh)` in .zshrc.
     Completions { shell: String },
-    /// The vault's git hook: `install` writes one that runs `pre-commit`
-    /// before each commit, which formats, lints and audits the staged notes
-    /// (`check --strict` on them) and the whole vault for errors, as CI does.
+    /// The vault's git hooks: `install` writes `pre-commit`, which formats,
+    /// lints and audits the staged notes (`check --strict` on them) and the
+    /// whole vault for errors, as CI does, and `post-merge` and
+    /// `post-rewrite`, which after a pull audit and lint the notes it
+    /// brought and refresh search by meaning in the background.
     Hook {
         #[command(subcommand)]
         action: HookAction,
@@ -850,15 +852,36 @@ enum Command {
 
 #[derive(Subcommand)]
 enum HookAction {
-    /// Writes the pre-commit hook where git looks for it (`core.hooksPath`,
-    /// else `.git/hooks`), never over a hook of your own without --force.
+    /// Writes the hooks where git looks for them (`core.hooksPath`, else
+    /// `.git/hooks`), each never over a hook of your own without --force:
+    /// that one is skipped and named, and the others are written.
     Install {
         #[arg(long)]
         force: bool,
+        /// Only this hook; given again, these hooks.
+        #[arg(long, value_parser = hook::HOOKS)]
+        only: Vec<String>,
     },
-    /// What the hook runs: the staged notes formatted and staged again,
-    /// linted and audited strictly, and the vault audited for errors.
+    /// Removes the hooks `install` wrote, and leaves any of your own.
+    Uninstall,
+    /// What the pre-commit hook runs: the staged notes formatted and staged
+    /// again, linted and audited strictly, and the vault audited for errors.
     PreCommit,
+    /// What the post-merge hook runs after a merge or a fast-forward: the
+    /// notes between ORIG_HEAD and HEAD audited and linted, their findings
+    /// printed, and search by meaning refreshed in the background when its
+    /// model is downloaded. It never fails.
+    PostMerge {
+        /// 1 after `git merge --squash`, which brought nothing yet.
+        squash: Option<String>,
+    },
+    /// What the post-rewrite hook runs: after `rebase` (a `git pull
+    /// --rebase`), what post-merge does; after `amend`, nothing.
+    PostRewrite { kind: String },
+    /// The background refresh of search by meaning a hook after a pull
+    /// starts: one at a time, again when a pull asked meanwhile.
+    #[command(hide = true)]
+    Refresh,
 }
 
 /// The exit status of a command that searches by meaning when the model
@@ -1312,10 +1335,30 @@ fn run(cli: Cli) -> Result<(), String> {
             }
         }
         Command::Completions { .. } => unreachable!("answered before the vault is read"),
-        Command::Hook { action: HookAction::Install { force } } => {
-            out!("{}", hook::install(&repository(&root)?, &root, force)?.display());
+        Command::Hook { action: HookAction::Install { force, only } } => {
+            let done = hook::install(&repository(&root)?, &root, force, &only)?;
+            for file in &done.written {
+                out!("{}", file.display());
+            }
+            if let Some(refusal) = done.refusal() {
+                return Err(refusal);
+            }
+        }
+        Command::Hook { action: HookAction::Uninstall } => {
+            let (removed, left) = hook::uninstall(&repository(&root)?, &root)?;
+            for file in &removed {
+                out!("{}", file.display());
+            }
+            for file in &left {
+                eprintln!("daftar-cli: {} is a hook of your own; left as it is", file.display());
+            }
         }
         Command::Hook { action: HookAction::PreCommit } => hook::pre_commit(&root, &repository(&root)?)?,
+        Command::Hook { action: HookAction::PostMerge { squash } } => {
+            hook::post_merge(&root, &repository(&root)?, squash.as_deref() == Some("1"));
+        }
+        Command::Hook { action: HookAction::PostRewrite { kind } } => hook::post_rewrite(&root, &repository(&root)?, &kind),
+        Command::Hook { action: HookAction::Refresh } => hook::refresh(&root)?,
         Command::Status => {
             let status = repository(&root)?.status().map_err(|e| e.to_string())?;
             out!("{}\tahead {}\tbehind {}\tchanged {}", status.branch, status.ahead, status.behind, status.changed);
