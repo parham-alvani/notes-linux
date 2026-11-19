@@ -22,5 +22,5 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [The weekly review page](weekly-review.md) | not released yet (macOS first) |
 | [Send to Daftar from other apps](send-to-daftar.md) | not released yet (macOS first) |
 | [Today's timeline: meetings and timed tasks on one axis](today-timeline.md) | not released yet |
-| [Notes that open folded](folded-sections.md) | macOS 0.24.0, Linux 0.27.0; not Android yet |
+| [Notes that open folded](folded-sections.md) | macOS 0.24.0, Linux 0.27.0, Android 0.64.0 (the hint under the heading, its counts in the phone's language, folds kept by position) |
 | [The language server: `daftar-cli lsp`](language-server.md) | Linux (`daftar-cli`, not released yet); macOS runs `daftar-cli`, so it has it too; not Android, where `daftar-cli` cannot run |
