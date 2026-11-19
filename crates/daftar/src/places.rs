@@ -59,16 +59,20 @@ impl PlaceBook {
         self.later();
     }
 
-    /// The sections folded shut in [path], as `level:text`.
-    pub fn folds(&self, path: &str) -> Vec<String> {
-        self.places.borrow().folds(path)
+    /// The sections the person left shut in [path], as `level:text`, or
+    /// `None` when they never shut or opened one there.
+    pub fn kept_folds(&self, path: &str) -> Option<Vec<String>> {
+        self.places.borrow().kept_folds(path)
     }
 
-    pub fn set_folds(self: &std::rc::Rc<Self>, path: &str, folds: Vec<String>) {
-        if self.folds(path) == folds {
+    /// [explicit] keeps "none shut" too: where notes open folded, a note
+    /// opened whole stays open.
+    pub fn set_folds(self: &std::rc::Rc<Self>, path: &str, folds: Vec<String>, explicit: bool) {
+        let kept = if folds.is_empty() && !explicit { None } else { Some(folds.clone()) };
+        if self.kept_folds(path) == kept {
             return;
         }
-        self.places.borrow_mut().set_folds(path, folds);
+        self.places.borrow_mut().set_folds_kept(path, folds, explicit);
         self.later();
     }
 

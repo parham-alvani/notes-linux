@@ -276,7 +276,10 @@ impl Reader {
                 "text": text,
                 "links": store.index().resolved_links_in(&parsed, &request.path),
                 "properties": properties,
-                "folds": store.places.folds(&request.path),
+                // The person's folds for the note, or null when none is kept: then the
+                // page folds every section where notes open folded (docs/specs/folded-sections.md).
+                "folds": store.places.kept_folds(&request.path),
+                "folded": self.folds_sections(&store.root),
                 "detected": detected,
             })
         };
@@ -317,6 +320,13 @@ impl Reader {
         });
         drop(index);
         self.send(note, self.settings.borrow(), request, keep_scroll);
+    }
+
+    /// Whether notes open folded: the app's setting, or the vault's word in
+    /// its `.daftar.toml`, read at each asking, so a pull that changes it
+    /// is followed by the next note shown.
+    fn folds_sections(&self, root: &Path) -> bool {
+        self.settings.borrow().fold_sections().folds(daftar_core::VaultSettings::read(root))
     }
 
     /// Hands [note] to the page with the settings it draws with.
@@ -543,7 +553,9 @@ impl Reader {
                 let folds = folds.iter().filter_map(|f| f.as_str().map(String::from)).collect();
                 let store = self.state.borrow().store.clone();
                 if let Some(store) = store {
-                    store.places.set_folds(&shown.path, folds);
+                    // Where notes open folded, "none shut" is a choice to keep too.
+                    let explicit = self.folds_sections(&store.root);
+                    store.places.set_folds(&shown.path, folds, explicit);
                 }
             }
             // `e` on a block: the editor, at that block's line.
@@ -892,6 +904,103 @@ fn cell_json(cell: &BaseCell) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What [script] gives in [reader]'s page, as text.
+    fn page(context: &glib::MainContext, reader: &Reader, script: &str) -> String {
+        use crate::vault_checks::tests::wait;
+        let answer: Rc<RefCell<Option<String>>> = Rc::default();
+        let got = answer.clone();
+        reader.view.evaluate_javascript(script, None, None, gio::Cancellable::NONE, move |result| {
+            *got.borrow_mut() = Some(result.map_or_else(|error| format!("error: {error}"), |value| value.to_str().to_string()));
+        });
+        assert!(wait(context, || answer.borrow().is_some()), "the page answered {script}");
+        answer.take().unwrap_or_default()
+    }
+
+    /// The headings that are shut, by their text.
+    const SHUT: &str = "[...document.querySelectorAll('#note > .is-folded')].map(h => h.dataset.heading).join('|')";
+
+    /// A reader in a window on a vault of one note, with [toml] as the
+    /// vault's `.daftar.toml` and [config] as the person's settings.
+    fn reader_on(toml: &str, config: &str) -> (Reader, Rc<VaultStore>, gtk::Window, tempfile::TempDir) {
+        let root = tempfile::tempdir().unwrap();
+        let note = "# Trip\n\nThe plan of the week.\n\n## Flights\n\nWe fly on Monday morning from Barcelona and come back on Friday night.\n\n### Seats\n\nTwo by the window.\n\n## Hotel\n\nOne room.\n\n## Empty\n";
+        std::fs::write(root.path().join("Trip.md"), note).unwrap();
+        std::fs::write(root.path().join(".daftar.toml"), toml).unwrap();
+        let index = Vault::index(root.path(), None);
+        let store = Rc::new(VaultStore::new(root.path().to_path_buf(), index, std::sync::Arc::new(daftar_core::SearchIndex::new())));
+        let settings = Rc::new(RefCell::new(AppSettings { path: PathBuf::new(), file: daftar_core::ConfigFile::new(config) }));
+        let reader = Reader::new(settings);
+        reader.set_store(store.clone());
+        let window = gtk::Window::builder().default_width(800).default_height(600).child(&reader.view).build();
+        window.present();
+        reader.show(Request { path: "Trip.md".into(), heading: None, line: None }, false);
+        (reader, store, window, root)
+    }
+
+    /// Notes that open folded, in the real page (docs/specs/folded-sections.md).
+    /// Needs a display: run it under Broadway, `gtk4-broadwayd :7` and
+    /// `GDK_BACKEND=broadway BROADWAY_DISPLAY=:7 cargo test -p daftar --
+    /// --ignored`. One test, as GTK keeps to the thread that started it.
+    #[test]
+    #[ignore = "needs a display"]
+    fn a_note_opens_folded_where_the_vault_or_the_app_says_so() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            let drawn = |reader: &Reader| wait(context, || page(context, reader, "String(!!document.querySelector('#note h2'))") == "true");
+
+            // The vault says so: every heading that holds something is shut, and only the top one is on the page.
+            let (reader, store, window, _root) = reader_on("[reader]\nfolded = true\n", "");
+            assert!(drawn(&reader), "the note is drawn");
+            assert_eq!(page(context, &reader, SHUT), "Trip|Flights|Seats|Hotel");
+            assert_eq!(
+                page(
+                    context,
+                    &reader,
+                    "[...document.querySelectorAll('#note > [data-heading]:not(.folded-away)')].map(h => h.dataset.heading).join('|')"
+                ),
+                "Trip"
+            );
+            assert_eq!(
+                page(context, &reader, "document.querySelector('#note > h1[data-heading] > .fold-hint').textContent"),
+                "The plan of the week. · 24 words · 4 sections"
+            );
+            // Opening one shows the next level shut, and what the person did is kept.
+            page(context, &reader, "document.querySelector('#note > h1[data-heading] > .fold-toggle').click(); ''");
+            assert!(wait(context, || store.places.kept_folds("Trip.md").is_some()), "the folds are kept");
+            assert_eq!(page(context, &reader, SHUT), "Flights|Seats|Hotel");
+            let mut kept = store.places.kept_folds("Trip.md").unwrap();
+            kept.sort();
+            assert_eq!(kept, ["2:Flights", "2:Hotel", "3:Seats"]);
+            // Opened whole, it stays open: none shut is kept where notes open folded.
+            page(
+                context,
+                &reader,
+                "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Z', bubbles: true })); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Z', bubbles: true })); ''",
+            );
+            window.destroy();
+
+            // The app says never: nothing is shut, whatever the vault says.
+            let (reader, _store, window, _root) = reader_on("[reader]\nfolded = true\n", "[appearance]\nfold_sections = \"never\"\n");
+            assert!(drawn(&reader));
+            assert_eq!(page(context, &reader, SHUT), "");
+            window.destroy();
+
+            // The app says always, in a vault that says nothing.
+            let (reader, _store, window, _root) = reader_on("", "[appearance]\nfold_sections = \"always\"\n");
+            assert!(drawn(&reader));
+            assert_eq!(page(context, &reader, SHUT), "Trip|Flights|Seats|Hotel");
+            window.destroy();
+
+            // And a vault that says nothing, with the app following it: open, as before.
+            let (reader, _store, window, _root) = reader_on("", "");
+            assert!(drawn(&reader));
+            assert_eq!(page(context, &reader, SHUT), "");
+            window.destroy();
+        });
+    }
 
     #[test]
     fn byte_ranges() {

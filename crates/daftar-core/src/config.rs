@@ -209,6 +209,11 @@ reading_line = 18
 # Pictures from the web in a note: true shows them; false asks no site
 # for one until you click it, so opening a note tells no one.
 remote_images = true
+# A note opens with its sections folded, each heading saying what is
+# under it: "vault" as the vault says (reader.folded in its
+# .daftar.toml), "always" or "never". A note whose sections you fold
+# or open yourself is kept as you left it.
+fold_sections = "vault"
 # The Solar Hijri date beside the Gregorian one (home, Today, a daily
 # note), and Jalali days typed in a task's dates.
 persian_calendar = false

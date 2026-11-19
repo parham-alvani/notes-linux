@@ -29,6 +29,27 @@ export function foldState(text, shut) {
   return { label: `${shut ? "Unfold" : "Fold"} “${text}”`, expanded: shut ? "false" : "true" };
 }
 
+/**
+ * What a folded section holds, in a few words after its heading: how its
+ * text [first] begins, and how much is under it. A section of headings only
+ * says how many; one with nothing to say is "…".
+ */
+export function foldHint(first, words, sections) {
+  const limit = 64;
+  let start = first.trim();
+  if (start.length > limit) {
+    const cut = start.slice(0, limit);
+    start = (cut.includes(" ") ? cut.slice(0, cut.lastIndexOf(" ")) : cut).replace(/[\s.,;:!?،؛]+$/, "") + "…";
+  }
+  // The words are counted when the beginning does not show them all.
+  const shown = start ? start.split(/\s+/).length : 0;
+  const parts = [];
+  if (start) parts.push(start);
+  if (words > shown || start.endsWith("…")) parts.push(words === 1 ? "1 word" : `${words} words`);
+  if (sections > 0) parts.push(sections === 1 ? "1 section" : `${sections} sections`);
+  return parts.join(" · ") || "…";
+}
+
 const DATE_WORDS = { "📅": "due", "⏳": "scheduled", "🛫": "starts", "✅": "done", "❌": "cancelled", "➕": "created" };
 const META_KIND = { "📅": "is-due", "⏳": "is-scheduled", "🛫": "is-start", "✅": "is-done", "❌": "is-cancelled", "➕": "is-created" };
 export const PRIORITY = { "🔺": ["highest", "⇈"], "⏫": ["high", "⇈"], "🔼": ["medium", "↑"], "🔽": ["low", "↓"], "⏬": ["lowest", "⇊"] };

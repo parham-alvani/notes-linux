@@ -74,6 +74,7 @@ pub mod vault;
 pub mod vault_edits;
 pub mod vault_moves;
 pub mod vault_replace;
+pub mod vault_settings;
 pub mod web_clip;
 #[cfg(feature = "web")]
 pub mod web_fetch;
@@ -142,5 +143,6 @@ pub use vault::{Backlink, ExcludedFiles, HIDDEN_NAMES, NoteEntry, TreeNode, Vaul
 pub use vault_edits::{Failure, VaultEdits};
 pub use vault_moves::{MoveFailure, VaultMoves};
 pub use vault_replace::{ReplaceFailure, ReplaceMatch, ReplaceOptions, ReplacePattern, VaultReplace};
+pub use vault_settings::{FoldSections, VaultSettings};
 pub use web_clip::{Clipping, Saved as Clipped, WebClip};
 pub use yaml::{Yaml, YamlNode};

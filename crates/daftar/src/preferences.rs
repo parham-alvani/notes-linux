@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use daftar_core::Value;
+use daftar_core::{FoldSections, Value};
 
 use crate::settings::AppSettings;
 
@@ -124,6 +124,20 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&remote);
+    let folds = adw::ComboRow::builder()
+        .title("Notes open folded")
+        .subtitle("Each heading says what is under it; a note you fold or open yourself stays as you left it")
+        .model(&gtk::StringList::new(&["As the vault says", "Always", "Never"]))
+        .selected(FoldSections::ALL.iter().position(|choice| *choice == settings.borrow().fold_sections()).unwrap_or(0) as u32)
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        folds.connect_selected_notify(move |row| {
+            write("appearance.fold_sections", Value::String(FoldSections::ALL[row.selected() as usize].name().into()));
+            (hooks.reader)();
+        });
+    }
+    looks.add(&folds);
     let place = adw::ComboRow::builder()
         .title("Holidays")
         .subtitle("The public holidays and feasts of where you live, on Today, home and the day picker")

@@ -133,6 +133,12 @@ impl AppSettings {
         self.file.bool("appearance.remote_images").unwrap_or(true)
     }
 
+    /// Whether a note opens with its sections folded: as the vault says,
+    /// always, or never (docs/specs/folded-sections.md).
+    pub fn fold_sections(&self) -> daftar_core::FoldSections {
+        daftar_core::FoldSections::named(&self.file.string("appearance.fold_sections").unwrap_or_default())
+    }
+
     /// The reader's font families as CSS, Persian always cascading to Vazirmatn.
     pub fn font_css(&self) -> (String, String) {
         let font = self.file.string("appearance.font").unwrap_or_default();
@@ -169,6 +175,17 @@ mod tests {
         settings.set("appearance.text_size", Value::Int(16)).unwrap();
         assert_eq!(fs::read_to_string(&real).unwrap(), "[appearance]\ntheme = \"dark\"\ntext_size = 16\n");
         assert!(fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn notes_open_folded_as_the_vault_says_unless_the_app_says_otherwise() {
+        use daftar_core::FoldSections;
+        let of = |text: &str| AppSettings { file: ConfigFile::new(text), path: PathBuf::new() }.fold_sections();
+        assert_eq!(of(""), FoldSections::Vault);
+        assert_eq!(of("[appearance]\nfold_sections = \"sometimes\"\n"), FoldSections::Vault);
+        assert_eq!(of("[appearance]\nfold_sections = \"vault\"\n"), FoldSections::Vault);
+        assert_eq!(of("[appearance]\nfold_sections = \"always\"\n"), FoldSections::Always);
+        assert_eq!(of("[appearance]\nfold_sections = \"never\"\n"), FoldSections::Never);
     }
 
     #[test]

@@ -51,6 +51,13 @@ impl ReadingPlaces {
         self.entries.get(path).and_then(|e| e.folds.clone()).unwrap_or_default()
     }
 
+    /// The sections the person left shut in [path], or `None` when they
+    /// never shut or opened one there: such a note opens as the `folded`
+    /// setting says (docs/specs/folded-sections.md).
+    pub fn kept_folds(&self, path: &str) -> Option<Vec<String>> {
+        self.entries.get(path).and_then(|e| e.folds.clone())
+    }
+
     /// The headings closed in [path]'s outline, as `level:text`.
     pub fn closed(&self, path: &str) -> Vec<String> {
         self.entries.get(path).and_then(|e| e.closed.clone()).unwrap_or_default()
@@ -77,7 +84,13 @@ impl ReadingPlaces {
     }
 
     pub fn set_folds(&mut self, path: &str, folds: Vec<String>) {
-        self.update(path, |e| e.folds = if folds.is_empty() { None } else { Some(folds) });
+        self.set_folds_kept(path, folds, false);
+    }
+
+    /// [explicit] keeps "none shut" as the person's choice: where notes open
+    /// folded, a note they opened whole stays open the next time.
+    pub fn set_folds_kept(&mut self, path: &str, folds: Vec<String>, explicit: bool) {
+        self.update(path, |e| e.folds = if folds.is_empty() && !explicit { None } else { Some(folds) });
     }
 
     pub fn set_closed(&mut self, path: &str, closed: Vec<String>) {
@@ -266,6 +279,26 @@ mod tests {
         assert_eq!(places.get("Old/Sub/Deep.md"), None);
         assert_eq!(places.get("Keep.md"), Some(1));
         assert_eq!(ReadingPlaces::from_data(&places.data()), places);
+    }
+
+    /// No folds kept is "as the setting says"; none shut, kept on purpose, is the person's choice.
+    #[test]
+    fn none_shut_is_kept_only_when_it_is_a_choice() {
+        let mut places = ReadingPlaces::new();
+        assert_eq!(places.kept_folds("A.md"), None);
+        places.set_folds("A.md", vec!["2:Plan".into()]);
+        assert_eq!(places.kept_folds("A.md"), Some(vec!["2:Plan".to_string()]));
+        // Where notes open unfolded, none shut is the default again.
+        places.set_folds("A.md", vec![]);
+        assert_eq!(places.kept_folds("A.md"), None);
+        assert!(places.folds("A.md").is_empty());
+        // Where notes open folded, a note opened whole stays open.
+        places.set_folds_kept("A.md", vec![], true);
+        assert_eq!(places.kept_folds("A.md"), Some(vec![]));
+        // And it is still so after the file is written and read.
+        let again = ReadingPlaces::from_data(&places.data());
+        assert_eq!(again.kept_folds("A.md"), Some(vec![]));
+        assert_eq!(again.kept_folds("B.md"), None);
     }
 
     #[test]

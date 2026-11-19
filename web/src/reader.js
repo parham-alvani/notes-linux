@@ -5,7 +5,7 @@
 import { render, renderInline, isClosed, hue, languageColor, vaultUrl, escapeHtml, setRemoteImages, remoteImagesShown, pictureAddress, withoutRemotePictures, loadRemoteImage } from "./render.js";
 import { renderView } from "./bases.js";
 import { renderCanvas, bounds, fit } from "./canvas.js";
-import { codeHead, findBar as findBarHtml, foldState, taskChip, baseTabs, canvasBar, zoomLabel, imageBar, imageInfo } from "./controls.js";
+import { codeHead, findBar as findBarHtml, foldState, foldHint, taskChip, baseTabs, canvasBar, zoomLabel, imageBar, imageInfo } from "./controls.js";
 import { PanZoom, percent, svgSize } from "./viewer.js";
 
 const app = window.webkit?.messageHandlers;
@@ -596,11 +596,45 @@ function taskChips(item, today) {
  * Sections fold shut from their heading, as in Obsidian's reading view: a
  * chevron before the heading, or `z` on the reading cursor's section. A fold
  * is named `level:text`, so an edit above it does not open it, and the app
- * keeps the folds of each note.
+ * keeps the folds of each note. A folded heading says after its text what
+ * it holds (`foldHint`), so a note that opens all folded (the `folded`
+ * setting, for a note whose folds the person has not set) reads as its own
+ * table of contents.
  */
 const folds = {
   open: new Set(),
   shut: new Set(),
+  /** The hint of each heading on the page, worked out once: the page is made again when the note changes. */
+  hints: new WeakMap(),
+
+  /** What [heading]'s section holds: how its text begins, its words, the headings under it. */
+  hint(heading) {
+    if (this.hints.has(heading)) return this.hints.get(heading);
+    const level = Number(heading.tagName[1]);
+    let words = 0;
+    let sections = 0;
+    let first = "";
+    for (let el = heading.nextElementSibling; el; el = el.nextElementSibling) {
+      const inner = /^H[1-6]$/.test(el.tagName) && el.dataset.heading !== undefined ? Number(el.tagName[1]) : null;
+      if (inner !== null && inner <= level) break;
+      if (inner !== null) {
+        sections += 1;
+        continue;
+      }
+      const text = el.textContent.replace(/\s+/g, " ").trim();
+      if (!text) continue;
+      words += text.split(" ").length;
+      if (!first) first = text;
+    }
+    const hint = foldHint(first, words, sections);
+    this.hints.set(heading, hint);
+    return hint;
+  },
+
+  /** Every heading with something under it, shut: how a note opens with the `folded` setting. */
+  shutAll() {
+    this.shut = new Set(this.headings().filter((h) => this.holds(h)).map((h) => this.key(h)));
+  },
 
   key(heading) {
     return `${heading.tagName.slice(1)}:${heading.dataset.heading}`;
@@ -627,6 +661,17 @@ const folds = {
           const state = foldState(child.dataset.heading, shut);
           toggle.setAttribute("aria-label", state.label);
           toggle.setAttribute("aria-expanded", state.expanded);
+        }
+        // A folded heading on the page says what it holds.
+        let hint = child.querySelector(":scope > .fold-hint");
+        if (shut && !away && toggle) {
+          if (!hint) {
+            hint = Object.assign(document.createElement("span"), { className: "fold-hint" });
+            child.append(hint);
+          }
+          hint.textContent = this.hint(child);
+        } else {
+          hint?.remove();
         }
         if (shut && !away) shutLevel = level;
       }
@@ -751,7 +796,7 @@ function decorate(root) {
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        const text = [...heading.childNodes].filter((node) => node.tagName !== "BUTTON").map((node) => node.textContent).join("").trim();
+        const text = [...heading.childNodes].filter((node) => node.tagName !== "BUTTON" && !node.classList?.contains("fold-hint")).map((node) => node.textContent).join("").trim();
         post({ kind: "copy", text: `[[${current.title}#${text}]]` });
         announce("Link copied");
         button.textContent = "✓";
@@ -1148,6 +1193,9 @@ window.daftar = {
     timing.mark("detected");
     decorate(main);
     timing.mark("decorate");
+    // The person's own folds for this note, when they set any; else every
+    // section shut when the vault or the app says notes open folded.
+    if (note.folds == null && note.folded) folds.shutAll();
     folds.apply();
     timing.mark("folds");
     // A note shown again after it changed on disk (a format on leaving the
@@ -1239,7 +1287,7 @@ window.daftar = {
     blocks.forEach((block, index) => {
       if (index < from || block.closest("pre, .code-block, .mermaid, .katex-display, .properties")) return;
       const copy = block.cloneNode(true);
-      copy.querySelectorAll("ul, ol, button, .task-chips, .footnote-ref, sup, input").forEach((node) => node.remove());
+      copy.querySelectorAll("ul, ol, button, .task-chips, .footnote-ref, sup, input, .fold-hint").forEach((node) => node.remove());
       const text = copy.textContent.replace(/\s+/g, " ").trim();
       if (text) out.push({ index, text });
     });
