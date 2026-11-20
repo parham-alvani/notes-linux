@@ -2237,7 +2237,8 @@ mod tests {
         }
         let config = "vault = \"~/org\"\nvaults = [\"~/org\", \"~/work/org\", \"~/notes\", \"~/away\"]\n";
         let known = daftar_core::Vaults::new(config, home.path());
-        let at = |folder: &str| home.path().join(folder).display().to_string();
+        // Joined a part at a time: on Windows the folder is written with `\\`.
+        let at = |folder: &str| folder.split('/').fold(home.path().to_path_buf(), |path, part| path.join(part)).display().to_string();
         assert_eq!(
             vault_lines(&known, false),
             [
