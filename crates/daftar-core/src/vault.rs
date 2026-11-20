@@ -173,6 +173,10 @@ impl VaultIndex {
             self.resolved = Some((self.files.clone(), aliases));
         }
 
+        // The folders that are OKF bundles: a `/` path in one starts at its root.
+        self.resolver.set_roots(crate::Okf::bundle_roots(
+            self.notes.values().map(|note| (note.path.as_str(), note.parsed.properties.iter().any(|(key, _)| key == "okf_version"))),
+        ));
         // Each note's links are resolved on their own, several notes at a time.
         let resolver = &self.resolver;
         let found: Vec<(String, Backlink)> = self
@@ -920,5 +924,47 @@ mod tests {
         assert!(excluded.contains("archive/old.md"));
         assert!(excluded.contains("Drawings/a.excalidraw.md"));
         assert!(!excluded.contains("Notes/Inbox.md"));
+    }
+    #[test]
+    fn a_markdown_link_resolves_as_okf_says() {
+        let root = tempfile::tempdir().unwrap();
+        for (path, text) in [
+            ("Docs/index.md", "---\nokf_version: \"0.3\"\n---\n# Notes\n"),
+            ("Docs/tables/orders.md", "# Orders\n"),
+            (
+                "Docs/metrics/revenue.md",
+                "# Revenue\n\n## Definition\n\n[o](/tables/orders.md) [o](../tables/orders.md) [d](./revenue.md#Definition) [n](my%20note.md) [out](../../../etc/passwd) [up](/../x.md)\n",
+            ),
+            ("Docs/metrics/my note.md", "# Mine\n"),
+            ("Other/x.md", "[o](/Docs/tables/orders.md) [none](/tables/orders.md)\n"),
+            ("x.md", "# Root\n"),
+        ] {
+            fs::create_dir_all(root.path().join(path).parent().unwrap()).unwrap();
+            fs::write(root.path().join(path), text).unwrap();
+        }
+        let index = Vault::index(root.path(), None);
+        let from = "Docs/metrics/revenue.md";
+        assert_eq!(index.resolve("/tables/orders.md", from).as_deref(), Some("Docs/tables/orders.md"));
+        assert_eq!(index.resolve("../tables/orders.md", from).as_deref(), Some("Docs/tables/orders.md"));
+        assert_eq!(index.resolve("./revenue.md", from).as_deref(), Some(from));
+        assert_eq!(index.resolve("my note.md", from).as_deref(), Some("Docs/metrics/my note.md"));
+        // From a note in no bundle, `/` is the vault's root.
+        assert_eq!(index.resolve("/Docs/tables/orders.md", "Other/x.md").as_deref(), Some("Docs/tables/orders.md"));
+        assert_eq!(index.resolve("/tables/orders.md", "Other/x.md"), None);
+        // What leaves the vault resolves to nothing, even with a note of that name in it.
+        assert_eq!(index.resolve("../../../etc/passwd", from), None);
+        assert_eq!(index.resolve("/../x.md", from), None);
+        assert_eq!(index.resolve("../../../x.md", from), None);
+        // The parser read the links with their percent signs and anchors; each counts as a link.
+        let links = &index.notes[from].parsed.links;
+        assert_eq!(links[2].anchor.as_deref(), Some("Definition"));
+        assert_eq!(links[3].target, "my note.md");
+        let sources = |path: &str| index.backlinks(path).iter().map(|b| b.source.as_str()).collect::<Vec<_>>();
+        assert_eq!(sources("Docs/tables/orders.md"), ["Docs/metrics/revenue.md", "Other/x.md"]);
+        assert_eq!(sources("Docs/metrics/my note.md"), [from]);
+        assert!(sources("x.md").is_empty());
+        // A wikilink is found by its name from anywhere, as before.
+        assert_eq!(index.resolve("orders", "Other/x.md").as_deref(), Some("Docs/tables/orders.md"));
+        assert_eq!(index.resolve("tables/orders", "x.md").as_deref(), Some("Docs/tables/orders.md"));
     }
 }

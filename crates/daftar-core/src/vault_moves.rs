@@ -375,7 +375,19 @@ fn relink(
                     let Some(moved) = moves.get(&old).cloned().or_else(|| (is_relative(target) && rebased).then(|| old.clone())) else {
                         return keep;
                     };
-                    let new = if is_relative(target) { relative(&moved, new_source) } else { moved };
+                    // The link keeps the form it had: relative, a `/` path from its bundle's root, or a vault path.
+                    let new = if is_relative(target) {
+                        relative(&moved, new_source)
+                    } else if target.starts_with('/') {
+                        let root = crate::Okf::bundle_root(new_source, index.resolver().roots());
+                        match moved.strip_prefix(root).filter(|rest| root.is_empty() || rest.starts_with('/')) {
+                            Some(rest) => format!("/{}", rest.trim_start_matches('/')),
+                            // Moved out of the bundle: only a relative path reaches it.
+                            None => relative(&moved, new_source),
+                        }
+                    } else {
+                        moved
+                    };
                     let written = if caps[2].is_empty() {
                         utf8_percent_encode(&format!("{new}{anchor}"), URL_ENCODED).to_string()
                     } else {
@@ -590,6 +602,26 @@ A [markdown link](Projects/Gamma/Gamma.md) and `[[Alpha]]` in code.
     #[test]
     fn two_notes_cannot_become_the_folder_note() {
         assert_eq!(VaultMoves::plan("X", "Y", &set(&["X/X.md", "X/Y.md"])), Err(MoveFailure::Exists("Y/Y.md".into())));
+    }
+
+    #[test]
+    fn a_moved_note_keeps_the_form_of_its_markdown_links() {
+        let root = tempfile::tempdir().unwrap();
+        for (path, text) in [
+            ("Docs/index.md", "---\nokf_version: \"0.3\"\n---\n"),
+            ("Docs/tables/orders.md", "# Orders\n"),
+            ("Docs/metrics/revenue.md", "[a](/tables/orders.md#Keys) [b](../tables/orders.md) [[orders]]\n"),
+            ("Other/x.md", "[c](/Docs/tables/orders.md)\n"),
+        ] {
+            fs::create_dir_all(root.path().join(path).parent().unwrap()).unwrap();
+            fs::write(root.path().join(path), text).unwrap();
+        }
+        let index = Vault::index(root.path(), None);
+        VaultMoves::perform("Docs/tables/orders.md", "Docs/data/all orders.md", &index, root.path()).unwrap();
+        let read = |path: &str| fs::read_to_string(root.path().join(path)).unwrap();
+        // A `/` path stays one from its bundle's root, a relative one stays relative, percent-encoded.
+        assert_eq!(read("Docs/metrics/revenue.md"), "[a](/data/all%20orders.md#Keys) [b](../data/all%20orders.md) [[all orders]]\n");
+        assert_eq!(read("Other/x.md"), "[c](/Docs/data/all%20orders.md)\n");
     }
 
     #[test]

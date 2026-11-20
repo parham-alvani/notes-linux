@@ -15,6 +15,9 @@ pub struct LinkResolver {
     exact: HashMap<String, Vec<String>>,
     folded: HashMap<String, Vec<String>>,
     aliased: HashMap<String, Vec<String>>,
+    /// The folders whose `index.md` has `okf_version`: a `/` path in a note
+    /// under one starts there (`docs/specs/open-knowledge-format.md`).
+    roots: std::collections::BTreeSet<String>,
 }
 
 impl LinkResolver {
@@ -80,9 +83,42 @@ impl LinkResolver {
         self.resolve_with(target, source, true)
     }
 
+    /// The bundle roots of the vault, for the `/` paths of Markdown links.
+    pub fn set_roots(&mut self, roots: std::collections::BTreeSet<String>) {
+        self.roots = roots;
+    }
+
+    pub fn roots(&self) -> &std::collections::BTreeSet<String> {
+        &self.roots
+    }
+
+    /// The file at exactly [path], or its note.
+    fn file(&self, path: &str) -> Option<String> {
+        let own = |found: &String| slugs::normalize(found) == path || slugs::normalize(found) == format!("{path}.md");
+        self.exact
+            .get(path)
+            .or_else(|| self.exact.get(&format!("{path}.md")))
+            .and_then(|list| list.iter().find(|found| own(found)).cloned())
+    }
+
     pub fn resolve_with(&self, target: &str, source: &str, aliases: bool) -> Option<String> {
         if target.is_empty() {
             return Some(source.to_string());
+        }
+        // A path as OKF reads it: `/` from the bundle's root, and one that
+        // climbs out of the vault names nothing.
+        let written = slugs::normalize(target);
+        let written = written.trim_matches([' ', '\t']);
+        if written.starts_with('/') || written.starts_with("./") || written.starts_with("../") {
+            let path = crate::Okf::path(written.trim_end_matches('/'), source, &self.roots)?;
+            if written.starts_with('/') {
+                return self.file(&path);
+            }
+        } else if written.contains('/') || written.contains('.') {
+            // A path with no `/` first is from the note's folder, when a file is there.
+            if let Some(found) = crate::Okf::path(written, source, &self.roots).and_then(|path| self.file(&path)) {
+                return Some(found);
+            }
         }
         let normalized = slugs::normalize(target);
         let cleaned = trim(&normalized).trim_end_matches('/');

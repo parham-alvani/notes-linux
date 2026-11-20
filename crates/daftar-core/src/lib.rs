@@ -43,6 +43,7 @@ pub mod neovim;
 pub mod note_format;
 pub mod note_graph;
 pub mod note_parser;
+pub mod okf;
 pub mod ordered_json;
 pub mod periodic_notes;
 pub mod problems;
@@ -116,6 +117,7 @@ pub use neovim::{BufferMirror, MirrorEdit, NeovimClient, NeovimFailure, NeovimNo
 pub use note_format::{ChangedLines, Moment as FormatMoment, NoteFormat};
 pub use note_graph::{GraphEdge, GraphLayout, GraphNode, NoteGraph};
 pub use note_parser::{FrontMatter, Heading, Link, NoteParser, ParsedNote, ParsedTask, Wikilink};
+pub use okf::{Concept, Okf, OkfFailure};
 pub use ordered_json::{JsonFailure, OrderedJson};
 pub use periodic_notes::{Clock, DailyNotes, MomentFormat, Period, PeriodicNotes};
 pub use problems::{
