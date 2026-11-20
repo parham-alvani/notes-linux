@@ -26,3 +26,4 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [The language server: `daftar-cli lsp`](language-server.md) | Linux (`daftar-cli`, not released yet); macOS runs `daftar-cli`, so it has it too; not Android, where `daftar-cli` cannot run |
 | [A read-only vault, and the clone's own git identity](read-only-vault.md) | not built yet |
 | [The app's settings from the vault](vault-config.md) | not built yet |
+| [The Open Knowledge Format: concepts in the vault, and the vault as a bundle](open-knowledge-format.md) | not built yet |
