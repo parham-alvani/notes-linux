@@ -51,6 +51,13 @@ pub enum Platform {
 impl Platform {
     pub const ALL: [Platform; 3] = [Platform::Linux, Platform::Macos, Platform::Android];
 
+    /// The platform this program runs on: `daftar-cli` on a Mac reads the
+    /// `[macos]` table, as Daftar for macOS does beside it. Everything else
+    /// (Linux, and Windows, which has no table) reads `[linux]`.
+    pub fn here() -> Platform {
+        if cfg!(target_os = "macos") { Platform::Macos } else { Platform::Linux }
+    }
+
     /// The table's name in `.daftar.toml`.
     pub fn name(self) -> &'static str {
         match self {
@@ -242,7 +249,7 @@ impl Settings {
     /// now, with [computer] as the text of `config.toml`.
     pub fn of(root: &Path, computer: &str) -> Settings {
         let vault = std::fs::read_to_string(root.join(VaultSettings::FILE)).unwrap_or_default();
-        Self::resolve(&vault, computer, Some(root), Platform::Linux)
+        Self::resolve(&vault, computer, Some(root), Platform::here())
     }
 
     /// The settings for the vault at [root] with the computer's own file.

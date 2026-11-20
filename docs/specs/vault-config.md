@@ -123,6 +123,7 @@ text_size = 16
 ```
 
 - A platform reads its own table over the shared sections, and never another platform's: a key another platform's table has is not used, and is not named as refused either. A refused key of the platform's own table is named with its table (`linux.terminal.shell`), and `daftar-cli config` says `vault (linux)` (`vault (macos)`, `vault (android)`) for a value the table gave. Section 1's order becomes: the platform's table in the vault, the vault's shared section, the device, the default.
+- `daftar-cli` reads the table of the system it runs on: `[macos]` on a Mac, where Daftar for macOS runs it, and `[linux]` everywhere else.
 - The allow-list, the ranges and the path rules of section 2 hold in a platform table as in a shared section.
 - **A setting only one platform has** (the phone's widgets, the Mac's dock badge, the editor's cursor effect) lives in that platform's table, under the name its app gives it. On Linux that is `scratchpad.folder`; on macOS, of the keys on the list, `capture.hotkey`. Each app lists its own in its README. A setting that names a program, a token, a key or a path outside the vault is never written to the vault, on any platform.
 
