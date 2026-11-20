@@ -25,6 +25,6 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [Notes that open folded](folded-sections.md) | macOS 0.24.0, Linux 0.27.0, Android 0.64.0 (the hint under the heading, its counts in the phone's language, folds kept by position) |
 | [The language server: `daftar-cli lsp`](language-server.md) | Linux (`daftar-cli`, not released yet); macOS runs `daftar-cli`, so it has it too; not Android, where `daftar-cli` cannot run |
 | [A read-only vault, and the clone's own git identity](read-only-vault.md) | Linux 0.28.0, macOS 0.25.0, Android 0.65.0 (its own key, so not the ssh command rule; the address for GitHub hosts only) |
-| [The app's settings from the vault](vault-config.md) | Linux 0.28.0, macOS 0.25.0, Android 0.65.0 (the keys it has a setting for) |
+| [The app's settings from the vault](vault-config.md) | Linux 0.28.0, macOS 0.25.0, Android 0.65.0 (the keys it has a setting for); a setting changed in the app goes to the vault, with a table for each platform, since Linux 0.29.0, macOS 0.26.0 and Android 0.66.0 |
 | [The Open Knowledge Format: concepts in the vault, and the vault as a bundle](open-knowledge-format.md) | Linux 0.28.0 (`daftar-cli` with the audit, the MCP tools and `okf export`), macOS 0.25.0 and Android 0.65.0 (sections 1 to 3) |
-| [Several vaults on the desktop: a list, and a change without a restart](several-vaults.md) | Linux and `daftar-cli` (not released yet); Android has several vaults already |
+| [Several vaults on the desktop: a list, and a change without a restart](several-vaults.md) | Linux 0.29.0 (with `daftar-cli vaults`), macOS 0.26.0; Android has several vaults already |
