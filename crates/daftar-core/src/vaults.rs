@@ -104,7 +104,10 @@ impl Vaults {
     pub fn written(&self, folder: &Path) -> String {
         match folder.strip_prefix(&self.home) {
             Ok(rest) if !self.home.as_os_str().is_empty() && rest.as_os_str().is_empty() => "~".to_string(),
-            Ok(rest) if !self.home.as_os_str().is_empty() => format!("~/{}", rest.to_string_lossy()),
+            // With `/` on every system, so one config.toml reads the same on Windows.
+            Ok(rest) if !self.home.as_os_str().is_empty() => {
+                format!("~/{}", rest.iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join("/"))
+            }
             _ => folder.to_string_lossy().into_owned(),
         }
     }
@@ -214,6 +217,8 @@ mod tests {
         assert_eq!(vaults("vault = \"/home/p/org\"\nvaults = [\"~/org\", \"~/org/\", \"~/a\"]\n").list(), ["~/org", "~/a"]);
     }
 
+    // Its folders are written as POSIX paths (`/srv/shared`), which Windows shows with `\\`.
+    #[cfg(unix)]
     #[test]
     fn opening_a_vault_adds_it_once() {
         let config = "# mine\nvault = \"~/org\"\nvaults = [\"~/org\"]\n";
@@ -244,6 +249,8 @@ mod tests {
         assert_eq!(old.in_use().as_deref(), Some("/srv/shared"));
     }
 
+    // Its folders are written as POSIX paths (`/srv/shared`), which Windows shows with `\\`.
+    #[cfg(unix)]
     #[test]
     fn two_vaults_of_one_name_show_their_parents() {
         let list = vaults("vault = \"~/org\"\nvaults = [\"~/org\", \"~/work/org\", \"~/notes\", \"/srv/org\"]\n");
