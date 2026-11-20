@@ -90,12 +90,51 @@ Each of the two is chosen on its own. On Android the app's own author setting is
 
 ## 4. How it is shown
 
-- **In Settings, a key the vault sets is shown with its value and "From the vault"**, and its control is off. Its tooltip names `.daftar.toml` and says how to decline (`vault_settings`).
-- **A change made outside Settings to a key the vault sets** (the zoom's text size, the export panel's choices) goes to `config.toml` and holds until the settings are read again; then the vault's value returns.
-- **Changing a setting in the app writes `config.toml`, never `.daftar.toml`.** The vault's file is changed as a note is: by hand or by an editor, then committed. So a read-only clone is never written, and two computers never commit each other's taste.
+- **In Settings, a key the vault sets is shown with its value and "From the vault".** Where the app can write the vault (section 5) the control works and the change goes to the vault; in a read-only clone, a vault that is no repository's working copy the app may write, or with the key declined, the control is off and its tooltip names `.daftar.toml` and says how to decline (`vault_settings`).
+- **A change made outside Settings to a key the vault sets** (the zoom's text size, the export panel's choices) is one change like any other, and goes where section 5 says.
 - `daftar-cli config` (new) prints every key with its value and where it came from (`vault`, `computer`, `default`), `--json` one array of `{"key","value","from"}`; a refused key of `.daftar.toml` is listed as `refused`, in a row of its own after the others, with the value the vault wrote, beside the key's own row with the value in use. The plain lines are the key, a tab, the value as the file writes it, a tab, and where it came from. `git.name` and `git.email` are listed too, with no value (`null`) when the vault sets none.
 
-## 5. Tests every app must have
+## 5. A setting changed in the app goes to the vault
+
+The person keeps the settings in the repository, so a change on one device reaches the others: **when a setting is changed in the app, on the desktop or on the phone, the app writes it to the vault's `.daftar.toml`**, and the next sync commits and pushes it as any other change. `config.toml` (on Android, the app's own settings) keeps only what a repository may never hold and what the person chose to keep on that device.
+
+**Where a change is written**, the first that applies:
+
+1. **The device**, when the key is on the never rows of section 2 (a program, a path outside the vault, what leaves the device), when the device declines the key (`vault_settings`), when the vault cannot be written (a read-only clone, a folder with no `.daftar.toml` that is no repository), or when the value is not one a vault may hold (`remote_images = true`, a picture outside the vault).
+2. **The platform's table in the vault**, when the key is there already, or is one of the keys that differ by platform by nature: `appearance.font`, `appearance.code_font`, `terminal.font_size`, and every setting only one platform has.
+3. **The vault's shared section**, for every other key.
+
+**Platform tables.** `.daftar.toml` may hold a table for each platform, `[linux]`, `[macos]` and `[android]`, with the same sections under it:
+
+```toml
+[appearance]
+theme = "system"
+text_size = 14
+
+[macos.appearance]
+font = "SF Pro"
+code_font = "SF Mono"
+
+[linux.appearance]
+font = "Inter"
+
+[android.appearance]
+text_size = 16
+```
+
+- A platform reads its own table over the shared sections, and never another platform's. Section 1's order becomes: the platform's table in the vault, the vault's shared section, the device, the default.
+- The allow-list, the ranges and the path rules of section 2 hold in a platform table as in a shared section.
+- **A setting only one platform has** (the phone's widgets, the Mac's dock badge, the editor's cursor effect) lives in that platform's table, under the name its app gives it. Each app lists its own in its README. A setting that names a program, a token, a key or a path outside the vault is never written to the vault, on any platform.
+
+**How it is written.** Only the line of that key changes: every other line of `.daftar.toml` stays byte for byte, comments and order included, as `config.toml` is written today. A key that is not there is added at the end of its section, and a section that is not there at the end of the file, with one blank line before it. The file is read again at the write; when the key's line is not what the app last read, the app reads the settings again and writes on top of what is there. A value equal to the default is still written: the vault says it on purpose.
+
+**Keep on this device.** Each setting the vault may hold has "Keep on This Device" (a context menu on the desktop, a long press on the phone): it adds the key to `vault_settings`' declined list and writes the value to the device. "Follow the Vault" takes the key off that list again. With `vault_settings = false` every change goes to the device.
+
+**What stays as it was.** The vault's own sections (`[check]`, `[audit]`, `[reader]`, `[agents]`, `[okf]`) are not app settings and are edited as text. `vault`, `vaults` and `vault_settings` are the device's only. A change never makes a commit by itself: the sync does, with its usual message. Two devices that change one key between syncs meet as a conflict in `.daftar.toml`, which the conflict sheet resolves as any file.
+
+**On the phone.** Daftar for Android writes the same file from its Settings, through its ordinary vault write, so the change is committed and pushed by the phone's sync. A setting whose unit differs there (the text size is a scale of 14, the sync interval is in hours) is written in the spec's unit when it can be said exactly, and in `[android]` when it cannot.
+
+## 6. Tests every app must have
 
 Ported by name (snake case in Rust, camelCase in Kotlin). `Settings.resolved(vault:computer:root:)` is one pure function over the two texts and the vault's root, which is there for the link check of a path (with no root, a path is judged by its text alone):
 
@@ -107,3 +146,8 @@ Ported by name (snake case in Rust, camelCase in Kotlin). `Settings.resolved(vau
 6. `aWrongValueIsAsNotThere`: vault `text_size = "big"` and `text_size = -3` give the computer's value.
 7. `theAuthorIsTheClonesThenTheVaults`, on a repository with a test global config whose author is `Work <work@example.com>`: with nothing else, the commit is Work's; with the vault's `git.name` and `git.email` it is the vault's; with the clone's `user.email` set too, the email is the clone's and the name the vault's.
 8. `aSettingChangedInTheAppGoesToTheComputer`: a change of `text_size` in the app writes `config.toml` and leaves `.daftar.toml` byte for byte.
+9. `aSettingChangedInTheAppGoesToTheVault` (this replaces test 8, `aSettingChangedInTheAppGoesToTheComputer`, which now holds only for a key the device keeps): in a vault that can be written, with `.daftar.toml` of `# mine\n[appearance]\ntheme = "dark" # night\n`, a change of `text_size` to 16 gives `# mine\n[appearance]\ntheme = "dark" # night\ntext_size = 16\n` and leaves `config.toml` byte for byte; a change of `theme` to `light` changes only that line and keeps ` # night`; a change of `notifications.digest` adds `\n[notifications]\ndigest = false\n` at the end.
+10. `aPlatformReadsItsOwnTable`: with `[appearance]\ntext_size = 14\n[macos.appearance]\ntext_size = 15\n[android.appearance]\ntext_size = 16`, macOS reads 15, Android 16 and Linux 14; `[macos.terminal]\nshell = "/tmp/x"` is refused as in a shared section.
+11. `aFontIsWrittenToThePlatformsTable`: on macOS a change of `appearance.font` to `SF Pro` writes `[macos.appearance]\nfont = "SF Pro"` and no shared `font`; a change of `text_size` when `[macos.appearance]` already has `text_size` changes that line, not the shared one.
+12. `whatAVaultMayNotHoldGoesToTheDevice`: a change of `terminal.shell`, of `remote_images` to `true`, and of `home.image` to a file outside the vault each write the device and leave `.daftar.toml` byte for byte; so does every change in a read-only clone and with `vault_settings = false`.
+13. `keepOnThisDeviceDeclinesTheKey`: "Keep on This Device" on `appearance.theme` gives `vault_settings = ["appearance.theme"]` and the value in the device's settings, and the vault's `theme` line stays; a later change of `theme` writes the device; "Follow the Vault" removes the key from the list and the vault's value is used again.
