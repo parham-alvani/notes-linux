@@ -34,6 +34,8 @@ pub struct ProblemsView {
     counts: gtk::Label,
     filters: [(ProblemFilter, gtk::ToggleButton); 3],
     fix_all: gtk::Button,
+    /// The vault is read-only: nothing is fixed, and the buttons are off.
+    read_only: Cell<bool>,
     check: gtk::Button,
     spinner: gtk::Spinner,
     list: gtk::ListBox,
@@ -109,6 +111,7 @@ impl ProblemsView {
             counts,
             filters,
             fix_all,
+            read_only: Cell::new(false),
             check,
             spinner,
             list,
@@ -198,6 +201,13 @@ impl ProblemsView {
         (self.actions.closed)();
     }
 
+    /// A read-only vault is not fixed: Fix and Fix All are off.
+    pub fn set_read_only(self: &Rc<Self>, on: bool) {
+        if self.read_only.replace(on) != on {
+            self.update();
+        }
+    }
+
     /// Drawn again from the checks, while it is open.
     pub fn update(self: &Rc<Self>) {
         if !self.is_open() {
@@ -205,6 +215,8 @@ impl ProblemsView {
         }
         let counts = self.checks.counts();
         let (state, running, fixing) = (self.checks.state(), self.checks.running(), self.checks.fixing());
+        // A fix under way and a read-only vault both turn the Fix buttons off.
+        let no_fix = fixing || self.read_only.get();
         self.counts.set_label(if state == State::Done || counts.total() > 0 { counts.spoken() } else { String::new() }.as_str());
         self.spinner.set_visible(running || fixing);
         self.check.set_sensitive(!running);
@@ -213,16 +225,16 @@ impl ProblemsView {
             button.set_label(&label);
         }
         let notes = self.checks.grouped(self.filter.get());
-        self.fix_all.set_sensitive(!fixing && notes.iter().any(daftar_core::ProblemNote::fixable));
+        self.fix_all.set_sensitive(!no_fix && notes.iter().any(daftar_core::ProblemNote::fixable));
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }
         let mut rows = Vec::new();
         for note in &notes {
-            self.list.append(&self.note_row(&note.path, note.counts, note.fixable(), fixing));
+            self.list.append(&self.note_row(&note.path, note.counts, note.fixable(), no_fix));
             rows.push(Row::Note(note.path.clone()));
             for problem in &note.problems {
-                self.list.append(&self.finding_row(problem, fixing));
+                self.list.append(&self.finding_row(problem, no_fix));
                 rows.push(Row::Finding(problem.clone()));
             }
         }

@@ -218,8 +218,7 @@ mod tests {
         if neovim {
             text = text.replace("vim_mode = false", "vim_mode = true").replace("nvim_config = \"user\"", "nvim_config = \"clean\"");
         }
-        let file = daftar_core::ConfigFile::new(text);
-        let settings = Rc::new(RefCell::new(AppSettings { path: fake.vault.path().join("config.toml"), file }));
+        let settings = Rc::new(RefCell::new(AppSettings::of(fake.vault.path().join("config.toml"), &text)));
         let notices = fake.notices.clone();
         let editor = Editor::new(settings, move |text| notices.borrow_mut().push(text.to_string()), |_| {});
         let checks = fake.checks.clone();

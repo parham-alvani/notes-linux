@@ -2,14 +2,27 @@
 //! config, credential helper and SSH agent apply, as they do in a terminal;
 //! Daftar holds no key and no token.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{DateTime, FixedOffset, Local};
 
+use crate::{ConfigFile, Settings};
+
 pub struct Git {
     pub root: PathBuf,
+    /// Variables every git this runs gets, over the process's own.
+    environment: Vec<(String, String)>,
+    /// The text of the computer's `config.toml`, in place of the file.
+    computer: Option<String>,
+    /// `GIT_SSH_COMMAND`, found once: the clone's key is kept (`ssh_command`).
+    ssh: OnceLock<String>,
+    /// The `-c user.name=… -c user.email=…` of a commit, found once.
+    author: OnceLock<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,11 +63,19 @@ impl Diagnosis {
 }
 
 /// Why a sync or a pull did not happen: git failed, or the pull's rebase
-/// stopped on a conflict and is still open.
+/// stopped on a conflict and is still open; in a read-only clone, the pull
+/// could not fast-forward; or the remote refused the push of a key that
+/// cannot write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncFailure {
     Git(GitFailure),
     Stopped(Stopped),
+    /// A read-only clone with commits or changes of its own that stand in
+    /// the pull's way: the files, which the person mends in a shell.
+    ReadOnlyDiverged(Vec<String>),
+    /// The push was refused because this clone's key has no write access.
+    /// The commits already made stay.
+    PushRefusedReadOnly(GitFailure),
 }
 
 impl From<GitFailure> for SyncFailure {
@@ -68,6 +89,17 @@ impl fmt::Display for SyncFailure {
         match self {
             SyncFailure::Git(failure) => failure.fmt(f),
             SyncFailure::Stopped(stopped) => stopped.fmt(f),
+            SyncFailure::ReadOnlyDiverged(files) if files.is_empty() => {
+                write!(f, "This read-only vault has commits of its own, so the pull could not go on. Mend it with git in a shell.")
+            }
+            SyncFailure::ReadOnlyDiverged(files) => write!(
+                f,
+                "This read-only vault has changes of its own, so the pull could not go on: {}. Mend it with git in a shell.",
+                files.join(", ")
+            ),
+            SyncFailure::PushRefusedReadOnly(_) => {
+                write!(f, "The remote refused the push: this clone's key cannot write. Your commits are kept here.")
+            }
         }
     }
 }
@@ -162,7 +194,22 @@ pub struct Synced {
 
 impl Git {
     pub fn new(root: impl Into<PathBuf>) -> Git {
-        Git { root: root.into() }
+        Git { root: root.into(), environment: Vec::new(), computer: None, ssh: OnceLock::new(), author: OnceLock::new() }
+    }
+
+    /// With [key] set to [value] for every git this runs, over the
+    /// process's own environment: a test's `GIT_CONFIG_GLOBAL`.
+    #[must_use]
+    pub fn with_environment(mut self, key: &str, value: &str) -> Git {
+        self.environment.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    /// With [text] as the computer's `config.toml`, in place of the file.
+    #[must_use]
+    pub fn with_computer(mut self, text: &str) -> Git {
+        self.computer = Some(text.to_string());
+        self
     }
 
     /// Runs git and returns what it printed. Never asks on a terminal: a sync
@@ -179,11 +226,14 @@ impl Git {
     }
 
     fn exec(&self, arguments: &[&str], environment: &[(&str, &str)]) -> Result<(String, String), GitFailure> {
-        let mut command = Command::new("git");
-        command.arg("-C").arg(&self.root).args(arguments).stdin(Stdio::null()).env("GIT_TERMINAL_PROMPT", "0");
-        if std::env::var_os("GIT_SSH_COMMAND").is_none() {
-            command.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        let mut command = self.command();
+        command.env("GIT_SSH_COMMAND", self.ssh.get_or_init(|| self.find_ssh_command()));
+        // A commit, and a rebase that makes commits again, is the clone's
+        // own author's, else the vault's.
+        if arguments.first().is_some_and(|name| COMMITS.contains(name)) {
+            command.args(self.author.get_or_init(|| self.find_author()));
         }
+        command.args(arguments);
         command.envs(environment.iter().copied());
         let failure = |status, output: String| GitFailure {
             arguments: arguments.iter().map(ToString::to_string).collect(),
@@ -196,18 +246,289 @@ impl Git {
         if output.status.success() { Ok((out, err)) } else { Err(failure(output.status.code(), out + &err)) }
     }
 
+    /// `git -C root`, never asking on a terminal, with this clone's variables.
+    fn command(&self) -> Command {
+        let mut command = Command::new("git");
+        command.arg("-C").arg(&self.root).stdin(Stdio::null()).env("GIT_TERMINAL_PROMPT", "0");
+        command.envs(self.environment.iter().map(|(key, value)| (key, value)));
+        command
+    }
+
+    /// What a plain `git` with [arguments] printed, when it succeeded: for
+    /// the questions `exec` itself asks, which must not ask it again.
+    fn ask(&self, arguments: &[&str]) -> Option<String> {
+        let output = self.command().args(arguments).output().ok()?;
+        output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
     pub fn is_repository(&self) -> bool {
-        self.run(&["rev-parse", "--is-inside-work-tree"]).is_ok_and(|out| out == "true")
+        self.ask(&["rev-parse", "--is-inside-work-tree"]).is_some_and(|out| out == "true")
+    }
+
+    // The ssh command
+
+    /// The options Daftar adds to `ssh`: it never waits for a password.
+    const SSH_OPTIONS: [(&str, &str); 1] = [("BatchMode", "yes")];
+
+    /// The `GIT_SSH_COMMAND` of every git Daftar runs. `GIT_SSH_COMMAND`
+    /// in the [environment], when set, is the person's and is used as it
+    /// is; else the clone's `core.sshCommand` ([configured]), which holds
+    /// its key, with Daftar's options after it; else `ssh` with them. An
+    /// option the command names already, in any case, is not added again.
+    pub fn ssh_command(configured: Option<&str>, environment: Option<&str>) -> String {
+        if let Some(asked) = environment.filter(|command| !command.trim().is_empty()) {
+            return asked.to_string();
+        }
+        let mut command = configured.map(str::trim).filter(|command| !command.is_empty()).unwrap_or("ssh").to_string();
+        let named = command.to_lowercase();
+        for (option, value) in Self::SSH_OPTIONS {
+            if !named.contains(&option.to_lowercase()) {
+                command.push_str(&format!(" -o {option}={value}"));
+            }
+        }
+        command
+    }
+
+    fn find_ssh_command(&self) -> String {
+        let asked = self
+            .environment
+            .iter()
+            .rev()
+            .find(|(key, _)| key == "GIT_SSH_COMMAND")
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var("GIT_SSH_COMMAND").ok());
+        if asked.as_deref().is_some_and(|command| !command.trim().is_empty()) {
+            return Self::ssh_command(None, asked.as_deref());
+        }
+        Self::ssh_command(self.ask(&["config", "--get", "core.sshCommand"]).as_deref(), None)
+    }
+
+    /// `core.sshCommand` for a key file: `ssh -i <key> -o IdentitiesOnly=yes`,
+    /// the path quoted for a shell.
+    pub fn ssh_command_for_key(key: &Path) -> String {
+        format!("ssh -i {} -o IdentitiesOnly=yes", shell_quoted(&key.to_string_lossy()))
+    }
+
+    /// The key file of a `core.sshCommand` that `ssh_command_for_key`
+    /// wrote; `None` for any other command, which is shown as text.
+    pub fn ssh_key(command: &str) -> Option<PathBuf> {
+        let rest = command.trim().strip_prefix("ssh -i ")?.strip_suffix(" -o IdentitiesOnly=yes")?;
+        let path = match rest.strip_prefix('\'').and_then(|inner| inner.strip_suffix('\'')) {
+            Some(inner) => inner.replace("'\\''", "'"),
+            None => rest.to_string(),
+        };
+        (Self::ssh_command_for_key(Path::new(&path)) == command.trim()).then(|| PathBuf::from(path))
+    }
+
+    /// A new key for this clone, `daftar_<vault>_ed25519` in [folder]
+    /// (`~/.ssh`), with no passphrase: the file, and its public key to give
+    /// the remote. Never over a file that is there.
+    pub fn generate_key(&self, folder: &Path, host: &str) -> Result<(PathBuf, String), String> {
+        let vault = self.root.file_name().map_or_else(|| "vault".into(), |name| name.to_string_lossy().into_owned());
+        let slug: String = vault.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect();
+        let file = folder.join(format!("daftar_{slug}_ed25519"));
+        let public = PathBuf::from(format!("{}.pub", file.display()));
+        if file.exists() || public.exists() {
+            return Err(format!("{} is there already", file.display()));
+        }
+        std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        let comment = format!("daftar {vault} on {}", host.split('.').next().unwrap_or(host));
+        let output = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", &comment, "-f"])
+            .arg(&file)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("ssh-keygen: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("ssh-keygen: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        let key = std::fs::read_to_string(&public).map_err(|e| format!("{}: {e}", public.display()))?;
+        Ok((file, key.trim().to_string()))
+    }
+
+    // The clone's own settings
+
+    /// A key of this clone's own config (`git config --local`), when set.
+    pub fn local(&self, key: &str) -> Option<String> {
+        self.ask(&["config", "--local", "--get", key]).filter(|value| !value.is_empty())
+    }
+
+    /// Sets a key of this clone's own config; `None`, or nothing but
+    /// spaces, unsets it.
+    pub fn set_local(&self, key: &str, value: Option<&str>) -> Result<(), GitFailure> {
+        let result = match value.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) => self.run(&["config", "--local", key, value]),
+            None if self.local(key).is_none() => return Ok(()),
+            None => self.run(&["config", "--local", "--unset-all", key]),
+        };
+        forget_read_only(&self.root);
+        result.map(|_| ())
+    }
+
+    /// Whether this clone is read-only: `daftar.readonly` in its own config,
+    /// a git boolean. Not set is not; a value that is no boolean is, since
+    /// when in doubt Daftar does not write. The global and system configs
+    /// are not read, and a folder that is no repository is never read-only.
+    pub fn is_read_only(&self) -> bool {
+        let output = self.command().args(["config", "--local", "--type=bool", "--get", "daftar.readonly"]).output();
+        let Ok(output) = output else { return false };
+        match output.status.code() {
+            Some(0) => String::from_utf8_lossy(&output.stdout).trim() != "false",
+            // Not set.
+            Some(1) => false,
+            _ => self.is_repository(),
+        }
+    }
+
+    /// Turns read-only on or off: only `daftar.readonly` changes, and the
+    /// changes the clone already has stay as they are.
+    pub fn set_read_only(&self, on: bool) -> Result<(), GitFailure> {
+        self.set_local("daftar.readonly", on.then_some("true"))
+    }
+
+    /// Whether the vault at [root] is read-only, asked before every write:
+    /// git is asked once, and again only when the clone's config changed.
+    pub fn read_only(root: &Path) -> bool {
+        let mut known = KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let known = known.get_or_insert_default();
+        if let Some(entry) = known.get(root)
+            && entry.holds()
+        {
+            return entry.read_only;
+        }
+        let git = Git::new(root);
+        let read_only = git.is_read_only();
+        let config =
+            git.ask(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).map(|folder| PathBuf::from(folder).join("config"));
+        let stamp = config.as_deref().and_then(stamp);
+        known.insert(root.to_path_buf(), Known { read_only, config, stamp, asked: Instant::now() });
+        read_only
+    }
+
+    // The address
+
+    /// The remote this clone pulls from and pushes to: the one of the
+    /// branch's upstream, else `origin`.
+    pub fn remote(&self) -> String {
+        self.ask(&["symbolic-ref", "--short", "-q", "HEAD"])
+            .and_then(|branch| self.ask(&["config", "--get", &format!("branch.{branch}.remote")]))
+            .filter(|name| !name.is_empty() && name != ".")
+            .unwrap_or_else(|| "origin".into())
+    }
+
+    /// The vault's address, `remote.<name>.url`; `None` with no remote yet.
+    pub fn address(&self) -> Option<String> {
+        self.ask(&["config", "--get", &format!("remote.{}.url", self.remote())]).filter(|url| !url.is_empty())
+    }
+
+    /// Moves the clone to [address], as to a mirror when the first host
+    /// cannot be reached: `remote.<name>.url`, or a new `origin` when the
+    /// clone has no remote, whose branch becomes the upstream at the next
+    /// pull. Nothing is fetched now. An empty address is refused, and the
+    /// old one stays.
+    pub fn set_address(&self, address: &str) -> Result<(), GitFailure> {
+        let address = address.trim();
+        if address.is_empty() {
+            return Err(GitFailure {
+                arguments: vec!["remote".into(), "set-url".into()],
+                status: None,
+                output: "the address is empty".into(),
+            });
+        }
+        let remote = self.remote();
+        if self.ask(&["config", "--get", &format!("remote.{remote}.url")]).is_some() {
+            self.run(&["remote", "set-url", &remote, address]).map(|_| ())
+        } else {
+            self.run(&["remote", "add", &remote, address]).map(|_| ())
+        }
+    }
+
+    /// A branch with no upstream takes the one of its name on `origin`,
+    /// once that is fetched: the clone whose address was just given.
+    fn adopt_upstream(&self) {
+        if self.ask(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).is_some() {
+            return;
+        }
+        let Some(branch) = self.ask(&["symbolic-ref", "--short", "-q", "HEAD"]) else { return };
+        let remote = self.remote();
+        if self.ask(&["config", "--get", &format!("remote.{remote}.url")]).is_none() || self.run(&["fetch", &remote]).is_err() {
+            return;
+        }
+        if self.ask(&["rev-parse", "--verify", "-q", &format!("refs/remotes/{remote}/{branch}")]).is_some() {
+            let _ = self.run(&["branch", &format!("--set-upstream-to={remote}/{branch}")]);
+        }
+    }
+
+    // The author
+
+    /// The author of a commit made here, as `-c` options: the clone's own
+    /// `user.name` and `user.email` when set, else the vault's `git.name`
+    /// and `git.email` ([vault]), else whatever git finds. Each of the two
+    /// is chosen on its own.
+    pub fn author_options(local: (Option<&str>, Option<&str>), vault: (Option<&str>, Option<&str>)) -> Vec<String> {
+        let mut options = Vec::new();
+        for (key, local, vault) in [("user.name", local.0, vault.0), ("user.email", local.1, vault.1)] {
+            if let Some(value) = vault.filter(|value| !value.trim().is_empty())
+                && local.is_none_or(|own| own.trim().is_empty())
+            {
+                options.extend(["-c".to_string(), format!("{key}={value}")]);
+            }
+        }
+        options
+    }
+
+    fn find_author(&self) -> Vec<String> {
+        let settings = match &self.computer {
+            Some(computer) => Settings::of(&self.root, computer),
+            None => Settings::of(&self.root, &std::fs::read_to_string(ConfigFile::default_path()).unwrap_or_default()),
+        };
+        let (name, email) = settings.author();
+        if name.is_none() && email.is_none() {
+            return Vec::new();
+        }
+        let (own_name, own_email) = (self.local("user.name"), self.local("user.email"));
+        Self::author_options((own_name.as_deref(), own_email.as_deref()), (name.as_deref(), email.as_deref()))
     }
 
     /// Pulls with a rebase, keeping local changes aside while it does. A
     /// rebase that stops on a conflict stays open and is `Stopped`.
     pub fn pull(&self) -> Result<(), SyncFailure> {
         self.refuse_open_rebase()?;
+        if self.is_read_only() {
+            return self.pull_only().map(|_| ());
+        }
         self.pull_rebase()
     }
 
+    /// A read-only clone's sync: `git pull --ff-only`, with no commit
+    /// before it and no push after. Nothing is stashed, reset or rebased:
+    /// a clone with commits or changes of its own in the way is
+    /// `ReadOnlyDiverged`, and stays as it is.
+    fn pull_only(&self) -> Result<Synced, SyncFailure> {
+        self.adopt_upstream();
+        let before = self.run(&["rev-parse", "HEAD"])?;
+        match self.run(&["pull", "--no-rebase", "--ff-only"]) {
+            Ok(_) => Ok(Synced { pulled: self.run(&["rev-parse", "HEAD"])? != before, ..Synced::default() }),
+            Err(failure) => {
+                let ahead = self.ask(&["rev-list", "@{upstream}..HEAD"]).is_some_and(|commits| !commits.is_empty());
+                let in_the_way = failure.output.contains("would be overwritten");
+                if !ahead && !in_the_way {
+                    return Err(failure.into());
+                }
+                let mut files: Vec<String> = Vec::new();
+                if ahead && let Some(own) = self.ask(&["-c", "core.quotePath=false", "diff", "--name-only", "@{upstream}...HEAD"]) {
+                    files.extend(own.lines().filter(|line| !line.is_empty()).map(String::from));
+                }
+                files.extend(self.changes().unwrap_or_default());
+                files.sort();
+                files.dedup();
+                Err(SyncFailure::ReadOnlyDiverged(files))
+            }
+        }
+    }
+
     fn pull_rebase(&self) -> Result<(), SyncFailure> {
+        self.adopt_upstream();
         match self.run(&["pull", "--rebase", "--autostash"]) {
             Ok(_) => Ok(()),
             Err(_) if self.rebase_in_progress()? => Err(SyncFailure::Stopped(Stopped { conflicts: self.conflicts()? })),
@@ -239,7 +560,7 @@ impl Git {
     pub fn other_operation_in_progress(&self) -> Result<Option<&'static str>, GitFailure> {
         for (name, operation) in [("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert")] {
             let path = self.run(&["rev-parse", "--path-format=absolute", "--git-path", name])?;
-            if std::path::Path::new(&path).exists() {
+            if Path::new(&path).exists() {
                 return Ok(Some(operation));
             }
         }
@@ -288,6 +609,7 @@ impl Git {
             found.push(Diagnosis::error("conflicts", &format!("{} files in conflict: {}", paths.len(), paths.join(", "))));
         }
         found.extend(Self::diagnose_status(&self.run(&["status", "--porcelain=v2", "--branch"])?));
+        found.extend(self.diagnose_read_only()?);
         let untracked = self.run_raw(&["ls-files", "--others", "--exclude-standard", "-z"])?;
         for path in untracked.split('\0').filter(|p| !p.is_empty()) {
             let size = std::fs::metadata(self.root.join(path)).map_or(0, |m| m.len());
@@ -367,6 +689,10 @@ impl Git {
     /// resolves it first.
     pub fn sync(&self, message: &str) -> Result<Synced, SyncFailure> {
         self.refuse_open_rebase()?;
+        // A read-only clone pulls and never writes.
+        if self.is_read_only() {
+            return self.pull_only();
+        }
         let mut done = Synced::default();
         if !self.changes()?.is_empty() {
             self.run(&["add", "-A"])?;
@@ -376,8 +702,20 @@ impl Git {
         let before = self.run(&["rev-parse", "HEAD"])?;
         self.pull_rebase()?;
         done.pulled = self.run(&["rev-list", &format!("{before}..HEAD")])?.lines().any(|l| !l.is_empty());
-        done.pushed = self.push_if_ahead()?;
+        done.pushed = self.push_if_ahead().map_err(Self::push_failure)?;
         Ok(done)
+    }
+
+    /// A push the remote refused for a key that cannot write: GitHub's
+    /// deploy key message, or "Write access to repository not granted".
+    pub fn push_refused_read_only(output: &str) -> bool {
+        let output = output.to_lowercase();
+        output.contains("marked as read only") || output.contains("write access to repository not granted")
+    }
+
+    /// A failed push by its name: the one a read-only key was refused, or git's.
+    pub fn push_failure(failure: GitFailure) -> SyncFailure {
+        if Self::push_refused_read_only(&failure.output) { SyncFailure::PushRefusedReadOnly(failure) } else { SyncFailure::Git(failure) }
     }
 
     /// Pushes when the branch has commits its upstream has not.
@@ -395,7 +733,7 @@ impl Git {
     pub fn rebase_in_progress(&self) -> Result<bool, GitFailure> {
         for name in ["rebase-merge", "rebase-apply"] {
             let path = self.run(&["rev-parse", "--path-format=absolute", "--git-path", name])?;
-            if std::path::Path::new(&path).exists() {
+            if Path::new(&path).exists() {
                 return Ok(true);
             }
         }
@@ -549,6 +887,36 @@ impl Git {
         format!("update notes @ {} on {name}", at.format("%Y-%m-%d %H:%M:%S"))
     }
 
+    /// The files changed here and not committed, which a read-only clone
+    /// never commits, as `doctor` says them.
+    fn diagnose_read_only(&self) -> Result<Vec<Diagnosis>, GitFailure> {
+        let mut found = Vec::new();
+        if self.is_read_only() {
+            found.push(Diagnosis::info("read-only", "this clone is read-only (daftar.readonly): Daftar pulls and never writes"));
+            let changes = self.changes()?;
+            if !changes.is_empty() {
+                found.push(Diagnosis::info(
+                    "read-only-changes",
+                    &format!("{} files changed here, which a read-only clone never commits: {}", changes.len(), changes.join(", ")),
+                ));
+            }
+            if !crate::VaultSettings::read(&self.root).agents_in_read_only_clones {
+                found.push(Diagnosis::info("agents", "agents: refused in this read-only clone"));
+            }
+        }
+        let computer = match &self.computer {
+            Some(computer) => computer.clone(),
+            None => std::fs::read_to_string(ConfigFile::default_path()).unwrap_or_default(),
+        };
+        for key in Settings::of(&self.root, &computer).refused() {
+            found.push(Diagnosis::warning(
+                "vault-config-refused",
+                &format!("{key} in .daftar.toml is not the vault's to set: it is ignored"),
+            ));
+        }
+        Ok(found)
+    }
+
     /// This machine's name, for the message.
     pub fn host() -> String {
         for variable in ["HOSTNAME", "COMPUTERNAME"] {
@@ -568,6 +936,50 @@ impl Git {
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| "localhost".into())
     }
+}
+
+/// The git commands that make commits, which take the author's options.
+const COMMITS: [&str; 6] = ["commit", "pull", "rebase", "merge", "cherry-pick", "revert"];
+
+/// What `Git::read_only` found, by the vault's folder.
+static KNOWN: Mutex<Option<HashMap<PathBuf, Known>>> = Mutex::new(None);
+
+/// The clone's config was changed here: git is asked again.
+fn forget_read_only(root: &Path) {
+    if let Some(known) = KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+        known.remove(root);
+    }
+}
+
+/// What `Git::read_only` knows of one vault, and the clone's config as it
+/// was when git was asked.
+struct Known {
+    read_only: bool,
+    config: Option<PathBuf>,
+    stamp: Option<(SystemTime, u64)>,
+    asked: Instant,
+}
+
+impl Known {
+    /// A repository's answer holds until its config changes; a folder that
+    /// was no repository is asked about again after two seconds.
+    fn holds(&self) -> bool {
+        match &self.config {
+            Some(config) => stamp(config) == self.stamp,
+            None => self.asked.elapsed() < Duration::from_secs(2),
+        }
+    }
+}
+
+fn stamp(config: &Path) -> Option<(SystemTime, u64)> {
+    let metadata = std::fs::metadata(config).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+/// [text] as one word of a shell command.
+fn shell_quoted(text: &str) -> String {
+    let plain = !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+@%=:,".contains(c));
+    if plain { text.to_string() } else { format!("'{}'", text.replace('\'', "'\\''")) }
 }
 
 #[cfg(test)]
@@ -826,6 +1238,306 @@ mod tests {
                 Conflicted { path: "b.png".into(), remote: Side::Added, mine: Side::Added },
             ]
         );
+    }
+
+    #[test]
+    fn the_ssh_command_keeps_the_clones_key() {
+        assert_eq!(Git::ssh_command(None, None), "ssh -o BatchMode=yes");
+        assert_eq!(
+            Git::ssh_command(Some("ssh -i ~/.ssh/notes_ro -o IdentitiesOnly=yes"), None),
+            "ssh -i ~/.ssh/notes_ro -o IdentitiesOnly=yes -o BatchMode=yes"
+        );
+        // An option the command names already is not added again, in any case.
+        assert_eq!(Git::ssh_command(Some("ssh -o batchmode=no"), None), "ssh -o batchmode=no");
+        // The person's own variable is used as it is.
+        assert_eq!(Git::ssh_command(Some("ssh -i ~/.ssh/notes_ro"), Some("ssh -v")), "ssh -v");
+        assert_eq!(Git::ssh_command(None, Some("ssh -v")), "ssh -v");
+        // Empty or blank is as not set.
+        assert_eq!(Git::ssh_command(Some("ssh -i key"), Some("")), "ssh -i key -o BatchMode=yes");
+        assert_eq!(Git::ssh_command(Some("ssh -i key"), Some("  ")), "ssh -i key -o BatchMode=yes");
+        assert_eq!(Git::ssh_command(Some(""), None), "ssh -o BatchMode=yes");
+        assert_eq!(Git::ssh_command(Some(" \t"), Some(" ")), "ssh -o BatchMode=yes");
+    }
+
+    #[test]
+    fn the_clones_ssh_command_reaches_git() {
+        let (_base, one, _two) = machines();
+        assert_eq!(one.find_ssh_command(), "ssh -o BatchMode=yes");
+        git(&one.root, &["config", "core.sshCommand", "ssh -i /keys/notes_ro -o IdentitiesOnly=yes"]);
+        assert_eq!(Git::new(&one.root).find_ssh_command(), "ssh -i /keys/notes_ro -o IdentitiesOnly=yes -o BatchMode=yes");
+        let asked = Git::new(&one.root).with_environment("GIT_SSH_COMMAND", "ssh -v");
+        assert_eq!(asked.find_ssh_command(), "ssh -v");
+    }
+
+    #[test]
+    fn a_key_is_written_as_the_clones_ssh_command() {
+        assert_eq!(
+            Git::ssh_command_for_key(Path::new("/home/me/.ssh/daftar_notes_ed25519")),
+            "ssh -i /home/me/.ssh/daftar_notes_ed25519 -o IdentitiesOnly=yes"
+        );
+        let spaced = Git::ssh_command_for_key(Path::new("/home/me/My Keys/it's"));
+        assert_eq!(spaced, "ssh -i '/home/me/My Keys/it'\\''s' -o IdentitiesOnly=yes");
+        assert_eq!(Git::ssh_key(&spaced), Some(PathBuf::from("/home/me/My Keys/it's")));
+        assert_eq!(Git::ssh_key("ssh -i /k/a -o IdentitiesOnly=yes"), Some(PathBuf::from("/k/a")));
+        // A command the app did not write is shown as text, not as a key.
+        assert_eq!(Git::ssh_key("ssh -i /k/a -o IdentitiesOnly=yes -v"), None);
+        assert_eq!(Git::ssh_key("ssh -F ~/.ssh/work"), None);
+    }
+
+    #[test]
+    fn a_key_is_never_generated_over_one_that_is_there() {
+        let base = tempfile::tempdir().unwrap();
+        let vault = base.path().join("My Notes");
+        fs::create_dir_all(&vault).unwrap();
+        let keys = base.path().join("ssh");
+        let Ok((file, public)) = Git::new(&vault).generate_key(&keys, "x-wing.local") else { return };
+        assert_eq!(file, keys.join("daftar_my_notes_ed25519"));
+        assert!(public.starts_with("ssh-ed25519 ") && public.ends_with(" daftar My Notes on x-wing"), "{public}");
+        let before = fs::read(&file).unwrap();
+        assert!(Git::new(&vault).generate_key(&keys, "x-wing.local").is_err());
+        assert_eq!(fs::read(&file).unwrap(), before);
+    }
+
+    /// A repository of its own, with no author in its config.
+    fn repository() -> (tempfile::TempDir, Git) {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("vault");
+        fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        git(&root, &["config", "core.autocrlf", "false"]);
+        let git = Git::new(root);
+        (base, git)
+    }
+
+    #[test]
+    fn a_clone_is_read_only_by_its_own_config() {
+        let (base, vault) = repository();
+        assert!(!vault.is_read_only());
+        for (value, read_only) in [
+            ("true", true),
+            ("yes", true),
+            ("on", true),
+            ("1", true),
+            ("false", false),
+            ("no", false),
+            ("off", false),
+            ("0", false),
+            ("perhaps", true),
+        ] {
+            git(&vault.root, &["config", "daftar.readonly", value]);
+            assert_eq!(vault.is_read_only(), read_only, "{value}");
+            assert_eq!(Git::read_only(&vault.root), read_only, "{value}");
+        }
+        git(&vault.root, &["config", "--unset", "daftar.readonly"]);
+        assert!(!vault.is_read_only());
+        // The switch writes the key, and takes it out.
+        vault.set_read_only(true).unwrap();
+        assert!(vault.is_read_only() && Git::read_only(&vault.root));
+        assert_eq!(vault.local("daftar.readonly").as_deref(), Some("true"));
+        vault.set_read_only(false).unwrap();
+        assert!(!vault.is_read_only() && !Git::read_only(&vault.root));
+        assert_eq!(vault.local("daftar.readonly"), None);
+        // The same key in the global config is not read.
+        let global = base.path().join("global.gitconfig");
+        fs::write(&global, "[daftar]\n\treadonly = true\n").unwrap();
+        let with_global = Git::new(&vault.root).with_environment("GIT_CONFIG_GLOBAL", global.to_str().unwrap());
+        assert_eq!(with_global.ask(&["config", "--get", "daftar.readonly"]).as_deref(), Some("true"));
+        assert!(!with_global.is_read_only());
+        // A folder that is no repository is not read-only.
+        let plain = base.path().join("plain");
+        fs::create_dir_all(&plain).unwrap();
+        let outside = Git::new(&plain).with_environment("GIT_CEILING_DIRECTORIES", base.path().to_str().unwrap());
+        assert!(!outside.is_repository() && !outside.is_read_only());
+    }
+
+    fn remote_head(base: &Path) -> String {
+        let out = Command::new("git").arg("-C").arg(base.join("remote.git")).args(["rev-parse", "main"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn a_read_only_sync_only_pulls() {
+        let (base, one, two) = machines();
+        two.set_read_only(true).unwrap();
+        fs::write(one.root.join("b.md"), "# B\n").unwrap();
+        one.sync("from one").unwrap();
+        let pushed = remote_head(base.path());
+        // A file changed by hand in the read-only clone is never committed.
+        fs::write(two.root.join("a.md"), "# A\nby hand\n").unwrap();
+        assert_eq!(two.sync("never").unwrap(), Synced { committed: false, pulled: true, pushed: false });
+        assert_eq!(read(&two, "b.md").unwrap(), "# B\n");
+        assert_eq!(two.run(&["rev-list", "@{u}..HEAD"]).unwrap(), "");
+        assert_eq!(remote_head(base.path()), pushed);
+        assert_eq!(subjects(&two), ["from one", "start"]);
+        assert_eq!(read(&two, "a.md").unwrap(), "# A\nby hand\n");
+        assert_eq!(two.changes().unwrap(), ["a.md"]);
+        // Again, with nothing new: up to date, and the pull alone is the same.
+        assert_eq!(two.sync("never").unwrap(), Synced::default());
+        two.pull().unwrap();
+        assert_eq!(two.changes().unwrap(), ["a.md"]);
+        assert_eq!(remote_head(base.path()), pushed);
+    }
+
+    #[test]
+    fn a_read_only_sync_does_not_mend_a_diverged_clone() {
+        let (_base, one, two) = machines();
+        fs::write(two.root.join("mine.md"), "# Mine\n").unwrap();
+        git(&two.root, &["add", "-A"]);
+        git(&two.root, &["commit", "-qm", "its own"]);
+        fs::write(two.root.join("a.md"), "# A\nby hand\n").unwrap();
+        two.set_read_only(true).unwrap();
+        fs::write(one.root.join("b.md"), "# B\n").unwrap();
+        one.sync("another").unwrap();
+        let head = two.run(&["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(two.sync("never"), Err(SyncFailure::ReadOnlyDiverged(vec!["a.md".into(), "mine.md".into()])));
+        assert_eq!(two.run(&["rev-parse", "HEAD"]).unwrap(), head);
+        assert_eq!(two.status().unwrap().branch, "main");
+        assert_eq!(subjects(&two), ["its own", "start"]);
+        assert_eq!(read(&two, "a.md").unwrap(), "# A\nby hand\n");
+        assert_eq!(two.changes().unwrap(), ["a.md"]);
+        assert!(!two.rebase_in_progress().unwrap() && two.other_operation_in_progress().unwrap().is_none());
+        assert!(!two.root.join("b.md").exists());
+        // A change in the way of the pull, with no commit of its own, is named too.
+        let (_base, one, two) = machines();
+        two.set_read_only(true).unwrap();
+        fs::write(two.root.join("a.md"), "# A\nby hand\n").unwrap();
+        fs::write(one.root.join("a.md"), "# A\nfrom one\n").unwrap();
+        one.sync("another").unwrap();
+        assert_eq!(two.sync("never"), Err(SyncFailure::ReadOnlyDiverged(vec!["a.md".into()])));
+        assert_eq!(read(&two, "a.md").unwrap(), "# A\nby hand\n");
+        assert_eq!(subjects(&two), ["start"]);
+    }
+
+    #[test]
+    fn a_refused_push_is_named() {
+        let deploy =
+            "ERROR: The key you are authenticating with has been marked as read only.\nfatal: Could not read from remote repository.";
+        let granted = "ERROR: Write access to repository not granted.\nfatal: Could not read from remote repository.";
+        let denied = "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.";
+        assert!(Git::push_refused_read_only(deploy));
+        assert!(Git::push_refused_read_only(granted));
+        assert!(!Git::push_refused_read_only(denied));
+        let failure = |output: &str| GitFailure { arguments: vec!["push".into()], status: Some(128), output: output.into() };
+        assert!(matches!(Git::push_failure(failure(deploy)), SyncFailure::PushRefusedReadOnly(_)));
+        assert!(matches!(Git::push_failure(failure(granted)), SyncFailure::PushRefusedReadOnly(_)));
+        assert!(matches!(Git::push_failure(failure(denied)), SyncFailure::Git(_)));
+    }
+
+    #[test]
+    fn the_address_is_the_upstreams_remote() {
+        let (base, one, two) = machines();
+        let first = base.path().join("remote.git");
+        assert_eq!(two.remote(), "origin");
+        assert_eq!(two.address().as_deref(), first.to_str());
+        // A second remote with the same history: a mirror.
+        let mirror = base.path().join("mirror.git");
+        git(base.path(), &["clone", "-q", "--bare", first.to_str().unwrap(), mirror.to_str().unwrap()]);
+        // An empty or blank address is refused, and the old one stays.
+        assert!(two.set_address("").is_err() && two.set_address("  \n").is_err());
+        assert_eq!(two.address().as_deref(), first.to_str());
+        two.set_address(&format!(" {} ", mirror.display())).unwrap();
+        assert_eq!(two.local("remote.origin.url").as_deref(), mirror.to_str());
+        assert_eq!(two.address().as_deref(), mirror.to_str());
+        // The next sync pulls a commit pushed there.
+        fs::write(one.root.join("b.md"), "# B\n").unwrap();
+        git(&one.root, &["add", "-A"]);
+        git(&one.root, &["commit", "-qm", "to the mirror"]);
+        git(&one.root, &["push", "-q", mirror.to_str().unwrap(), "main"]);
+        assert!(two.sync("nothing").unwrap().pulled);
+        assert_eq!(read(&two, "b.md").unwrap(), "# B\n");
+        // With the upstream on a remote named `backup`, that is the one read and written.
+        let backup = base.path().join("backup.git");
+        git(base.path(), &["clone", "-q", "--bare", first.to_str().unwrap(), backup.to_str().unwrap()]);
+        git(&two.root, &["remote", "add", "backup", first.to_str().unwrap()]);
+        git(&two.root, &["fetch", "-q", "backup"]);
+        git(&two.root, &["branch", "-q", "--set-upstream-to=backup/main"]);
+        assert_eq!(two.remote(), "backup");
+        assert_eq!(two.address().as_deref(), first.to_str());
+        two.set_address(backup.to_str().unwrap()).unwrap();
+        assert_eq!(two.local("remote.backup.url").as_deref(), backup.to_str());
+        assert_eq!(two.local("remote.origin.url").as_deref(), mirror.to_str());
+    }
+
+    #[test]
+    fn a_clone_with_no_remote_takes_its_address_and_its_upstream_at_the_next_pull() {
+        let (base, one, alone) = machines();
+        git(&alone.root, &["remote", "remove", "origin"]);
+        fs::write(one.root.join("b.md"), "# B\n").unwrap();
+        one.sync("later").unwrap();
+        assert_eq!(alone.address(), None);
+        assert!(alone.ask(&["rev-parse", "--abbrev-ref", "@{upstream}"]).is_none());
+        alone.set_address(base.path().join("remote.git").to_str().unwrap()).unwrap();
+        assert_eq!(alone.local("remote.origin.url").as_deref(), base.path().join("remote.git").to_str());
+        // Nothing is fetched until the next sync.
+        assert!(alone.ask(&["rev-parse", "--verify", "-q", "refs/remotes/origin/main"]).is_none());
+        alone.set_read_only(true).unwrap();
+        alone.pull().unwrap();
+        assert_eq!(read(&alone, "b.md").unwrap(), "# B\n");
+        assert_eq!(subjects(&alone), subjects(&one));
+        assert_eq!(alone.ask(&["rev-parse", "--abbrev-ref", "@{upstream}"]).as_deref(), Some("origin/main"));
+    }
+
+    #[test]
+    fn the_author_is_the_clones_then_the_vaults() {
+        let (base, vault) = repository();
+        let global = base.path().join("global.gitconfig");
+        fs::write(&global, "[user]\n\tname = Work\n\temail = work@example.com\n").unwrap();
+        let open = |root: &Path| {
+            Git::new(root)
+                .with_environment("GIT_CONFIG_GLOBAL", global.to_str().unwrap())
+                .with_environment("GIT_CONFIG_NOSYSTEM", "1")
+                .with_computer("")
+        };
+        let author = |git: &Git| git.run(&["log", "-1", "--format=%an <%ae> %cn <%ce>"]).unwrap();
+        let commit = |text: &str| {
+            fs::write(vault.root.join("a.md"), text).unwrap();
+            let git = open(&vault.root);
+            git.run(&["add", "-A"]).unwrap();
+            git.run(&["commit", "-qm", text.trim()]).unwrap();
+            author(&git)
+        };
+        // With nothing else, the computer's.
+        assert_eq!(commit("one\n"), "Work <work@example.com> Work <work@example.com>");
+        // The vault's, for a clone with none of its own.
+        fs::write(vault.root.join(".daftar.toml"), "[git]\nname = \"Notes\"\nemail = \"notes@example.com\"\n").unwrap();
+        assert_eq!(commit("two\n"), "Notes <notes@example.com> Notes <notes@example.com>");
+        // Each of the two is chosen on its own: the clone's email, the vault's name.
+        git(&vault.root, &["config", "user.email", "clone@example.com"]);
+        assert_eq!(commit("three\n"), "Notes <clone@example.com> Notes <clone@example.com>");
+        // A computer that declines the vault's settings keeps its own author.
+        git(&vault.root, &["config", "--unset", "user.email"]);
+        fs::write(vault.root.join("a.md"), "four\n").unwrap();
+        let declined = open(&vault.root).with_computer("vault_settings = false\n");
+        declined.run(&["commit", "-qam", "four"]).unwrap();
+        assert_eq!(author(&declined), "Work <work@example.com> Work <work@example.com>");
+        assert_eq!(
+            Git::author_options((None, Some("clone@example.com")), (Some("Notes"), Some("notes@example.com"))),
+            ["-c", "user.name=Notes"]
+        );
+        assert_eq!(Git::author_options((None, None), (None, None)), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn the_doctor_says_a_clone_is_read_only_and_what_the_vault_may_not_set() {
+        let (_base, _one, two) = machines();
+        let two = Git::new(&two.root).with_computer("");
+        let codes = |git: &Git| git.doctor(u64::MAX).unwrap().iter().map(|d| d.code).collect::<Vec<_>>();
+        assert_eq!(codes(&two), [] as [&str; 0]);
+        two.set_read_only(true).unwrap();
+        assert_eq!(codes(&two), ["read-only"]);
+        fs::write(two.root.join(".daftar.toml"), "[agents]\nread_only_clones = false\n\n[terminal]\nshell = \"/tmp/x\"\n").unwrap();
+        let found = two.doctor(u64::MAX).unwrap();
+        assert_eq!(
+            found.iter().map(|d| d.code).collect::<Vec<_>>(),
+            ["changed", "read-only", "read-only-changes", "agents", "vault-config-refused"]
+        );
+        assert_eq!(found[3].message, "agents: refused in this read-only clone");
+        assert!(found[2].message.ends_with(": .daftar.toml") && found[4].message.starts_with("terminal.shell "));
+        assert_eq!(found[4].level, "warning");
+        // A clone that is not read-only is never touched by the agents key.
+        two.set_read_only(false).unwrap();
+        assert_eq!(codes(&two), ["changed", "vault-config-refused"]);
     }
 
     #[test]

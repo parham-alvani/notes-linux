@@ -19,6 +19,8 @@ pub enum Failure {
     TextMoved,
     Unreadable,
     Unwritable(String),
+    /// The vault is a read-only clone (`daftar.readonly`): nothing in it is written.
+    ReadOnly,
 }
 
 impl fmt::Display for Failure {
@@ -28,6 +30,7 @@ impl fmt::Display for Failure {
             Failure::TextMoved => write!(f, "the text is not on that line any more"),
             Failure::Unreadable => write!(f, "the note could not be read"),
             Failure::Unwritable(why) => write!(f, "the note could not be written: {why}"),
+            Failure::ReadOnly => write!(f, "{}", VaultEdits::READ_ONLY),
         }
     }
 }
@@ -37,6 +40,40 @@ impl std::error::Error for Failure {}
 pub struct VaultEdits;
 
 impl VaultEdits {
+    /// What a refused write says, in the app and on the command line.
+    pub const READ_ONLY: &'static str = "this vault is read-only (daftar.readonly)";
+
+    /// Whether the vault at [root] may be written: refused with `ReadOnly`
+    /// in a read-only clone. Every write of a vault file asks this first,
+    /// before the file is read (`docs/specs/read-only-vault.md`).
+    pub fn writable(root: &Path) -> Result<(), Failure> {
+        if crate::Git::read_only(root) { Err(Failure::ReadOnly) } else { Ok(()) }
+    }
+
+    /// Makes the file [path] in the vault at [root] with [text], and the
+    /// folders it is in: never over a file that is there (`AlreadyExists`),
+    /// never outside the vault, never in a read-only clone.
+    pub fn create(path: &str, root: &Path, text: &str) -> std::io::Result<()> {
+        use std::io::{Error, ErrorKind, Write};
+        Self::writable(root).map_err(|e| Error::new(ErrorKind::PermissionDenied, e.to_string()))?;
+        let file = Self::within(root, path).ok_or_else(|| Error::new(ErrorKind::InvalidInput, format!("{path} is outside the vault")))?;
+        if let Some(folder) = file.parent() {
+            fs::create_dir_all(folder)?;
+        }
+        fs::OpenOptions::new().write(true).create_new(true).open(&file)?.write_all(text.as_bytes())
+    }
+
+    /// Deletes the file [path] in the vault at [root]; never outside the
+    /// vault, never in a read-only clone.
+    pub fn delete(path: &str, root: &Path) -> Result<(), Failure> {
+        Self::writable(root)?;
+        let file = root.join(path);
+        if path.starts_with('/') || path.split('/').any(|part| part == "..") || Self::within(root, path).is_none() {
+            return Err(Failure::Unwritable(format!("{path} is outside the vault")));
+        }
+        fs::remove_file(&file).map_err(|e| Failure::Unwritable(e.to_string()))
+    }
+
     /// Ticks or opens the task on [line] of [text]. [status] is what the view
     /// showed, which the line must still hold.
     pub fn toggle_task(text: &str, line: usize, status: char, expected: Option<&str>, today: Day) -> Result<String, Failure> {
@@ -82,6 +119,7 @@ impl VaultEdits {
     /// Applies [edit] to the file at [path] in [root], written in place
     /// through a temporary file, so a crash never leaves half a note.
     pub fn apply(path: &str, root: &Path, edit: impl FnOnce(&str) -> Result<String, Failure>) -> Result<(), Failure> {
+        Self::writable(root)?;
         // A symlinked note is written where it points, so it stays a link,
         // and only while that is in the vault.
         let file = Self::within(root, path).ok_or_else(|| Failure::Unwritable(format!("{path} is outside the vault")))?;
@@ -101,6 +139,15 @@ impl VaultEdits {
             let _ = fs::remove_file(&temporary);
             Failure::Unwritable(e.to_string())
         })
+    }
+
+    /// What `apply` would do, written nowhere: the file is read and [edit]
+    /// runs on it, so a dry run says what would be refused. A read-only
+    /// vault is looked at as any other.
+    pub fn look(path: &str, root: &Path, edit: impl FnOnce(&str) -> Result<String, Failure>) -> Result<(), Failure> {
+        let file = Self::within(root, path).ok_or_else(|| Failure::Unwritable(format!("{path} is outside the vault")))?;
+        let text = fs::read_to_string(&file).map_err(|_| Failure::Unreadable)?;
+        edit(&text).map(|_| ())
     }
 
     /// The file [path] names in the vault at [root], its links followed as
@@ -181,6 +228,84 @@ mod tests {
         assert!(fs::symlink_metadata(root.path().join("a.md")).unwrap().file_type().is_symlink());
         assert_eq!(fs::read_to_string(root.path().join("real/a.md")).unwrap(), "- [x] a ✅ 2026-10-05\n");
         assert_eq!(fs::metadata(root.path().join("real/a.md")).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_read_only_vault_refuses_every_write() {
+        use crate::{Bookmarks, Clock, Git, MoveFailure, QuickCapture, Vault, VaultMoves, WebClip};
+        use std::collections::BTreeMap;
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("vault");
+        fs::create_dir_all(root.join("Notes")).unwrap();
+        fs::write(root.join("Notes/Tasks.md"), "# Tasks\n- [ ] One\n").unwrap();
+        fs::write(root.join("Inbox.md"), "# Inbox\n").unwrap();
+        let git = Git::new(&root);
+        for arguments in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "test@example.com"],
+            &["config", "user.name", "Test"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+            &["add", "-A"],
+            &["commit", "-qm", "start"],
+            &["config", "daftar.readonly", "true"],
+        ] {
+            git.run(arguments).unwrap();
+        }
+        let bytes = || -> BTreeMap<String, Vec<u8>> {
+            walkdir::WalkDir::new(&root)
+                .into_iter()
+                .filter_entry(|entry| entry.file_name() != ".git")
+                .flatten()
+                .filter(|entry| entry.file_type().is_file())
+                .map(|entry| (entry.path().strip_prefix(&root).unwrap().to_string_lossy().into_owned(), fs::read(entry.path()).unwrap()))
+                .collect()
+        };
+        let before = bytes();
+        assert_eq!(before.len(), 2);
+        assert_eq!(VaultEdits::writable(&root), Err(Failure::ReadOnly));
+        // A write: refused before the file is read, so even a note that is not there says read-only.
+        assert_eq!(VaultEdits::apply("Inbox.md", &root, |_| Ok("# Changed\n".into())), Err(Failure::ReadOnly));
+        assert_eq!(VaultEdits::apply("Gone.md", &root, |_| Ok("x".into())), Err(Failure::ReadOnly));
+        assert_eq!(VaultEdits::apply_all(&["Inbox.md".to_string()], &root, |_| "x".into()), [Err(Failure::ReadOnly)]);
+        // A task tick.
+        let tick = |text: &str| VaultEdits::toggle_task(text, 1, ' ', Some("One"), day("2026-10-05"));
+        assert_eq!(VaultEdits::apply("Notes/Tasks.md", &root, tick), Err(Failure::ReadOnly));
+        // A capture, into a note that is there and into one it would make.
+        let capture = |target: &str| {
+            QuickCapture::capture(&root, target, "", "a thought", day("2026-10-05"), Clock { hour: 9, minute: 30, second: 0 })
+        };
+        assert_eq!(capture("Inbox.md"), Err(VaultEdits::READ_ONLY.to_string()));
+        assert_eq!(capture("daily"), Err(VaultEdits::READ_ONLY.to_string()));
+        // A new note.
+        assert_eq!(VaultEdits::create("Notes/New.md", &root, "# New\n").unwrap_err().to_string(), VaultEdits::READ_ONLY);
+        let mut files = Vault::index(&root, None).files;
+        assert_eq!(WebClip::create(&root, "Clips", "Page", "md", b"# Page\n", &mut files).unwrap_err().to_string(), VaultEdits::READ_ONLY);
+        // A move and a delete.
+        let index = Vault::index(&root, None);
+        assert_eq!(VaultMoves::perform("Inbox.md", "Notes/Inbox.md", &index, &root), Err(MoveFailure::ReadOnly));
+        assert_eq!(VaultMoves::perform("Notes", "Archive", &index, &root), Err(MoveFailure::ReadOnly));
+        assert_eq!(VaultEdits::delete("Inbox.md", &root), Err(Failure::ReadOnly));
+        assert!(Bookmarks::default().save(&root).is_err());
+        // Every file has the bytes it had, and git sees no change.
+        assert_eq!(bytes(), before);
+        assert_eq!(git.run(&["status", "--porcelain"]).unwrap(), "");
+        // Turned off, the same writes go through.
+        git.set_read_only(false).unwrap();
+        VaultEdits::apply("Notes/Tasks.md", &root, tick).unwrap();
+        VaultEdits::create("Notes/New.md", &root, "# New\n").unwrap();
+        assert_eq!(VaultEdits::create("Notes/New.md", &root, "again").unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(VaultEdits::create("../out.md", &root, "x").is_err());
+        VaultEdits::delete("Notes/New.md", &root).unwrap();
+        assert!(matches!(VaultEdits::delete("../vault/Inbox.md", &root), Err(Failure::Unwritable(_))));
+        assert_eq!(fs::read_to_string(root.join("Notes/Tasks.md")).unwrap(), "# Tasks\n- [x] One ✅ 2026-10-05\n");
+        assert!(!root.join("Notes/New.md").exists());
+    }
+
+    #[test]
+    fn a_folder_that_is_no_repository_is_written() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(VaultEdits::writable(root.path()), Ok(()));
     }
 
     fn day(text: &str) -> Day {

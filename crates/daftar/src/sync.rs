@@ -46,6 +46,9 @@ const ANOTHER_WINDOW: &str = "Another window is syncing this vault; try again in
 /// After an edit, how long to wait for more before syncing them together.
 const AFTER_EDIT: Duration = Duration::from_secs(20);
 
+/// Says that a push was refused, in the words given.
+type Refused = Rc<dyn Fn(&str)>;
+
 /// Shows the conflicts; true when the person ran the sync that stopped.
 type Shown = Rc<dyn Fn(bool)>;
 
@@ -76,6 +79,16 @@ pub struct GitSync {
     on_stopped: RefCell<Option<Shown>>,
     /// The last run that failed, at what time, until one goes through.
     failure: RefCell<Option<(String, GitFailure)>>,
+    /// The clone is read-only (`daftar.readonly`): a sync is a pull, and
+    /// no sync follows an edit, since there is none.
+    read_only: Cell<bool>,
+    /// Told after each run that went through or found the clone read-only
+    /// when the button did not know: the window reads the vault's settings
+    /// and the clone's again.
+    on_synced: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Says that the remote refused the push of a key that cannot write,
+    /// and offers to make the vault read-only.
+    on_refused: RefCell<Option<Refused>>,
 }
 
 impl GitSync {
@@ -88,12 +101,7 @@ impl GitSync {
         content.append(&icon);
         content.append(&spinner);
         content.append(&label);
-        let menu = gio::Menu::new();
-        menu.append(Some("Sync Now"), Some("win.sync"));
-        menu.append(Some("Pull"), Some("win.pull"));
-        menu.append(Some("Resolve Sync Conflicts…"), Some("win.conflicts"));
-        menu.append(Some("Last Sync Error…"), Some("win.sync-error"));
-        let button = gtk::MenuButton::builder().child(&content).menu_model(&menu).css_classes(["flat"]).visible(false).build();
+        let button = gtk::MenuButton::builder().child(&content).menu_model(&menu(false)).css_classes(["flat"]).visible(false).build();
         Rc::new(GitSync {
             button,
             icon,
@@ -109,7 +117,35 @@ impl GitSync {
             failure: RefCell::new(None),
             conflicts: RefCell::new(Vec::new()),
             on_stopped: RefCell::new(None),
+            read_only: Cell::new(false),
+            on_synced: RefCell::new(None),
+            on_refused: RefCell::new(None),
         })
+    }
+
+    /// What hears that a run went through.
+    pub fn connect_synced(&self, synced: impl Fn() + 'static) {
+        *self.on_synced.borrow_mut() = Some(Rc::new(synced));
+    }
+
+    /// What says that a push was refused for a key that cannot write.
+    pub fn connect_refused(&self, refused: impl Fn(&str) + 'static) {
+        *self.on_refused.borrow_mut() = Some(Rc::new(refused));
+    }
+
+    /// The clone is read-only, or not any more: its menu has Pull alone,
+    /// and no sync follows an edit.
+    pub fn set_read_only(&self, on: bool) {
+        if self.read_only.replace(on) != on {
+            self.button.set_menu_model(Some(&menu(on)));
+        }
+    }
+
+    fn synced(&self) {
+        let synced = self.on_synced.borrow().clone();
+        if let Some(synced) = synced {
+            synced();
+        }
     }
 
     /// What shows the conflicts when a sync stops on them, or finds them open.
@@ -204,6 +240,8 @@ impl GitSync {
             }
             done(match result {
                 Ok(_) => Ok(!open),
+                // The rebase is done; it is the push the remote refused.
+                Err(failure) if Git::push_refused_read_only(&failure.output) => Err(Git::push_failure(failure).to_string()),
                 Err(failure) => Err(describe(&failure)),
             });
         });
@@ -314,11 +352,13 @@ impl GitSync {
             let folder = root.clone();
             let outcome = gio::spawn_blocking(move || {
                 let git = Git::new(folder);
+                // A read-only clone's sync is its pull, which says whether it brought anything.
+                let read_only = git.is_read_only();
                 let done = match kind {
-                    Run::Sync => git.sync(&Git::message(chrono::Local::now(), &Git::host())).map(Some),
-                    Run::Pull => git.pull().map(|()| None),
+                    Run::Pull if !read_only => git.pull().map(|()| None),
+                    Run::Sync | Run::Pull => git.sync(&Git::message(chrono::Local::now(), &Git::host())).map(Some),
                 };
-                (done, git.status().ok())
+                (done, git.status().ok(), read_only)
             })
             .await;
             drop(claim);
@@ -327,11 +367,26 @@ impl GitSync {
             if this.root.borrow().as_ref() != Some(&root) {
                 return;
             }
-            let Ok((done, status)) = outcome else { return };
+            let Ok((done, status, read_only)) = outcome else { return };
+            this.set_read_only(read_only);
             if let Some(status) = status {
                 this.show(&status);
             }
             match done {
+                Err(failure @ SyncFailure::ReadOnlyDiverged(_)) => {
+                    let text = failure.to_string();
+                    (this.notice)(&text);
+                    this.failed(Some(GitFailure { arguments: vec!["pull".into(), "--ff-only".into()], status: None, output: text }));
+                }
+                Err(SyncFailure::PushRefusedReadOnly(failure)) => {
+                    let text = SyncFailure::PushRefusedReadOnly(failure.clone()).to_string();
+                    let refused = this.on_refused.borrow().clone();
+                    match refused {
+                        Some(refused) => refused(&text),
+                        None => (this.notice)(&text),
+                    }
+                    this.failed(Some(failure));
+                }
                 Err(SyncFailure::Stopped(stopped)) => {
                     (this.notice)(&stopped.to_string());
                     this.set_conflicts(true, stopped.conflicts);
@@ -344,8 +399,10 @@ impl GitSync {
                 Ok(done) => {
                     this.failed(None);
                     if loud {
-                        (this.notice)(&summary(kind, done));
+                        (this.notice)(&summary(kind, done, read_only));
                     }
+                    // A pull may bring the vault's settings; the window reads them again.
+                    this.synced();
                 }
             }
         });
@@ -371,7 +428,7 @@ impl GitSync {
     /// After the app wrote a note: a sync a little later, when automatic sync
     /// is on, so several ticks in a row make one commit.
     pub fn edited(self: &Rc<Self>) {
-        if self.interval.get() == 0 || self.rebasing.get() {
+        if self.interval.get() == 0 || self.rebasing.get() || self.read_only.get() {
             return;
         }
         if let Some(id) = self.soon.take() {
@@ -463,7 +520,11 @@ impl GitSync {
             return;
         }
         self.label.set_label(&badge(status));
-        self.button.set_tooltip_text(Some(&self.with_failure(tooltip(status))));
+        let mut text = tooltip(status);
+        if self.read_only.get() {
+            text.push_str("\nRead-only: Daftar pulls and never writes");
+        }
+        self.button.set_tooltip_text(Some(&self.with_failure(text)));
     }
 }
 
@@ -500,7 +561,25 @@ fn tooltip(status: &GitStatus) -> String {
     lines.join("\n")
 }
 
-fn summary(kind: Run, done: Option<Synced>) -> String {
+/// The button's menu: Sync Now and Pull, or Pull alone in a read-only clone.
+fn menu(read_only: bool) -> gio::Menu {
+    let menu = gio::Menu::new();
+    if read_only {
+        menu.append(Some("Pull"), Some("win.sync"));
+    } else {
+        menu.append(Some("Sync Now"), Some("win.sync"));
+        menu.append(Some("Pull"), Some("win.pull"));
+    }
+    menu.append(Some("Resolve Sync Conflicts…"), Some("win.conflicts"));
+    menu.append(Some("Last Sync Error…"), Some("win.sync-error"));
+    menu
+}
+
+fn summary(kind: Run, done: Option<Synced>, read_only: bool) -> String {
+    // A read-only clone only pulls: "Pulled" or "Up to date".
+    if read_only {
+        return if done.is_some_and(|done| done.pulled) { "Pulled.".into() } else { "Up to date.".into() };
+    }
     let Some(done) = done else {
         return if kind == Run::Pull { "Pulled.".into() } else { "Up to date.".into() };
     };
@@ -532,8 +611,12 @@ mod tests {
         assert_eq!(tooltip(&status), "On main\n2 commits to push\n3 files changed");
         assert_eq!(badge(&GitStatus { branch: "main".into(), ..Default::default() }), "");
         let done = Synced { committed: true, pulled: true, pushed: true };
-        assert_eq!(summary(Run::Sync, Some(done)), "Synced: committed, pulled and pushed.");
-        assert_eq!(summary(Run::Sync, Some(Synced::default())), "Up to date.");
+        assert_eq!(summary(Run::Sync, Some(done.clone()), false), "Synced: committed, pulled and pushed.");
+        assert_eq!(summary(Run::Sync, Some(Synced::default()), false), "Up to date.");
+        // A read-only clone's sync is a pull, and says no more.
+        assert_eq!(summary(Run::Sync, Some(Synced { pulled: true, ..Synced::default() }), true), "Pulled.");
+        assert_eq!(summary(Run::Pull, Some(Synced::default()), true), "Up to date.");
+        assert_eq!(summary(Run::Sync, Some(done), true), "Pulled.");
         let failure =
             GitFailure { arguments: vec!["push".into()], status: Some(1), output: "To x\n ! [rejected]\nhint: pull first\n".into() };
         assert_eq!(describe(&failure), "Sync failed: hint: pull first");

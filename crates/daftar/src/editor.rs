@@ -1354,6 +1354,10 @@ impl Editor {
 
     fn paste_picture(&self, texture: &gdk::Texture) {
         let Some(store) = self.store.borrow().clone() else { return };
+        if let Err(refused) = daftar_core::VaultEdits::writable(&store.root) {
+            (self.notice)(&format!("The picture could not be saved: {refused}"));
+            return;
+        }
         let folder = attachment_folder(&store.root);
         let name = EditorCommands::pasted_image_name(chrono::Local::now().naive_local(), "png");
         let base = name.trim_end_matches(".png");
@@ -1919,6 +1923,10 @@ pub fn attachment_folder(root: &Path) -> String {
 /// Writes [text] to [file] through a temporary file and a rename, only while
 /// the file still holds [expected].
 pub fn write_if_unchanged(file: &Path, expected: &str, text: &str) -> Saved {
+    // A read-only vault is never written; git finds the clone from the note's folder.
+    if file.parent().is_some_and(daftar_core::Git::read_only) {
+        return Saved::Failed(daftar_core::VaultEdits::READ_ONLY.into());
+    }
     match fs::read_to_string(file) {
         Ok(current) if current != expected => return Saved::ChangedOnDisk,
         Ok(_) => {}

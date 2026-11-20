@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use daftar_core::{FoldSections, Value};
+use daftar_core::{FoldSections, Git, Value};
 
 use crate::settings::AppSettings;
 
@@ -26,6 +26,28 @@ pub struct Hooks {
     /// The notifications planned again, as now set.
     pub notifications: Box<dyn Fn()>,
     pub notice: Box<dyn Fn(&str)>,
+    /// The vault was made read-only, or not any more.
+    pub read_only: Box<dyn Fn()>,
+}
+
+/// What a setting the vault holds says in place of its control.
+const FROM_VAULT: &str = "From the vault";
+const FROM_VAULT_TIP: &str = "The vault's .daftar.toml sets this for every computer that opens it. To keep your own, name the key in vault_settings in config.toml, or set vault_settings = false.";
+
+/// A key the vault sets is shown with its value and "From the vault", and
+/// its control is off (docs/specs/vault-config.md).
+fn from_vault(settings: &Rc<RefCell<AppSettings>>, key: &str, row: &impl IsA<adw::PreferencesRow>) {
+    if !settings.borrow().is_from_vault(key) {
+        return;
+    }
+    let row: &adw::PreferencesRow = row.as_ref();
+    row.set_sensitive(false);
+    row.set_tooltip_text(Some(FROM_VAULT_TIP));
+    match row.dynamic_cast_ref::<adw::ActionRow>() {
+        Some(row) => row.set_subtitle(FROM_VAULT),
+        // An entry has no second line: its name says it.
+        None => row.set_title(&format!("{} · {FROM_VAULT}", row.title())),
+    }
 }
 
 const THEMES: [(&str, &str); 3] = [("system", "Follow the System"), ("light", "Daylight"), ("dark", "Naz")];
@@ -64,6 +86,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&theme);
+    from_vault(&settings, "appearance.theme", &theme);
     let size = adw::SpinRow::with_range(10.0, 28.0, 1.0);
     size.set_title("Text size");
     size.set_value(settings.borrow().text_size() as f64);
@@ -75,6 +98,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&size);
+    from_vault(&settings, "appearance.text_size", &size);
     let band = adw::SpinRow::with_range(0.0, 100.0, 1.0);
     band.set_title("Reading line");
     band.set_subtitle("The band on the line being read in a long paragraph, in percent; 0 is none");
@@ -87,6 +111,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&band);
+    from_vault(&settings, "appearance.reading_line", &band);
     for (key, title) in [("appearance.font", "Font"), ("appearance.code_font", "Code font")] {
         let row = adw::EntryRow::builder().title(title).show_apply_button(true).build();
         row.set_text(&settings.borrow().file.string(key).unwrap_or_default());
@@ -96,6 +121,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
             (hooks.reader)();
         });
         looks.add(&row);
+        from_vault(&settings, key, &row);
     }
     let persian = adw::SwitchRow::builder()
         .title("Persian calendar")
@@ -111,6 +137,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&persian);
+    from_vault(&settings, "appearance.persian_calendar", &persian);
     let remote = adw::SwitchRow::builder()
         .title("Pictures from the web")
         .subtitle("Off asks no site for a picture until you click it, so opening a note tells no one")
@@ -124,6 +151,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&remote);
+    from_vault(&settings, "appearance.remote_images", &remote);
     let folds = adw::ComboRow::builder()
         .title("Notes open folded")
         .subtitle("Each heading says what is under it; a note you fold or open yourself stays as you left it")
@@ -138,6 +166,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&folds);
+    from_vault(&settings, "appearance.fold_sections", &folds);
     let place = adw::ComboRow::builder()
         .title("Holidays")
         .subtitle("The public holidays and feasts of where you live, on Today, home and the day picker")
@@ -157,8 +186,9 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
         });
     }
     looks.add(&place);
+    from_vault(&settings, "calendar.place", &place);
     page.add(&looks);
-    page.add(&home_group(&settings, root, write.clone(), hooks.clone()));
+    page.add(&home_group(&settings, root.clone(), write.clone(), hooks.clone()));
     page.add(&editor_group(&settings, write.clone(), hooks.clone()));
 
     let git = adw::PreferencesGroup::builder()
@@ -188,7 +218,12 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     interval.connect_value_notify(move |_| changed());
     git.add(&pull);
     git.add(&interval);
+    from_vault(&settings, "git.pull_on_launch", &pull);
+    from_vault(&settings, "git.sync_interval", &interval);
     page.add(&git);
+    if let Some(group) = root.as_deref().and_then(|root| vault_git_group(root, &hooks)) {
+        page.add(&group);
+    }
     page.add(&files_group(&settings, write.clone(), hooks.clone()));
     page.add(&notifications_group(&settings, write.clone(), hooks));
     page.add(&capture_group(&settings, write.clone()));
@@ -240,6 +275,8 @@ fn files_group(
     });
     group.add(&row);
     group.add(&show);
+    from_vault(settings, "files.hidden", &row);
+    from_vault(settings, "files.show_hidden", &show);
     group
 }
 
@@ -271,6 +308,7 @@ fn editor_group(
         });
     }
     group.add(&live);
+    from_vault(settings, "editor.live_preview", &live);
     let format = adw::SwitchRow::builder()
         .title("Format on leaving")
         .subtitle("A note you typed in is formatted with daftar-cli fmt when you leave the editor, never while you type")
@@ -281,6 +319,7 @@ fn editor_group(
         format.connect_active_notify(move |row| write("editor.format_on_save", Value::Bool(row.is_active())));
     }
     group.add(&format);
+    from_vault(settings, "editor.format_on_save", &format);
     let neovide = adw::SwitchRow::builder()
         .title("Edit in Neovide")
         .subtitle("Ctrl+E opens the note in Neovide's own window; the page follows what it writes")
@@ -407,6 +446,10 @@ fn notifications_group(
     group.add(&lead);
     group.add(&digest);
     group.add(&time);
+    from_vault(settings, "notifications.meetings", &meetings);
+    from_vault(settings, "notifications.meeting_lead", &lead);
+    from_vault(settings, "notifications.digest", &digest);
+    from_vault(settings, "notifications.digest_time", &time);
     group
 }
 
@@ -425,6 +468,7 @@ fn capture_group(settings: &Rc<RefCell<AppSettings>>, write: impl Fn(&str, Value
         let write = write.clone();
         row.connect_apply(move |row| write(key, Value::String(row.text().trim().to_string())));
         group.add(&row);
+        from_vault(settings, key, &row);
     }
     group
 }
@@ -521,7 +565,175 @@ fn home_group(
         });
     });
     group.add(&row);
+    if settings.borrow().is_from_vault("home.image") {
+        row.set_sensitive(false);
+        row.set_tooltip_text(Some(FROM_VAULT_TIP));
+        row.set_subtitle(&gtk::glib::markup_escape_text(&format!("{} · {FROM_VAULT}", row.subtitle().unwrap_or_default())));
+    }
     group
+}
+
+/// Settings › Vault › Git, for the vault that is open, only when it is a
+/// repository: what this clone is, in its own git config, so it is never
+/// committed and a shell reads the same (docs/specs/read-only-vault.md).
+/// Each field writes its key with `git config --local`; emptied, it unsets it.
+fn vault_git_group(root: &Path, hooks: &Rc<Hooks>) -> Option<adw::PreferencesGroup> {
+    let git = Rc::new(Git::new(root));
+    if !git.is_repository() {
+        return None;
+    }
+    let group = adw::PreferencesGroup::builder()
+        .title("Vault · Git")
+        .description("This clone's own settings, kept in its git config and never committed: a clone can be read-only, and carry its own address, author and SSH key, apart from this computer's.")
+        .build();
+    let failed = {
+        let hooks = hooks.clone();
+        move |what: &str, failure: &dyn std::fmt::Display| (hooks.notice)(&format!("{what} was not saved: {failure}"))
+    };
+
+    let read_only = adw::SwitchRow::builder()
+        .title("Read-only")
+        .subtitle("Daftar pulls and never writes: no edit, no commit, no push. Changes this clone already has stay as they are.")
+        .active(git.is_read_only())
+        .build();
+    {
+        let (git, hooks, failed) = (git.clone(), hooks.clone(), failed.clone());
+        read_only.connect_active_notify(move |row| {
+            if let Err(failure) = git.set_read_only(row.is_active()) {
+                failed("Read-only", &failure);
+            }
+            (hooks.read_only)();
+        });
+    }
+    group.add(&read_only);
+
+    let address = adw::EntryRow::builder().title("Address").show_apply_button(true).build();
+    address.set_text(&git.address().unwrap_or_default());
+    address.set_tooltip_text(Some(
+        "Where this clone pulls from and pushes to. Nothing is fetched until the next sync, which says so when the new address does not answer or holds another history.",
+    ));
+    {
+        let (git, hooks, failed) = (git.clone(), hooks.clone(), failed.clone());
+        address.connect_apply(move |row| {
+            let text = row.text().trim().to_string();
+            if text.is_empty() {
+                // An empty address is refused, and the old one stays.
+                row.set_text(&git.address().unwrap_or_default());
+                (hooks.notice)("The address cannot be empty. The old one is kept.");
+                return;
+            }
+            match git.set_address(&text) {
+                Ok(()) => (hooks.notice)("The address is set. The next sync uses it."),
+                Err(failure) => failed("The address", &failure),
+            }
+        });
+    }
+    group.add(&address);
+
+    for (key, title) in [("user.name", "Name"), ("user.email", "Email")] {
+        let row = adw::EntryRow::builder().title(title).show_apply_button(true).build();
+        row.set_text(&git.local(key).unwrap_or_default());
+        row.set_tooltip_text(Some(
+            "The author of this clone's commits. Empty is the vault's git.name and git.email, else this computer's.",
+        ));
+        let (git, failed) = (git.clone(), failed.clone());
+        row.connect_apply(move |row| {
+            if let Err(failure) = git.set_local(key, Some(row.text().as_str())) {
+                failed(title, &failure);
+            }
+        });
+        group.add(&row);
+    }
+
+    let key = adw::ActionRow::builder().title("SSH key").build();
+    let choose = gtk::Button::builder().label("Choose…").valign(gtk::Align::Center).build();
+    let generate = gtk::Button::builder()
+        .label("Generate")
+        .valign(gtk::Align::Center)
+        .tooltip_text("A new key for this clone in ~/.ssh, with no passphrase; give its public key to the remote")
+        .build();
+    let clear = gtk::Button::builder().label("Clear").valign(gtk::Align::Center).build();
+    key.add_suffix(&choose);
+    key.add_suffix(&generate);
+    key.add_suffix(&clear);
+    // A command the app did not write is shown as text, and not changed.
+    let show = {
+        let (git, key, clear) = (git.clone(), key.clone(), clear.clone());
+        Rc::new(move || {
+            let command = git.local("core.sshCommand");
+            let text = match &command {
+                None => "None: this computer's own keys".to_string(),
+                Some(command) => Git::ssh_key(command).map_or_else(|| command.clone(), |file| file.to_string_lossy().into_owned()),
+            };
+            key.set_subtitle(&gtk::glib::markup_escape_text(&text));
+            clear.set_sensitive(command.is_some());
+        })
+    };
+    show();
+    let set = {
+        let (git, show, failed) = (git.clone(), show, failed.clone());
+        Rc::new(move |file: Option<&Path>| {
+            let command = file.map(Git::ssh_command_for_key);
+            if let Err(failure) = git.set_local("core.sshCommand", command.as_deref()) {
+                failed("The SSH key", &failure);
+            }
+            show();
+        })
+    };
+    {
+        let set = set.clone();
+        clear.connect_clicked(move |_| set(None));
+    }
+    {
+        let set = set.clone();
+        choose.connect_clicked(move |button| {
+            let dialog = gtk::FileDialog::builder().title("Choose a Private Key").modal(true).build();
+            dialog.set_initial_folder(Some(&gtk::gio::File::for_path(gtk::glib::home_dir().join(".ssh"))));
+            let set = set.clone();
+            dialog.open(button.root().and_downcast::<gtk::Window>().as_ref(), gtk::gio::Cancellable::NONE, move |result| {
+                if let Some(path) = result.ok().and_then(|file| file.path()) {
+                    set(Some(&path));
+                }
+            });
+        });
+    }
+    {
+        let hooks = hooks.clone();
+        generate.connect_clicked(move |button| match git.generate_key(&gtk::glib::home_dir().join(".ssh"), &Git::host()) {
+            Ok((file, public)) => {
+                set(Some(&file));
+                public_key(button, &file, &public);
+            }
+            Err(why) => (hooks.notice)(&format!("No key was made: {why}")),
+        });
+    }
+    group.add(&key);
+    Some(group)
+}
+
+/// The public key of a key just made, to give the remote, with Copy.
+fn public_key(over: &impl IsA<gtk::Widget>, file: &Path, public: &str) {
+    let alert = adw::AlertDialog::builder()
+        .heading("The Key Is Made")
+        .body(format!(
+            "{} is this clone's key now. Give the remote its public key, as a deploy key; without write access, the remote refuses this clone's pushes.",
+            file.display()
+        ))
+        .build();
+    let text = gtk::Label::builder()
+        .label(public)
+        .selectable(true)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::Char)
+        .css_classes(["monospace"])
+        .build();
+    alert.set_extra_child(Some(&text));
+    alert.add_responses(&[("close", "Close"), ("copy", "Copy")]);
+    alert.set_response_appearance("copy", adw::ResponseAppearance::Suggested);
+    alert.set_default_response(Some("copy"));
+    let public = public.to_string();
+    alert.connect_response(Some("copy"), move |alert, _| alert.clipboard().set_text(&public));
+    alert.present(Some(over));
 }
 
 /// How the config file keeps a chosen picture: its path in the vault, a

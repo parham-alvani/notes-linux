@@ -133,6 +133,7 @@ pub fn daily(root: &Path, files: &BTreeSet<String>, day: Day, create: bool, cloc
     if files.contains(&path) || !create {
         return Ok(path);
     }
+    VaultEdits::writable(root).map_err(|e| e.to_string())?;
     let template = &periodic.config.template;
     let source = if template.is_empty() {
         String::new()

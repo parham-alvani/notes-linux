@@ -25,6 +25,8 @@ pub enum MoveFailure {
     IntoItself,
     /// The disk refused: the file is gone, or it cannot be moved or written.
     Io(String),
+    /// The vault is a read-only clone (`daftar.readonly`): nothing in it moves.
+    ReadOnly,
 }
 
 impl fmt::Display for MoveFailure {
@@ -34,6 +36,7 @@ impl fmt::Display for MoveFailure {
             MoveFailure::Exists(path) => write!(f, "“{path}” is already in the vault"),
             MoveFailure::IntoItself => write!(f, "A folder cannot go into itself"),
             MoveFailure::Io(why) => write!(f, "{why}"),
+            MoveFailure::ReadOnly => write!(f, "{}", crate::VaultEdits::READ_ONLY),
         }
     }
 }
@@ -205,6 +208,7 @@ impl VaultMoves {
     /// Moves the files on disk, then writes the notes whose links changed.
     /// Returns every vault path that changed, old and new.
     pub fn perform(from: &str, to: &str, index: &VaultIndex, root: &Path) -> Result<BTreeSet<String>, MoveFailure> {
+        crate::VaultEdits::writable(root).map_err(|_| MoveFailure::ReadOnly)?;
         let moves = Self::plan(from, to, &index.files)?;
         let (source, destination) = (root.join(from), root.join(to));
         let make_parent = || -> Result<(), MoveFailure> {

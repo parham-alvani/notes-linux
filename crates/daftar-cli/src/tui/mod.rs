@@ -24,7 +24,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 
-use daftar_core::{ConfigFile, ExcludedFiles};
+use daftar_core::ExcludedFiles;
 
 use crate::watching::Watch;
 pub use app::App;
@@ -35,7 +35,7 @@ pub use theme::Theme;
 /// and watched: a change on disk shows as it lands. The hidden files are
 /// listed too when [show_hidden], or when `files.show_hidden` says so.
 pub fn run(root: PathBuf, show_hidden: bool) -> Result<(), String> {
-    let config = ConfigFile::new(std::fs::read_to_string(ConfigFile::default_path()).unwrap_or_default());
+    let config = crate::config(&root);
     let theme = Theme::named(config.string("appearance.theme").as_deref());
     let mut watch = Watch::new(&root);
     let mut app = App::loading(root, theme);

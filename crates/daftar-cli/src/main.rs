@@ -825,6 +825,17 @@ enum Command {
         #[arg(long)]
         read_only: bool,
     },
+    /// Every setting with its value and where it came from, a line each
+    /// (`key`, a tab, the value as the file writes it, a tab, `vault`,
+    /// `computer` or `default`): the vault's `.daftar.toml` may set the
+    /// app's settings for every computer that opens it, and
+    /// `vault_settings` in the config file declines them. A key the vault
+    /// may not set is listed last as `refused`, with the value it wrote.
+    Config {
+        /// One JSON array of `{"key", "value", "from"}`.
+        #[arg(long)]
+        json: bool,
+    },
     /// The vault as a language server on stdin and stdout, for Neovim, Helix
     /// and other editors: the lint and the audit as diagnostics, formatting,
     /// `[[` completion, a link's note, hover and references, and renaming a
@@ -933,8 +944,12 @@ fn run(cli: Cli) -> Result<(), String> {
             .or_else(|e| if e.kind() == std::io::ErrorKind::BrokenPipe { Ok(()) } else { Err(e.to_string()) });
     }
     let root = vault(cli.vault)?;
+    // A read-only clone pulls and never writes (docs/specs/read-only-vault.md).
+    if writes(&command) && Git::read_only(&root) {
+        return Err(VaultEdits::READ_ONLY.into());
+    }
     // What the lists leave out, as in the app: links to them still resolve.
-    let hidden = ExcludedFiles::from_config(&root, &config(), cli.hidden);
+    let hidden = ExcludedFiles::from_config(&root, &config(&root), cli.hidden);
     match command {
         Command::Tui => tui::run(root, cli.hidden)?,
         Command::Find { query, limit } => {
@@ -1216,7 +1231,7 @@ fn run(cli: Cli) -> Result<(), String> {
             eprintln!("\ndaftar-cli: {} rated, {} forgotten, {} left", outcome.rated, outcome.again, outcome.left);
         }
         Command::Inbox { action, inbox: named, json, list, interactive, limit } => {
-            let setting = named.or_else(|| config().string("scratchpad.note"));
+            let setting = named.or_else(|| config(&root).string("scratchpad.note"));
             inbox::run(&root, &hidden, setting.as_deref(), action, &inbox::Options { json, list, interactive, limit })?;
         }
         Command::Random { folder, tag } => {
@@ -1243,10 +1258,17 @@ fn run(cli: Cli) -> Result<(), String> {
                     }
                     return Err(format!("{stopped} Resolve it in Daftar, or run `daftar-cli sync --abort`."));
                 }
+                Err(failure @ SyncFailure::PushRefusedReadOnly(_)) => {
+                    return Err(format!("{failure} To make this clone read-only: `git config --local daftar.readonly true`."));
+                }
                 Err(failure) => return Err(failure.to_string()),
             };
             let status = git.status().map_err(|e| e.to_string())?;
             let mut steps = Vec::new();
+            // A read-only clone only pulls, and says so.
+            if git.is_read_only() {
+                steps.push("read-only".to_string());
+            }
             if done.committed {
                 steps.push(format!("committed \"{message}\""));
             }
@@ -1256,7 +1278,7 @@ fn run(cli: Cli) -> Result<(), String> {
             if done.pushed {
                 steps.push("pushed".to_string());
             }
-            if steps.is_empty() {
+            if !done.committed && !done.pulled && !done.pushed {
                 steps.push("up to date".to_string());
             }
             out!("{}: {}", status.branch, steps.join(", "));
@@ -1297,7 +1319,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 text.join(" ")
             };
             let line = QuickCapture::line(&typed, task).ok_or("nothing to capture")?;
-            let path = capture(&root, &config(), &line)?;
+            let path = capture(&root, &config(&root), &line)?;
             out!("{path}\t{line}");
         }
         Command::Append { note, text, heading, task } => {
@@ -1362,6 +1384,9 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Status => {
             let status = repository(&root)?.status().map_err(|e| e.to_string())?;
             out!("{}\tahead {}\tbehind {}\tchanged {}", status.branch, status.ahead, status.behind, status.changed);
+            for line in read_only_lines(&root) {
+                out!("{line}");
+            }
         }
         Command::Doctor { large } => {
             let found = repository(&root)?.doctor(large * 1_048_576).map_err(|e| e.to_string())?;
@@ -1421,7 +1446,7 @@ fn run(cli: Cli) -> Result<(), String> {
             out!("{}", vault_commands::postpone(&root, &path, at, &by, Day::today())?);
         }
         Command::Events { from, days, year, place } => {
-            let named = place.or_else(|| config().string("calendar.place")).unwrap_or_default();
+            let named = place.or_else(|| config(&root).string("calendar.place")).unwrap_or_default();
             let place = Place::parse(&named).ok_or_else(|| match named.trim() {
                 "" => "no place: set calendar.place in the config file, or pass --place (spain, catalonia or barcelona)".to_string(),
                 _ => format!("{named} is not a place it knows: spain, catalonia or barcelona"),
@@ -1584,7 +1609,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Export { note, output, logo, no_folder_logo, sections, contents, landscape } => {
             let index = Vault::index(&root, None);
             let path = note_path(&index, &note)?;
-            let mut look = export::Look::from_config(&config());
+            let mut look = export::Look::from_config(&root, &config(&root));
             if logo.is_some() {
                 look.logo = logo;
             }
@@ -1641,7 +1666,7 @@ fn run(cli: Cli) -> Result<(), String> {
             out!("Now run: systemctl --user enable --now {}.timer", alerts::UNIT);
         }
         Command::Agenda { notify: true, before, .. } => {
-            let lead = before.or_else(|| config().int("notifications.meeting_lead")).unwrap_or(alerts::LEAD).max(0);
+            let lead = before.or_else(|| config(&root).int("notifications.meeting_lead")).unwrap_or(alerts::LEAD).max(0);
             let index = Vault::index(&root, None);
             let search = daftar_core::JobSearch::new(&index, &daftar_core::JobKeys::default(), |path| !hidden.contains(path));
             alerts::run(&root, &search, lead, &chrono::Local, chrono::Utc::now())?;
@@ -1669,6 +1694,17 @@ fn run(cli: Cli) -> Result<(), String> {
             ics::put(&ics::calendar(&events, chrono::Utc::now()), output.as_deref())?;
         }
         Command::Mcp { read_only } => mcp::run(root, cli.hidden, read_only)?,
+        Command::Config { json } => {
+            let entries = daftar_core::Settings::read(&root).entries();
+            if json {
+                let rows: Vec<serde_json::Value> = entries.iter().map(setting_json).collect();
+                out!("{}", serde_json::Value::Array(rows));
+            } else {
+                for entry in &entries {
+                    out!("{}\t{}\t{}", entry.key, entry.value.as_ref().map_or_default(daftar_core::Value::toml), entry.from.name());
+                }
+            }
+        }
         Command::Lsp => lsp::run(&root, cli.hidden)?,
         Command::Images { folder, dry_run, keep_originals, trash } => {
             let folder = if folder.is_absolute() { folder } else { root.join(folder) };
@@ -1724,7 +1760,7 @@ fn side(side: Side) -> &'static str {
 /// ones; none when there is no vault.
 fn note_candidates() -> Vec<CompletionCandidate> {
     let Ok(root) = vault(std::env::var_os("DAFTAR_VAULT").map(PathBuf::from)) else { return Vec::new() };
-    let hidden = ExcludedFiles::from_config(&root, &config(), false);
+    let hidden = ExcludedFiles::from_config(&root, &config(&root), false);
     Vault::scan(&root).into_iter().filter(|path| Vault::is_note(path) && !hidden.contains(path)).map(CompletionCandidate::new).collect()
 }
 
@@ -1770,9 +1806,66 @@ fn find(index: &VaultIndex, hidden: &ExcludedFiles, query: &str, limit: usize) -
     QuickSwitcher::rank(query, &candidates, &[], limit)
 }
 
-/// The settings file, `~/.config/daftar/config.toml`; empty when there is none.
-fn config() -> ConfigFile {
-    ConfigFile::new(fs::read_to_string(ConfigFile::default_path()).unwrap_or_default())
+/// The settings in use for the vault at [root]: the settings file,
+/// `~/.config/daftar/config.toml`, with what the vault's `.daftar.toml` may
+/// set on top (`docs/specs/vault-config.md`).
+fn config(root: &std::path::Path) -> ConfigFile {
+    daftar_core::Settings::read(root).file().clone()
+}
+
+/// Whether [command] writes a file of the vault, which a read-only clone
+/// refuses; with `--dry-run` it writes nothing, and runs.
+fn writes(command: &Command) -> bool {
+    match command {
+        Command::Append { .. }
+        | Command::New { .. }
+        | Command::SetProperty { .. }
+        | Command::Toggle { .. }
+        | Command::SetStatus { .. }
+        | Command::Cancel { .. }
+        | Command::Postpone { .. }
+        | Command::Clip { .. }
+        | Command::SortHeadings { .. }
+        | Command::Capture { .. }
+        | Command::Inbox { action: Some(inbox::Action::Move { .. }), .. } => true,
+        Command::Mv { dry_run, .. }
+        | Command::RenameTag { dry_run, .. }
+        | Command::Replace { dry_run, .. }
+        | Command::SortTasks { dry_run, .. }
+        | Command::Images { dry_run, .. } => !dry_run,
+        Command::Fmt { check, stdin, .. } => !check && !stdin,
+        Command::Lint { fix, .. } => *fix,
+        Command::Check { fix, dry_run, .. } | Command::Mentions { fix, dry_run, .. } => *fix && !dry_run,
+        Command::Review { write, .. } => *write,
+        Command::Daily { no_create, .. } => !no_create,
+        _ => false,
+    }
+}
+
+/// What `status` says of a read-only clone, after its own line: that it
+/// is one, and that no agent is served there when the vault says so.
+fn read_only_lines(root: &std::path::Path) -> Vec<&'static str> {
+    if !Git::read_only(root) {
+        return Vec::new();
+    }
+    let mut lines = vec!["read-only"];
+    if !daftar_core::VaultSettings::read(root).agents_in_read_only_clones {
+        lines.push("agents: refused in this read-only clone");
+    }
+    lines
+}
+
+/// A setting as `config --json` prints it: `{"key", "value", "from"}`, the
+/// value as JSON has it, or null for one the file does not hold.
+fn setting_json(entry: &daftar_core::SettingEntry) -> serde_json::Value {
+    let value = match &entry.value {
+        Some(daftar_core::Value::String(text)) => serde_json::json!(text),
+        Some(daftar_core::Value::Int(number)) => serde_json::json!(number),
+        Some(daftar_core::Value::Bool(flag)) => serde_json::json!(flag),
+        Some(daftar_core::Value::Strings(list)) => serde_json::json!(list),
+        None => serde_json::Value::Null,
+    };
+    serde_json::json!({ "key": entry.key, "value": value, "from": entry.from.name() })
 }
 
 fn repository(root: &std::path::Path) -> Result<Git, String> {
@@ -1874,6 +1967,133 @@ fn note_path(index: &VaultIndex, note: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A vault that is a repository with one commit: a note of tasks, a
+    /// note with a tag, a picture no note shows.
+    fn committed_vault() -> (tempfile::TempDir, Git) {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path();
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::create_dir_all(root.join("uploads")).unwrap();
+        fs::write(root.join("Tasks.md"), "# Tasks\n\n## Now\n\n- [ ] One #old\n- [ ] Two\n\n## Later\n\n* a  list\n").unwrap();
+        fs::write(root.join("Note.md"), "# Note\n\nSee Tasks and <https://example.com>.\n").unwrap();
+        fs::write(root.join("Scratchpad.md"), "# Scratchpad\n\n- an item\n").unwrap();
+        fs::write(root.join("uploads/unused.png"), "not a picture").unwrap();
+        let git = Git::new(root);
+        for arguments in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "test@example.com"],
+            &["config", "user.name", "Test"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+            &["add", "-A"],
+            &["commit", "-qm", "start"],
+        ] {
+            git.run(arguments).unwrap();
+        }
+        (base, git)
+    }
+
+    fn run_in(root: &std::path::Path, arguments: &[&str]) -> Result<(), String> {
+        let vault = root.to_string_lossy();
+        run(Cli::try_parse_from([&["daftar-cli", "--vault", &vault], arguments].concat()).map_err(|e| e.to_string())?)
+    }
+
+    #[test]
+    fn a_read_only_vault_refuses_every_writing_command() {
+        let (base, git) = committed_vault();
+        let root = base.path();
+        git.set_read_only(true).unwrap();
+        let files = || -> Vec<(String, Vec<u8>)> {
+            let mut files: Vec<(String, Vec<u8>)> = walkdir::WalkDir::new(root)
+                .into_iter()
+                .filter_entry(|entry| entry.file_name() != ".git")
+                .flatten()
+                .filter(|entry| entry.file_type().is_file())
+                .map(|entry| (entry.path().to_string_lossy().into_owned(), fs::read(entry.path()).unwrap()))
+                .collect();
+            files.sort();
+            files
+        };
+        let before = files();
+        let writing: [&[&str]; 23] = [
+            &["append", "Note", "a line"],
+            &["new", "Fresh", "text"],
+            &["mv", "Note", "Moved"],
+            &["set-property", "Note", "status", "done"],
+            &["toggle", "Tasks", "5"],
+            &["set-status", "Tasks", "5", "/"],
+            &["cancel", "Tasks", "5"],
+            &["postpone", "Tasks", "5"],
+            &["replace", "Tasks", "Jobs"],
+            &["rename-tag", "old", "new"],
+            &["fmt"],
+            &["lint", "--fix"],
+            &["check", "--fix"],
+            &["mentions", "--fix", "--all"],
+            &["inbox", "move", "3", "Note"],
+            &["clip", "https://example.com/"],
+            &["images"],
+            &["review", "--write"],
+            &["sort-headings", "Tasks", "Tasks"],
+            &["sort-tasks", "Tasks"],
+            &["capture", "a thought"],
+            &["daily"],
+            &["daily", "--day", "2026-10-05"],
+        ];
+        for arguments in writing {
+            assert_eq!(run_in(root, arguments), Err(VaultEdits::READ_ONLY.to_string()), "{arguments:?}");
+            assert_eq!(files(), before, "{arguments:?} changed a file");
+        }
+        // With --dry-run, or when it only looks, a command runs.
+        let looking: [&[&str]; 10] = [
+            &["mv", "Note", "Moved", "--dry-run"],
+            &["rename-tag", "old", "new", "--dry-run"],
+            &["replace", "Tasks", "Jobs", "--dry-run"],
+            &["sort-tasks", "Tasks", "--dry-run"],
+            &["check", "--fix", "--dry-run"],
+            &["mentions", "--fix", "--all", "--dry-run"],
+            &["images", "--dry-run"],
+            &["daily", "--no-create"],
+            &["tasks"],
+            &["config"],
+        ];
+        for arguments in looking {
+            assert_eq!(run_in(root, arguments), Ok(()), "{arguments:?}");
+        }
+        // What only checks may find something, and still is not refused.
+        for arguments in [&["fmt", "--check"][..], &["lint"]] {
+            assert_ne!(run_in(root, arguments), Err(VaultEdits::READ_ONLY.to_string()), "{arguments:?}");
+        }
+        assert_eq!(files(), before);
+        assert_eq!(git.run(&["status", "--porcelain"]).unwrap(), "");
+        assert_eq!(read_only_lines(root), ["read-only"]);
+        // A commit is refused by the hook, and a sync only pulls.
+        assert!(hook::pre_commit(root, &git).unwrap_err().contains(VaultEdits::READ_ONLY));
+        // Turned off, the same commands write.
+        git.set_read_only(false).unwrap();
+        assert!(read_only_lines(root).is_empty());
+        assert_eq!(run_in(root, &["toggle", "Tasks", "5"]), Ok(()));
+        assert!(fs::read_to_string(root.join("Tasks.md")).unwrap().contains("- [x] One #old ✅"));
+    }
+
+    #[test]
+    fn the_settings_are_listed_with_where_each_came_from() {
+        let vault = "[appearance]\ntheme = \"dark\"\n\n[terminal]\nshell = \"/tmp/x\"\n";
+        let entries = daftar_core::Settings::resolved(vault, "[appearance]\ntext_size = 16\n").entries();
+        let row = |key: &str, from: &str| {
+            let entry = entries.iter().find(|e| e.key == key && e.from.name() == from).unwrap_or_else(|| panic!("{key} from {from}"));
+            setting_json(entry)
+        };
+        assert_eq!(row("appearance.theme", "vault"), serde_json::json!({ "key": "appearance.theme", "value": "dark", "from": "vault" }));
+        assert_eq!(row("appearance.text_size", "computer")["value"], 16);
+        assert_eq!(row("git.pull_on_launch", "default")["value"], true);
+        assert_eq!(row("files.hidden", "default")["value"][0], "CLAUDE.md");
+        assert_eq!(row("git.name", "default")["value"], serde_json::Value::Null);
+        assert_eq!(row("terminal.shell", "refused")["value"], "/tmp/x");
+        assert_eq!(row("terminal.shell", "default")["value"], "");
+        assert_eq!(entries.last().unwrap().from.name(), "refused");
+    }
 
     /// The Mac's `CaptureTests`, through the command line's capture.
     #[test]

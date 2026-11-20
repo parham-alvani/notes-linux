@@ -82,7 +82,43 @@ pub struct Window {
     problems: Rc<ProblemsView>,
     /// The header's count of findings, which opens the panel.
     problems_count: gtk::Button,
+    /// The vault is a read-only clone (`daftar.readonly`): the app pulls
+    /// and never writes, and the actions that write are off.
+    read_only: Rc<Cell<bool>>,
+    /// "Read-only", by the vault's name in the sidebar's header.
+    read_only_badge: gtk::Label,
+    /// The vault's `.daftar.toml`, followed so the settings it holds apply
+    /// when a pull or an edit changes them.
+    vault_monitor: Rc<RefCell<Option<gio::FileMonitor>>>,
 }
+
+/// The actions that write a file of the vault, which a read-only vault
+/// turns off.
+const WRITING_ACTIONS: [&str; 23] = [
+    "edit",
+    "save",
+    "new-note",
+    "new-folder",
+    "new-task",
+    "rename",
+    "move",
+    "trash",
+    "format-note",
+    "clip",
+    "scratchpad",
+    "sort-tasks",
+    "sort-headings",
+    "set-property",
+    "move-section",
+    "rename-tag",
+    "replace-in-folder",
+    "replace-in-vault",
+    "replace-key",
+    "postpone",
+    "extract",
+    "neovide",
+    "bookmark",
+];
 
 #[derive(Clone)]
 struct PeriodicNav {
@@ -234,7 +270,16 @@ impl Window {
                 },
             )
         };
+        let read_only_badge = gtk::Label::builder()
+            .label("Read-only")
+            .css_classes(["caption", "dim-label"])
+            .tooltip_text("This vault is read-only on this computer. Daftar pulls and never writes.")
+            .visible(false)
+            .build();
         let this = Window {
+            read_only: Rc::default(),
+            read_only_badge: read_only_badge.clone(),
+            vault_monitor: Rc::default(),
             window: window.clone(),
             settings,
             title: title.clone(),
@@ -294,6 +339,7 @@ impl Window {
             .build();
         side_header.pack_end(&quick_open);
         side_header.pack_start(&git.button);
+        side_header.pack_start(&read_only_badge);
         let today_button =
             gtk::Button::builder().icon_name("x-office-calendar-symbolic").tooltip_text("Today (Ctrl+1)").action_name("win.today").build();
         side_header.pack_end(&today_button);
@@ -372,8 +418,10 @@ impl Window {
                     // comes), and the timed syncs and alerts would go on for a
                     // window no one sees.
                     this.watcher.borrow_mut().take();
-                    if let Some(monitor) = this.config_monitor.borrow_mut().take() {
-                        monitor.cancel();
+                    for monitor in [&this.config_monitor, &this.vault_monitor] {
+                        if let Some(monitor) = monitor.borrow_mut().take() {
+                            monitor.cancel();
+                        }
                     }
                     this.git.detach();
                     this.notifier.clear();
@@ -775,6 +823,11 @@ impl Window {
             }
             let folder = root;
             let store = Rc::new(VaultStore::new(folder.clone(), index, search));
+            // What the vault's own `.daftar.toml` sets is read before the vault is shown.
+            if this.settings.borrow_mut().set_vault(Some(&folder)) {
+                apply_theme(&this.settings.borrow().theme());
+            }
+            this.follow_vault_settings(&folder);
             {
                 let (names, show) = this.hidden_settings();
                 store.set_hidden(&names, show);
@@ -802,6 +855,7 @@ impl Window {
                 )
             };
             this.git.attach(folder.clone(), pull, interval);
+            this.set_read_only(daftar_core::Git::read_only(&folder));
             this.terminal.set_folder(folder.clone());
             this.checks.opened(&folder);
             *this.store.borrow_mut() = Some(store.clone());
@@ -1311,21 +1365,74 @@ impl Window {
             ) {
                 return;
             }
-            if !this.settings.borrow_mut().reload() {
-                return;
-            }
-            let (theme, interval) = {
-                let settings = this.settings.borrow();
-                (settings.theme(), settings.file.int("git.sync_interval").unwrap_or(0).max(0) as u32)
-            };
-            apply_theme(&theme);
-            this.git.reconfigure(interval);
-            this.refresh_hidden();
-            this.reload_readers();
-            this.refresh_homes();
-            this.plan_notifications();
+            this.settings_changed();
         });
         *self.config_monitor.borrow_mut() = Some(monitor);
+    }
+
+    /// Follows the `.daftar.toml` of the vault at [root], which may hold the
+    /// app's settings: a pull or an edit that changes it applies at once.
+    fn follow_vault_settings(&self, root: &std::path::Path) {
+        if let Some(old) = self.vault_monitor.borrow_mut().take() {
+            old.cancel();
+        }
+        let file = gio::File::for_path(root.join(daftar_core::VaultSettings::FILE));
+        let Ok(monitor) = file.monitor_file(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE) else { return };
+        monitor.set_rate_limit(300);
+        let this = self.clone();
+        monitor.connect_changed(move |_, _, _, _| this.settings_changed());
+        *self.vault_monitor.borrow_mut() = Some(monitor);
+    }
+
+    /// The settings read again, the computer's and the vault's, and applied
+    /// as Settings would when one in use changed.
+    fn settings_changed(&self) {
+        if !self.settings.borrow_mut().reload() {
+            return;
+        }
+        let (theme, interval) = {
+            let settings = self.settings.borrow();
+            (settings.theme(), settings.file.int("git.sync_interval").unwrap_or(0).max(0) as u32)
+        };
+        apply_theme(&theme);
+        self.git.reconfigure(interval);
+        self.refresh_hidden();
+        self.reload_readers();
+        self.refresh_homes();
+        self.plan_notifications();
+    }
+
+    /// Whether the open vault is a read-only clone, asked again: after the
+    /// switch in Settings, a sync, or `git config` in a shell.
+    fn refresh_read_only(&self) {
+        let Some(root) = self.store.borrow().as_ref().map(|store| store.root.clone()) else { return };
+        self.set_read_only(daftar_core::Git::read_only(&root));
+    }
+
+    /// A read-only vault shows its badge, its sync is a pull, and the
+    /// actions that write are off, not hidden (docs/specs/read-only-vault.md).
+    fn set_read_only(&self, on: bool) {
+        self.read_only.set(on);
+        self.read_only_badge.set_visible(on);
+        self.git.set_read_only(on);
+        self.problems.set_read_only(on);
+        for name in WRITING_ACTIONS {
+            if let Some(action) = self.window.lookup_action(name).and_downcast::<gio::SimpleAction>() {
+                action.set_enabled(!on);
+            }
+        }
+    }
+
+    /// Make This Vault Read-only: `daftar.readonly` in the clone's config.
+    fn make_read_only(&self) {
+        let Some(root) = self.store.borrow().as_ref().map(|store| store.root.clone()) else { return };
+        match daftar_core::Git::new(&root).set_read_only(true) {
+            Ok(()) => {
+                self.refresh_read_only();
+                self.toasts.add_toast(crate::toast("This vault is read-only now. Daftar pulls and never writes."));
+            }
+            Err(failure) => self.toasts.add_toast(crate::toast(&format!("The vault was not made read-only: {failure}"))),
+        }
     }
 
     /// The last failed sync's whole output from git, to read or copy.
@@ -1570,6 +1677,10 @@ impl Window {
                 let toasts = self.toasts.clone();
                 move |text| toasts.add_toast(crate::toast(text))
             }),
+            read_only: Box::new({
+                let this = self.clone();
+                move || this.refresh_read_only()
+            }),
         };
         let root = self.store.borrow().as_ref().map(|store| store.root.clone());
         crate::preferences::present(&self.window, self.settings.clone(), root, Rc::new(hooks));
@@ -1788,6 +1899,28 @@ impl Window {
             action.connect_activate(move |_, _| git.run(kind, true));
             self.window.add_action(&action);
         }
+        let make_read_only = gio::SimpleAction::new("make-read-only", None);
+        let this = self.clone();
+        make_read_only.connect_activate(move |_, _| this.make_read_only());
+        self.window.add_action(&make_read_only);
+        // A pull may bring the vault's settings, and a shell may have made the clone read-only.
+        let this = self.clone();
+        self.git.connect_synced(move || {
+            this.settings_changed();
+            this.refresh_read_only();
+        });
+        // A push the remote refused for a key that cannot write: the notice offers the way out.
+        let toasts = self.toasts.clone();
+        self.git.connect_refused(move |text| {
+            let toast = adw::Toast::builder()
+                .title(text)
+                .use_markup(false)
+                .button_label("Make This Vault Read-only")
+                .action_name("win.make-read-only")
+                .timeout(0)
+                .build();
+            toasts.add_toast(toast);
+        });
     }
 }
 

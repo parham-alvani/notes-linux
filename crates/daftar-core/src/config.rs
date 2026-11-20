@@ -28,7 +28,8 @@ fn quoted(text: &str) -> String {
 }
 
 impl Value {
-    fn toml(&self) -> String {
+    /// The value as the file writes it.
+    pub fn toml(&self) -> String {
         match self {
             Value::String(text) => quoted(text),
             Value::Strings(list) => format!("[{}]", list.iter().map(|t| quoted(t)).collect::<Vec<_>>().join(", ")),
@@ -105,6 +106,23 @@ impl ConfigFile {
             Some(Value::Bool(flag)) => Some(flag),
             _ => None,
         }
+    }
+
+    /// Every `section.key` the file sets, in its order, with its value;
+    /// `None` for a value this subset of TOML does not read.
+    pub fn keys(&self) -> Vec<(String, Option<Value>)> {
+        let mut current = "";
+        let mut keys = Vec::new();
+        for line in self.text.split('\n') {
+            let trimmed = line.trim();
+            if let Some(header) = header(trimmed) {
+                current = header;
+            } else if let Some((name, raw)) = assignment(trimmed) {
+                let key = if current.is_empty() { name.to_string() } else { format!("{current}.{name}") };
+                keys.push((key, value(raw)));
+            }
+        }
+        keys
     }
 
     /// The vault's folder, with `~` for the home folder.
@@ -188,6 +206,12 @@ impl ConfigFile {
 
 # The folder of the Obsidian vault.
 vault = ""
+# The vault's own .daftar.toml may hold the settings below, for every
+# computer that opens it (never a program to run, a path outside the
+# vault or what leaves the computer): true follows it, false reads no
+# setting from any vault, and a list declines only the keys named, as
+# ["appearance.theme", "git.sync_interval"].
+vault_settings = true
 
 [appearance]
 # "system", "light" (Daftar's Daylight palette) or "dark" (naz).

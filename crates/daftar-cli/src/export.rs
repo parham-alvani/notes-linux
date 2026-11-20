@@ -60,9 +60,12 @@ pub struct Look {
 }
 
 impl Look {
-    pub fn from_config(config: &ConfigFile) -> Look {
+    /// [root] is the vault: a logo named by a path in it is that file.
+    pub fn from_config(root: &Path, config: &ConfigFile) -> Look {
+        let logo =
+            config.path("export.logo").map(|file| if file.is_relative() && root.join(&file).is_file() { root.join(file) } else { file });
         Look {
-            logo: config.path("export.logo"),
+            logo,
             folder_logo: true,
             footer: config.string("export.footer").unwrap_or_default(),
             day: export_day(std::env::var("SOURCE_DATE_EPOCH").ok().as_deref()),

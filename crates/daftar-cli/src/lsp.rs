@@ -105,7 +105,7 @@ struct Server {
 
 /// Serves until the editor says `exit` or closes stdin.
 pub fn run(root: &Path, show_hidden: bool) -> Result<(), String> {
-    let hidden = ExcludedFiles::from_config(root, &crate::config(), show_hidden);
+    let hidden = ExcludedFiles::from_config(root, &crate::config(root), show_hidden);
     let mut server = Server::new(root, hidden);
     serve(&mut server, &mut std::io::stdin().lock(), &mut std::io::stdout().lock())
 }
@@ -468,6 +468,10 @@ impl Server {
     // Formatting.
 
     fn formatting(&self, params: &Value) -> Result<Value, Failure> {
+        // A read-only clone is not changed: no edit.
+        if daftar_core::Git::read_only(&self.root) {
+            return Ok(json!([]));
+        }
         let (path, text) = self.document(params)?;
         let formatted = crate::fmt::formatted(&self.root, &text, Some(&path), &[]).map_err(failed)?;
         Ok(Value::Array(position::line_edit(&text, &formatted).into_iter().collect()))
@@ -657,6 +661,9 @@ impl Server {
     }
 
     fn prepare_rename(&self, params: &Value) -> Result<Value, Failure> {
+        if daftar_core::Git::read_only(&self.root) {
+            return Ok(Value::Null);
+        }
         let (to, range) = self.renamed(params)?;
         Ok(json!({ "range": range, "placeholder": Vault::title(&to) }))
     }
@@ -666,6 +673,10 @@ impl Server {
     /// app's Rename does: one workspace edit, a file renamed and the notes
     /// changed, which the editor applies.
     fn rename(&self, params: &Value) -> Result<Value, Failure> {
+        // A read-only clone is not changed: no edit.
+        if daftar_core::Git::read_only(&self.root) {
+            return Ok(Value::Null);
+        }
         if !self.renames_files {
             return Err(failed("renaming a note needs an editor that renames files in a workspace edit (resourceOperations: rename)"));
         }

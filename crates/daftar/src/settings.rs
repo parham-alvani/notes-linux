@@ -1,13 +1,14 @@
-//! The app's settings, all in `~/.config/daftar/config.toml`.
+//! The app's settings, all in `~/.config/daftar/config.toml`, with what
+//! the open vault's `.daftar.toml` may set on top (`docs/specs/vault-config.md`).
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use daftar_core::jalali::Jalali;
-use daftar_core::{Calendar, CalendarEvent, CalendarEvents, ConfigFile, Day, Happening, Place, Value};
+use daftar_core::{Calendar, CalendarEvent, CalendarEvents, ConfigFile, Day, Happening, Place, Settings, Value};
 
 /// `appearance.persian_calendar`, for the pages that show a date and do not
 /// hold the settings: the home page, Today, a daily note's subtitle.
@@ -45,7 +46,14 @@ pub fn events_on(day: Day) -> Vec<&'static CalendarEvent> {
 
 pub struct AppSettings {
     pub path: PathBuf,
+    /// The settings in use: the computer's file, with the values the open
+    /// vault sets in it. Every page reads this one.
     pub file: ConfigFile,
+    /// The two files apart: which keys the vault set, and the computer's
+    /// own text, which a change in the app is written to.
+    resolved: Settings,
+    /// The open vault, whose `.daftar.toml` is read.
+    vault: Option<PathBuf>,
 }
 
 impl AppSettings {
@@ -61,22 +69,54 @@ impl AppSettings {
             let _ = fs::write(&path, ConfigFile::TEMPLATE);
             ConfigFile::TEMPLATE.to_string()
         };
-        let settings = AppSettings { path, file: ConfigFile::new(text) };
+        AppSettings::of(path, &text)
+    }
+
+    /// The settings of [computer], the text of the file at [path], with no
+    /// vault open yet.
+    pub fn of(path: PathBuf, computer: &str) -> AppSettings {
+        let resolved = Settings::resolved("", computer);
+        let settings = AppSettings { path, file: resolved.file().clone(), resolved, vault: None };
         settings.publish();
         settings
     }
 
-    /// The file read again when it changed on disk, by hand, by the Mac's
-    /// app through a dotfiles pull, or by another window; true when its text
-    /// is not the one this window holds.
-    pub fn reload(&mut self) -> bool {
-        let Ok(text) = fs::read_to_string(&self.path) else { return false };
-        if text == self.file.text() {
+    /// The settings again from [computer] and the open vault's file; true
+    /// when a setting in use changed.
+    fn resolve(&mut self, computer: &str) -> bool {
+        self.resolved = match &self.vault {
+            Some(root) => Settings::of(root, computer),
+            None => Settings::resolved("", computer),
+        };
+        if *self.resolved.file() == self.file {
             return false;
         }
-        self.file = ConfigFile::new(text);
+        self.file = self.resolved.file().clone();
         self.publish();
         true
+    }
+
+    /// The vault that is open, whose `.daftar.toml` may set the app's
+    /// settings; true when a setting in use changed with it.
+    pub fn set_vault(&mut self, root: Option<&Path>) -> bool {
+        self.vault = root.map(Path::to_path_buf);
+        let computer = self.resolved.computer().text().to_string();
+        self.resolve(&computer)
+    }
+
+    /// Whether [key] has the vault's value: its control is off, and a
+    /// change to it would be the computer's, which the vault's wins over.
+    pub fn is_from_vault(&self, key: &str) -> bool {
+        self.resolved.is_from_vault(key)
+    }
+
+    /// The files read again when one changed on disk: the computer's, by
+    /// hand, by the Mac's app through a dotfiles pull or by another window,
+    /// or the vault's, by a pull or an edit; true when a setting in use is
+    /// not the one this window holds.
+    pub fn reload(&mut self) -> bool {
+        let computer = fs::read_to_string(&self.path).unwrap_or_else(|_| self.resolved.computer().text().to_string());
+        self.resolve(&computer)
     }
 
     /// The settings the pages read without holding them.
@@ -90,15 +130,18 @@ impl AppSettings {
     /// is on disk now, so a change another window, the Mac's app or a
     /// dotfiles pull made is kept, not written over with what was read at
     /// launch. A linked file is written where it points, and stays a link.
+    /// It is the computer's file that is written, never the vault's.
     pub fn set(&mut self, key: &str, value: Value) -> io::Result<()> {
-        if let Ok(text) = fs::read_to_string(&self.path) {
-            self.file = ConfigFile::new(text);
-        }
-        self.file.set(key, value);
-        self.publish();
+        let mut computer = match fs::read_to_string(&self.path) {
+            Ok(text) => ConfigFile::new(text),
+            Err(_) => self.resolved.computer().clone(),
+        };
+        computer.set(key, value);
+        let text = computer.text().to_string();
+        self.resolve(&text);
         let target = fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
         let temporary = target.with_extension("toml.daftar");
-        fs::write(&temporary, self.file.text())?;
+        fs::write(&temporary, text)?;
         fs::rename(&temporary, &target).inspect_err(|_| {
             let _ = fs::remove_file(&temporary);
         })
@@ -169,7 +212,7 @@ mod tests {
         fs::write(&real, "[appearance]\ntheme = \"system\"\ntext_size = 14\n").unwrap();
         let path = folder.path().join("config.toml");
         std::os::unix::fs::symlink(&real, &path).unwrap();
-        let mut settings = AppSettings { file: ConfigFile::new(fs::read_to_string(&path).unwrap()), path: path.clone() };
+        let mut settings = AppSettings::of(path.clone(), &fs::read_to_string(&path).unwrap());
         // Another window, or the Mac's app through a dotfiles pull.
         fs::write(&real, "[appearance]\ntheme = \"dark\"\ntext_size = 14\n").unwrap();
         settings.set("appearance.text_size", Value::Int(16)).unwrap();
@@ -178,9 +221,39 @@ mod tests {
     }
 
     #[test]
+    fn a_setting_changed_in_the_app_goes_to_the_computer() {
+        let folder = tempfile::tempdir().unwrap();
+        let vault = folder.path().join("vault");
+        fs::create_dir_all(&vault).unwrap();
+        let theirs = "# The vault's taste.\n[appearance]\ntheme = \"dark\"\ntext_size = 16\n\n[terminal]\nshell = \"/tmp/x\"\n";
+        fs::write(vault.join(".daftar.toml"), theirs).unwrap();
+        let path = folder.path().join("config.toml");
+        fs::write(&path, "[appearance]\ntheme = \"light\"\ntext_size = 14\nreading_line = 18\n").unwrap();
+        let mut settings = AppSettings::of(path.clone(), &fs::read_to_string(&path).unwrap());
+        assert_eq!((settings.theme(), settings.text_size()), ("light".to_string(), 14));
+        // The vault that opens sets what it may.
+        assert!(settings.set_vault(Some(&vault)));
+        assert_eq!((settings.theme(), settings.text_size()), ("dark".to_string(), 16));
+        assert!(settings.is_from_vault("appearance.text_size") && !settings.is_from_vault("appearance.reading_line"));
+        assert_eq!(settings.file.string("terminal.shell"), None);
+        // A change in the app is written to the computer's file, and the vault's is as it was.
+        settings.set("appearance.reading_line", Value::Int(30)).unwrap();
+        settings.set("appearance.text_size", Value::Int(20)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[appearance]\ntheme = \"light\"\ntext_size = 20\nreading_line = 30\n");
+        assert_eq!(fs::read_to_string(vault.join(".daftar.toml")).unwrap(), theirs);
+        assert_eq!((settings.reading_line(), settings.text_size()), (30, 16));
+        // The vault's file read again when it changed; with no vault, the computer's own.
+        fs::write(vault.join(".daftar.toml"), "[appearance]\ntext_size = 12\n").unwrap();
+        assert!(settings.reload() && !settings.reload());
+        assert_eq!((settings.theme(), settings.text_size()), ("light".to_string(), 12));
+        assert!(settings.set_vault(None));
+        assert_eq!(settings.text_size(), 20);
+    }
+
+    #[test]
     fn notes_open_folded_as_the_vault_says_unless_the_app_says_otherwise() {
         use daftar_core::FoldSections;
-        let of = |text: &str| AppSettings { file: ConfigFile::new(text), path: PathBuf::new() }.fold_sections();
+        let of = |text: &str| AppSettings::of(PathBuf::new(), text).fold_sections();
         assert_eq!(of(""), FoldSections::Vault);
         assert_eq!(of("[appearance]\nfold_sections = \"sometimes\"\n"), FoldSections::Vault);
         assert_eq!(of("[appearance]\nfold_sections = \"vault\"\n"), FoldSections::Vault);
@@ -190,7 +263,7 @@ mod tests {
 
     #[test]
     fn remote_images_are_shown_unless_turned_off() {
-        let of = |text: &str| AppSettings { file: ConfigFile::new(text), path: PathBuf::new() }.remote_images();
+        let of = |text: &str| AppSettings::of(PathBuf::new(), text).remote_images();
         assert!(of(""));
         assert!(of("[appearance]\nremote_images = \"maybe\"\n"));
         assert!(of("[appearance]\nremote_images = true\n"));

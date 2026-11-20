@@ -250,6 +250,10 @@ fn label(step: &[String], notes: usize, kind: &str) -> String {
 
 /// Runs the check on what is staged; an error stops the commit.
 pub fn pre_commit(root: &Path, git: &Git) -> Result<(), String> {
+    // A read-only clone makes no commit (docs/specs/read-only-vault.md).
+    if git.is_read_only() {
+        return Err(format!("{}: pre-commit refused the commit", daftar_core::VaultEdits::READ_ONLY));
+    }
     let (notes, gone) = staged(git)?;
     if notes.is_empty() && !gone {
         return Ok(());

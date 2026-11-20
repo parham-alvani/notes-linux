@@ -113,6 +113,9 @@ struct State {
     /// Runs once the page has drawn the note of the show it was given
     /// with (`show_then`); a later show drops it.
     drawn: Option<(u64, Box<dyn FnOnce()>)>,
+    /// The notes on which a tick was refused because the vault is
+    /// read-only: each is told once.
+    told_read_only: std::collections::BTreeSet<String>,
 }
 
 #[derive(Clone)]
@@ -149,6 +152,7 @@ impl Reader {
                 on_create: None,
                 on_section: None,
                 drawn: None,
+                told_read_only: std::collections::BTreeSet::new(),
             })),
         };
         reader.connect_messages();
@@ -458,10 +462,18 @@ impl Reader {
                     return;
                 };
                 // A task in a query result is in its own note.
+                let on_screen = shown.path.clone();
                 let path = Some(text("path")).filter(|p| !p.is_empty()).unwrap_or(shown.path);
                 let Some(store) = self.state.borrow().store.clone() else { return };
                 match store.toggle_task(&path, line as usize, status) {
                     Ok(()) => self.reload(),
+                    // A read-only vault says so once for each note, and the box stays as it was.
+                    Err(daftar_core::Failure::ReadOnly) => {
+                        if self.state.borrow_mut().told_read_only.insert(on_screen) {
+                            self.notice("This vault is read-only.");
+                        }
+                        self.reload();
+                    }
                     Err(error) => {
                         self.notice(&format!("The task was not changed: {error}."));
                         self.reload();
@@ -929,7 +941,7 @@ mod tests {
         std::fs::write(root.path().join(".daftar.toml"), toml).unwrap();
         let index = Vault::index(root.path(), None);
         let store = Rc::new(VaultStore::new(root.path().to_path_buf(), index, std::sync::Arc::new(daftar_core::SearchIndex::new())));
-        let settings = Rc::new(RefCell::new(AppSettings { path: PathBuf::new(), file: daftar_core::ConfigFile::new(config) }));
+        let settings = Rc::new(RefCell::new(AppSettings::of(PathBuf::new(), config)));
         let reader = Reader::new(settings);
         reader.set_store(store.clone());
         let window = gtk::Window::builder().default_width(800).default_height(600).child(&reader.view).build();

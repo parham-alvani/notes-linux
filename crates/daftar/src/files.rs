@@ -15,7 +15,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use daftar_core::text::slugs;
-use daftar_core::{EditorCommands, Iconic, MoveFailure, Vault, VaultIndex, VaultMoves};
+use daftar_core::{EditorCommands, Iconic, MoveFailure, Vault, VaultEdits, VaultIndex, VaultMoves};
 
 use crate::store::{VaultStore, file_in};
 
@@ -59,6 +59,7 @@ pub struct Done {
 
 /// A new note named [name] in [folder], holding [text]; its vault path.
 pub fn create_note(root: &Path, index: &VaultIndex, name: &str, folder: &str, text: &str) -> Result<String, MoveFailure> {
+    VaultEdits::writable(root).map_err(|_| MoveFailure::ReadOnly)?;
     if !VaultMoves::is_valid_name(name) {
         return Err(MoveFailure::BadName(name.into()));
     }
@@ -89,6 +90,7 @@ pub fn extract_link(path: &str, files: &BTreeSet<String>) -> String {
 
 /// A new folder named [name] in [parent]; its vault path.
 pub fn create_folder(root: &Path, name: &str, parent: &str) -> Result<String, MoveFailure> {
+    VaultEdits::writable(root).map_err(|_| MoveFailure::ReadOnly)?;
     if !VaultMoves::is_valid_name(name) {
         return Err(MoveFailure::BadName(name.into()));
     }
@@ -180,6 +182,7 @@ pub fn move_path(store: &VaultStore, from: &str, to: &str) -> Result<Done, MoveF
 
 /// Moves [path] to the Trash, where it can be taken back.
 pub fn trash(store: &VaultStore, path: &str) -> Result<Done, String> {
+    VaultEdits::writable(&store.root).map_err(|e| e.to_string())?;
     let file = file_in(path, &store.root).ok_or_else(|| format!("{path} is not in the vault"))?;
     gio::File::for_path(&file).trash(gio::Cancellable::NONE).map_err(|e| e.to_string())?;
     {
@@ -486,6 +489,55 @@ mod tests {
         fs::write(root.path().join("Inbox.md"), "See [[Plan]] and [[Projects/Alpha/Plan|the plan]].\n").unwrap();
         let index = Vault::index(root.path(), None);
         (root, index)
+    }
+
+    #[test]
+    fn a_read_only_vault_refuses_every_write() {
+        use daftar_core::{Failure, Git};
+        let (root, _) = vault();
+        let git = Git::new(root.path());
+        for arguments in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "test@example.com"],
+            &["config", "user.name", "Test"],
+            &["config", "commit.gpgsign", "false"],
+            &["add", "-A"],
+            &["commit", "-qm", "start"],
+            &["config", "daftar.readonly", "true"],
+        ] {
+            git.run(arguments).unwrap();
+        }
+        let index = Vault::index(root.path(), None);
+        let note = index.files.iter().find(|file| Vault::is_note(file)).unwrap().clone();
+        let before = fs::read(root.path().join(&note)).unwrap();
+        let store = VaultStore::new(root.path().to_path_buf(), index, Arc::new(SearchIndex::new()));
+        // A new note and a new folder, a move and a rename, a delete.
+        assert_eq!(create_note(root.path(), &store.index(), "Fresh", "", "x"), Err(MoveFailure::ReadOnly));
+        assert_eq!(create_folder(root.path(), "Shelf", ""), Err(MoveFailure::ReadOnly));
+        assert!(matches!(move_path(&store, &note, "Moved.md"), Err(MoveFailure::ReadOnly)));
+        assert_eq!(trash(&store, &note).err().as_deref(), Some(VaultEdits::READ_ONLY));
+        assert!(toggle_bookmark(&store, &note).is_err());
+        // The store's writes: a tick, a new task, a property, the day's notes.
+        assert_eq!(store.toggle_task(&note, 0, ' '), Err(Failure::ReadOnly));
+        let task = daftar_core::TaskFields { text: "New".into(), ..Default::default() };
+        assert_eq!(store.add_task(&note, None, &task), Err(Failure::ReadOnly));
+        assert_eq!(store.sort_tasks(&note), Err(Failure::ReadOnly));
+        assert!(store.scratchpad(daftar_core::Day::today(), "Scratchpad").is_err());
+        assert!(store.periodic_note(daftar_core::Day::today()).is_err());
+        // The editor's save and Format Note.
+        let file = root.path().join(&note);
+        let text = String::from_utf8(before.clone()).unwrap();
+        assert_eq!(
+            crate::editor::write_if_unchanged(&file, &text, "changed\n"),
+            crate::editor::Saved::Failed(VaultEdits::READ_ONLY.into())
+        );
+        assert!(crate::editor::media::import(root.path(), &file, &store.index().files).is_err());
+        // Every file has the bytes it had, and git sees no change.
+        assert_eq!(fs::read(&file).unwrap(), before);
+        assert_eq!(git.run(&["status", "--porcelain"]).unwrap(), "");
+        // Turned off, the app writes again.
+        git.set_read_only(false).unwrap();
+        assert_eq!(create_note(root.path(), &store.index(), "Fresh", "", "x").as_deref(), Ok("Fresh.md"));
     }
 
     #[test]

@@ -83,6 +83,7 @@ impl Bookmarks {
 
     pub fn save(&self, root: &Path) -> Result<(), BookmarksFailure> {
         let text = self.text()?;
+        crate::VaultEdits::writable(root).map_err(|e| BookmarksFailure::Unwritable(e.to_string()))?;
         let failed = |e: std::io::Error| BookmarksFailure::Unwritable(e.to_string());
         let file = Self::file(root);
         fs::create_dir_all(file.parent().unwrap()).map_err(failed)?;

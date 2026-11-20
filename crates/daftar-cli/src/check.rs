@@ -1003,7 +1003,7 @@ fn mend(
     notes.sort();
     for (path, fixes) in notes {
         let mut changes = Vec::new();
-        let edit = VaultEdits::apply(path, root, |text| {
+        let fixed = |text: &str| {
             let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
             for (line, kind, old, new) in &fixes {
                 let Some(before) = lines.get(*line) else { continue };
@@ -1013,8 +1013,9 @@ fn mend(
                     lines[*line] = after;
                 }
             }
-            Ok(if dry_run { text.to_string() } else { lines.join("\n") })
-        });
+            Ok(lines.join("\n"))
+        };
+        let edit = if dry_run { VaultEdits::look(path, root, fixed) } else { VaultEdits::apply(path, root, fixed) };
         if let Err(error) = edit {
             eprintln!("daftar-cli: {path}: {error}");
             continue;

@@ -43,6 +43,11 @@ A repository is text that other people and other computers can change. It must n
 
 A key the list refuses is ignored in `.daftar.toml`, and `daftar-cli doctor` warns of it by name (`vault-config-refused`), so a vault that tries is seen. A new setting is added to this table, with its line, in the same change that adds it to the template; a key not in the table is refused.
 
+- **What is refused, and named**: a key of the rows that say never (`wakatime.*` whole), `appearance.remote_images = true`, and a path that leaves the vault. A computer that declines the vault's settings still names them.
+- **What is only left alone**, with no warning: a key under an app's section that this app does not know (another app's own setting), as in `config.toml`, and every key that is the vault's own (the top of the file but `vault` and `vault_settings`, `[check]`, `[audit]`, `[reader]`, `[agents]`).
+- **The ranges**, outside which a number is as not there: `appearance.text_size` 10 to 28, `text_width` 0 to 200, `reading_line` 0 to 100, `git.sync_interval` 0 to 1440, `notifications.meeting_lead` 0 to 120, `terminal.font_size` 6 to 72. `appearance.theme` is `system`, `light` or `dark`, `fold_sections` is `vault`, `always` or `never`, and `notifications.digest_time` is `HH:MM`.
+- **The paths in `scratchpad.*` and `capture.*`** are every string there but `capture.heading`, which is a heading's text.
+
 Whether a clone is read-only, its address and its key are never the vault's to say: they are one clone's, in its git config ([a read-only vault](read-only-vault.md)).
 
 ## 3. The author from the vault
@@ -50,7 +55,7 @@ Whether a clone is read-only, its address and its key are never the vault's to s
 `git.name` and `git.email` in `.daftar.toml` are for the phone and the new computer, whose git has no author or a work one. For each commit the app or `daftar-cli` makes:
 
 1. the clone's own `user.name` and `user.email` (`git config --local`), when set;
-2. else the vault's `git.name` and `git.email`, passed as `-c user.name=… -c user.email=…`;
+2. else the vault's `git.name` and `git.email`, passed as `-c user.name=… -c user.email=…` to the commit, and to the pull, whose rebase makes the clone's commits again;
 3. else whatever git finds (the global config), as now.
 
 Each of the two is chosen on its own. On Android the app's own author setting is the first of the three.
@@ -59,7 +64,7 @@ Each of the two is chosen on its own. On Android the app's own author setting is
 
 - **In Settings, a key the vault sets is shown with its value and "From the vault"**, and its control is off. Its tooltip names `.daftar.toml` and says how to decline (`vault_settings`).
 - **Changing a setting in the app writes `config.toml`, never `.daftar.toml`.** The vault's file is changed as a note is: by hand or by an editor, then committed. So a read-only clone is never written, and two computers never commit each other's taste.
-- `daftar-cli config` (new) prints every key with its value and where it came from (`vault`, `computer`, `default`), `--json` one array of `{"key","value","from"}`; a refused key of `.daftar.toml` is listed as `refused`.
+- `daftar-cli config` (new) prints every key with its value and where it came from (`vault`, `computer`, `default`), `--json` one array of `{"key","value","from"}`; a refused key of `.daftar.toml` is listed as `refused`, in a row of its own after the others, with the value the vault wrote, beside the key's own row with the value in use. The plain lines are the key, a tab, the value as the file writes it, a tab, and where it came from. `git.name` and `git.email` are listed too, with no value (`null`) when the vault sets none.
 
 ## 5. Tests every app must have
 

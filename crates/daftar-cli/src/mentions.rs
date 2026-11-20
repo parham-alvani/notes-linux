@@ -195,13 +195,14 @@ pub fn fix(root: &Path, found: &[Found], dry_run: bool, print: &mut impl FnMut(S
         let mut items: Vec<&Found> = by_target.into_values().collect();
         // From the end, so a link made does not move the next one.
         items.sort_by_key(|f| std::cmp::Reverse((f.mention.line, f.mention.column)));
-        let edit = VaultEdits::apply(path, root, |text| {
+        let linked = |text: &str| {
             let mut changed = text.to_string();
             for item in &items {
                 changed = UnlinkedMentions::link(&item.mention, &item.link, &changed)?;
             }
-            Ok(if dry_run { text.to_string() } else { changed })
-        });
+            Ok(changed)
+        };
+        let edit = if dry_run { VaultEdits::look(path, root, linked) } else { VaultEdits::apply(path, root, linked) };
         if let Err(error) = edit {
             eprintln!("daftar-cli: {path}: {error}");
             refused.push(path.to_string());

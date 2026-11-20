@@ -16,8 +16,8 @@ use daftar_core::properties::{PropertyEdit, PropertySheet, PropertyValue};
 use daftar_core::{Card, Drill, DrillState, DueTasks, JobKeys, JobSearch, RandomNote, Rating};
 
 use daftar_core::{
-    Bookmarks, Clock, ConfigFile, Day, ExcludedFiles, ParsedTask, QueryTask, QuickCapture, SearchIndex, Sections, TaskLine, TaskStatuses,
-    TaskType, TasksQuery, Vault, VaultEdits, VaultIndex, VaultMoves, VaultTask,
+    Bookmarks, Clock, Day, ExcludedFiles, ParsedTask, QueryTask, QuickCapture, SearchIndex, Sections, TaskLine, TaskStatuses, TaskType,
+    TasksQuery, Vault, VaultEdits, VaultIndex, VaultMoves, VaultTask,
 };
 
 use crate::{check, vault_commands};
@@ -47,6 +47,9 @@ struct Server {
     root: PathBuf,
     show_hidden: bool,
     read_only: bool,
+    /// The vault is not open to agents here: every request is refused, no
+    /// tool is listed and no note is read.
+    closed: bool,
     search: Option<(SearchIndex, VaultIndex)>,
     /// The drill's state file, in place of Daftar's: for the tests.
     drill_state: Option<PathBuf>,
@@ -57,7 +60,9 @@ struct Server {
 pub fn run(root: PathBuf, show_hidden: bool, read_only: bool) -> Result<(), String> {
     TaskStatuses::set_current(TaskStatuses::load(&root));
     let meaning = crate::meaning::Kept::new(&root);
-    let mut server = Server { root, show_hidden, read_only, search: None, drill_state: None, meaning };
+    let door = Door::of(&root, read_only);
+    let mut server =
+        Server { root, show_hidden, read_only: door != Door::Open, closed: door == Door::Closed, search: None, drill_state: None, meaning };
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -67,8 +72,39 @@ pub fn run(root: PathBuf, show_hidden: bool, read_only: bool) -> Result<(), Stri
         }
         let Some(answer) = server.handle(&line) else { continue };
         writeln!(stdout, "{answer}").and_then(|()| stdout.flush()).map_err(|e| e.to_string())?;
+        // The client has its answer; the server does not stay.
+        if server.closed {
+            return Err(AGENTS_REFUSED.into());
+        }
     }
-    Ok(())
+    if server.closed { Err(AGENTS_REFUSED.into()) } else { Ok(()) }
+}
+
+/// What a vault that keeps agents out of its read-only clones answers.
+pub const AGENTS_REFUSED: &str = "this vault is not open to agents in a read-only clone (agents.read_only_clones in .daftar.toml)";
+
+/// How far the server opens the vault to an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Door {
+    /// Every tool.
+    Open,
+    /// The reading tools: `--read-only`, or a read-only clone.
+    Reading,
+    /// Nothing: a read-only clone of a vault whose `.daftar.toml` says
+    /// `agents.read_only_clones = false`.
+    Closed,
+}
+
+impl Door {
+    fn of(root: &Path, read_only: bool) -> Door {
+        if daftar_core::Git::read_only(root) {
+            if daftar_core::VaultSettings::read(root).agents_in_read_only_clones { Door::Reading } else { Door::Closed }
+        } else if read_only {
+            Door::Reading
+        } else {
+            Door::Open
+        }
+    }
 }
 
 impl Server {
@@ -79,6 +115,9 @@ impl Server {
             Err(error) => return Some(failure(&Value::Null, -32700, &format!("not JSON: {error}"))),
         };
         let id = message.get("id").cloned()?;
+        if self.closed {
+            return Some(failure(&id, -32000, AGENTS_REFUSED));
+        }
         let method = message.get("method").and_then(Value::as_str).unwrap_or_default();
         let params = message.get("params").cloned().unwrap_or(Value::Null);
         let result = match method {
@@ -114,7 +153,7 @@ impl Server {
         if self.read_only && WRITES.contains(&name) {
             return Err(format!("{name} writes, and this server is read-only"));
         }
-        let config = ConfigFile::new(fs::read_to_string(ConfigFile::default_path()).unwrap_or_default());
+        let config = crate::config(root);
         let hidden = ExcludedFiles::from_config(root, &config, self.show_hidden);
         let index = Vault::index(root, None);
         let lines = match name {
@@ -875,6 +914,7 @@ pub(crate) fn create_note(root: &Path, path: &str, text: &str) -> Result<String,
     if path.starts_with('/') || path.split('/').any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.')) {
         return Err(format!("{path} is not a note in the vault"));
     }
+    VaultEdits::writable(root).map_err(|e| e.to_string())?;
     let file = VaultEdits::within(root, &path).ok_or_else(|| format!("{path} is outside the vault"))?;
     if let Some(folder) = file.parent() {
         fs::create_dir_all(folder).map_err(|e| format!("{path}: {e}"))?;
@@ -1306,6 +1346,7 @@ mod tests {
             root: root.to_path_buf(),
             show_hidden: false,
             read_only,
+            closed: false,
             search: None,
             drill_state: Some(root.join(".drill-state.json")),
             meaning,
@@ -1348,6 +1389,58 @@ mod tests {
         assert!(names.contains(&"search") && names.contains(&"toggle_task"));
         let unknown = server.handle(r#"{"jsonrpc":"2.0","id":3,"method":"resources/list"}"#).unwrap();
         assert_eq!(unknown["error"]["code"], -32601);
+    }
+
+    /// The server `run` makes for [root]: as far open as the clone and the vault say.
+    fn served(root: &Path) -> Server {
+        let door = Door::of(root, false);
+        let mut server = server(root, door != Door::Open);
+        server.closed = door == Door::Closed;
+        server
+    }
+
+    #[test]
+    fn a_read_only_clone_can_refuse_agents() {
+        let root = vault();
+        let git = daftar_core::Git::new(root.path());
+        git.run(&["init", "-q", "-b", "main"]).unwrap();
+        let names = |server: &mut Server| -> Vec<String> {
+            let list = server.handle(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).unwrap();
+            list["result"]["tools"]
+                .as_array()
+                .map_or_default(|tools| tools.iter().map(|t| t["name"].as_str().unwrap().to_string()).collect())
+        };
+        let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
+        // A read-only clone without the key serves the reading tools.
+        git.set_read_only(true).unwrap();
+        let mut reading = served(root.path());
+        assert_eq!(reading.handle(initialize).unwrap()["result"]["serverInfo"]["name"], "daftar");
+        let listed = names(&mut reading);
+        assert!(listed.contains(&"read_note".to_string()) && WRITES.iter().all(|w| !listed.contains(&(*w).to_string())));
+        let (text, error) = call(&mut reading, "read_note", json!({ "note": "Plants" }));
+        assert!(!error && text.contains("Needs sun"), "{text}");
+        let (text, error) = call(&mut reading, "capture", json!({ "text": "x" }));
+        assert!(error && text.contains("read-only"), "{text}");
+        // With the key, the same clone answers `initialize` with the error, and nothing else.
+        fs::write(root.path().join(".daftar.toml"), "[agents]\nread_only_clones = false\n").unwrap();
+        let mut closed = served(root.path());
+        let answer = closed.handle(initialize).unwrap();
+        assert_eq!(answer["error"]["message"], AGENTS_REFUSED);
+        assert_eq!(answer["id"], 1);
+        assert!(answer.get("result").is_none());
+        assert!(names(&mut closed).is_empty());
+        let request = json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "read_note", "arguments": { "note": "Plants" } } });
+        let answer = closed.handle(&request.to_string()).unwrap();
+        assert_eq!(answer["error"]["message"], AGENTS_REFUSED);
+        assert!(!answer.to_string().contains("Needs sun"));
+        // The same vault, not read-only, serves every tool.
+        git.set_read_only(false).unwrap();
+        let mut open = served(root.path());
+        assert!(open.handle(initialize).unwrap().get("error").is_none());
+        let listed = names(&mut open);
+        assert!(WRITES.iter().all(|w| listed.contains(&(*w).to_string())), "{listed:?}");
+        let (text, error) = call(&mut open, "read_note", json!({ "note": "Plants" }));
+        assert!(!error && text.contains("Needs sun"), "{text}");
     }
 
     #[test]
@@ -1414,6 +1507,7 @@ mod tests {
             root: root.to_path_buf(),
             show_hidden: false,
             read_only: true,
+            closed: false,
             search: None,
             drill_state: Some(root.join(".drill-state.json")),
             meaning,

@@ -153,6 +153,7 @@ pub fn vault_path(root: &Path, file: &Path) -> Option<String> {
 /// Copies [file] into the attachment folder of the vault at [root], under a
 /// name no file in [files] has; its vault path.
 pub fn import(root: &Path, file: &Path, files: &BTreeSet<String>) -> Result<String, String> {
+    daftar_core::VaultEdits::writable(root).map_err(|e| e.to_string())?;
     let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or("no file name")?;
     let (base, extension) = match name.rsplit_once('.') {
         Some((base, extension)) if !base.is_empty() => (base.to_string(), extension.to_string()),

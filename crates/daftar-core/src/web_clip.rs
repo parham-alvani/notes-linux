@@ -388,6 +388,7 @@ impl WebClip {
         bytes: &[u8],
         files: &mut BTreeSet<String>,
     ) -> io::Result<String> {
+        crate::VaultEdits::writable(root).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
         let folder = folder.trim().trim_matches('/');
         if folder.split('/').any(|part| part == ".." || part.starts_with('.') || part.contains('\\'))
             || Path::new(folder).is_absolute()

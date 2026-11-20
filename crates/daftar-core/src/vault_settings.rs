@@ -8,23 +8,38 @@
 //!
 //! `reader.folded`: a note opens with its sections folded, each heading
 //! saying what is under it (`docs/specs/folded-sections.md`). A file that is
-//! not there, or a key that is not, is the default. The port of
-//! `VaultSettings.swift`.
+//! not there, or a key that is not, is the default. `agents.read_only_clones
+//! = false` keeps a read-only clone from an agent
+//! (`docs/specs/read-only-vault.md`). The port of `VaultSettings.swift`.
 
 use std::path::Path;
 
 use crate::ConfigFile;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VaultSettings {
     pub folded: bool,
+    /// `agents.read_only_clones`: whether a read-only clone is served to an
+    /// agent (`daftar-cli mcp`). Not set is true; a clone that is not
+    /// read-only is never touched by it (`docs/specs/read-only-vault.md`).
+    pub agents_in_read_only_clones: bool,
+}
+
+impl Default for VaultSettings {
+    fn default() -> VaultSettings {
+        VaultSettings { folded: false, agents_in_read_only_clones: true }
+    }
 }
 
 impl VaultSettings {
     pub const FILE: &'static str = ".daftar.toml";
 
     pub fn new(text: &str) -> VaultSettings {
-        VaultSettings { folded: ConfigFile::new(text).bool("reader.folded").unwrap_or(false) }
+        let file = ConfigFile::new(text);
+        VaultSettings {
+            folded: file.bool("reader.folded").unwrap_or(false),
+            agents_in_read_only_clones: file.bool("agents.read_only_clones").unwrap_or(true),
+        }
     }
 
     pub fn read(root: &Path) -> VaultSettings {
@@ -90,6 +105,17 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_clone_can_refuse_agents() {
+        assert!(!VaultSettings::new("[agents]\nread_only_clones = false\n").agents_in_read_only_clones);
+        assert!(VaultSettings::new("").agents_in_read_only_clones);
+        assert!(VaultSettings::default().agents_in_read_only_clones);
+        assert!(VaultSettings::new("[agents]\nread_only_clones = true\n").agents_in_read_only_clones);
+        // The key under another section is not this one.
+        assert!(VaultSettings::new("[reader]\nread_only_clones = false\n").agents_in_read_only_clones);
+        assert!(VaultSettings::new("read_only_clones = false\n").agents_in_read_only_clones);
+    }
+
+    #[test]
     fn a_vault_with_no_file_has_the_default() {
         let root = std::env::temp_dir().join(format!("daftar-vault-settings-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -101,7 +127,7 @@ mod tests {
 
     #[test]
     fn the_app_follows_the_vault_or_says_otherwise() {
-        let folded = VaultSettings { folded: true };
+        let folded = VaultSettings { folded: true, ..VaultSettings::default() };
         let open = VaultSettings::default();
         assert_eq!(FoldSections::named("vault"), FoldSections::Vault);
         assert_eq!(FoldSections::named("always"), FoldSections::Always);

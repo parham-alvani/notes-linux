@@ -24,6 +24,6 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [Today's timeline: meetings and timed tasks on one axis](today-timeline.md) | not released yet |
 | [Notes that open folded](folded-sections.md) | macOS 0.24.0, Linux 0.27.0, Android 0.64.0 (the hint under the heading, its counts in the phone's language, folds kept by position) |
 | [The language server: `daftar-cli lsp`](language-server.md) | Linux (`daftar-cli`, not released yet); macOS runs `daftar-cli`, so it has it too; not Android, where `daftar-cli` cannot run |
-| [A read-only vault, and the clone's own git identity](read-only-vault.md) | not built yet |
-| [The app's settings from the vault](vault-config.md) | not built yet |
+| [A read-only vault, and the clone's own git identity](read-only-vault.md) | Linux and `daftar-cli` (not released yet) |
+| [The app's settings from the vault](vault-config.md) | Linux and `daftar-cli` (not released yet) |
 | [The Open Knowledge Format: concepts in the vault, and the vault as a bundle](open-knowledge-format.md) | not built yet |

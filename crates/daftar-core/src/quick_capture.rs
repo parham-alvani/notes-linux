@@ -85,6 +85,7 @@ impl QuickCapture {
     /// again at the write, so a change made meanwhile stays; never a file
     /// outside the vault. The note's vault path.
     pub fn capture(root: &Path, target: &str, heading: &str, line: &str, day: Day, clock: Clock) -> Result<String, String> {
+        VaultEdits::writable(root).map_err(|e| e.to_string())?;
         let mut path = Self::target_path(root, target, day);
         if path.starts_with('/') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
             return Err(format!("{path} is not a note in the vault."));

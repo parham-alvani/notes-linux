@@ -66,7 +66,8 @@ This is the first part of the port. It has:
 - **Export as PDF:** Ctrl+Shift+E makes an A4 PDF of the note on screen, in the reader or the editor, where you choose, by running `daftar-cli export`: your logo (`export.logo`) and the logo of the note's folder (a company's `logo.svg`) at its head.
 - **WakaTime:** a setting (off at first) sends the time spent reading and writing each note to WakaTime with `wakatime-cli` and the key in `~/.wakatime.cfg`, as Obsidian's WakaTime plugin does.
 - **Notifications:** a meeting alert a few minutes before each meeting in the week note, with Join, and a morning digest of the tasks due (`[notifications]`, or Settings › Notifications: each on or off, the minutes before and the digest's time). Unlike on the Mac, they ring while Daftar runs.
-- **Settings:** Ctrl+, for the theme, the text size, the fonts, the home picture and git, written back to `config.toml` line by line. Ctrl+Alt+N opens another window.
+- **Settings:** Ctrl+, for the theme, the text size, the fonts, the home picture and git, written back to `config.toml` line by line. A setting the vault's own `.daftar.toml` holds is shown with "From the vault", and its control is off. Ctrl+Alt+N opens another window.
+- **A read-only vault:** a clone on a computer that should only read (a work laptop, a server) is made read-only in Settings › Vault · Git, or with `git config --local daftar.readonly true`. Daftar then pulls (`git pull --ff-only`) and never writes a file, commits or pushes: a Read-only badge stands by the vault's name, the actions that write are off, and a click on a task's box says so. The same page sets this clone's own address, author and SSH key (chosen or made with `ssh-keygen`), which are kept in the clone's git config and never committed, and the key is used for every sync. A push the remote refuses because the key cannot write offers to make the vault read-only.
 - **Command line:** `daftar-cli`, below.
 - **Core:** the parser, the link resolver, the task lines, the vault index, the quick switcher's ranking, full-text search (SQLite FTS5) and the config file, in `daftar-core`, with the Mac app's tests ported.
 
@@ -100,6 +101,7 @@ daftar-cli cancel Inbox 12 --reason 'no budget left'  # cancels it, saying why
 daftar-cli set-status Inbox 12 r --reason 'waiting on review'  # any status the vault has
 daftar-cli statuses               # the vault's task statuses, from the Tasks plugin's settings
 daftar-cli doctor                 # what stands in a sync's way: an open merge, conflicts, no upstream, big untracked files
+daftar-cli config                 # every setting, its value, and whether the vault, this computer or the default gave it
 daftar-cli events --year 2027     # the holidays and feasts of calendar.place, with their notes
 daftar-cli sort-tasks Inbox       # done and cancelled tasks first in each section
 daftar-cli sort-headings Inbox Plan  # the headings right under “Plan” by name, each with its section
@@ -171,11 +173,29 @@ The command line and the TUI leave out the files the app hides: Obsidian's exclu
 
 `random` prints the path of a note picked at random, from the whole vault, a `--folder` or a `--tag` (and the tags under it), never a hidden one; the app's Open Random Note and the MCP server's `random_note` pick the same way.
 
-`sync` commits with obsidian-git's message (`update notes @ 2026-10-25 09:30:00 on x-wing`, or `-m`), pulls with `--rebase --autostash` and pushes, through the system `git`: your git config, credential helper and SSH agent apply, and it never waits on a password prompt.
+`sync` commits with obsidian-git's message (`update notes @ 2026-10-25 09:30:00 on x-wing`, or `-m`), pulls with `--rebase --autostash` and pushes, through the system `git`: your git config, credential helper and SSH agent apply, and it never waits on a password prompt. In a read-only clone (`daftar.readonly` in its git config) `sync` only pulls, with `--ff-only`, and every command that writes a note prints `this vault is read-only (daftar.readonly)` and exits 1, unless it has `--dry-run`; `mcp` serves the reading tools there, and `status` and `doctor` say that the clone is read-only.
 
 ## Configuration
 
 Every setting is in one file, `~/.config/daftar/config.toml`. The app makes it on the first start, with a comment on each setting. It is the same file Daftar for macOS reads, so one copy in your dotfiles serves both; each app leaves alone the keys it does not have.
+
+A vault can carry the settings too, so a new computer is set up by its first pull: the committed `.daftar.toml` at the vault's root may hold the same sections and keys, and its value wins over this computer's.
+
+```toml
+[appearance]
+theme = "dark"
+text_size = 16
+
+[git]
+sync_interval = 10
+# The author of commits in a clone with no user.name or user.email of its own.
+name = "Notes"
+email = "notes@example.com"
+```
+
+A repository is text other people can change, so a vault sets only what is safe: the look, the calendar, the editor's preview and format on leaving, the sync interval, notifications, the home picture and the export logo (a path in the vault), the scratchpad and capture notes, and the hidden files. It never sets the vault's folder, a program to run (`editor.nvim`, `editor.vim_mode`, `editor.neovide`, `terminal.shell`), or WakaTime, and it can turn pictures from the web off but never on. `daftar-cli doctor` warns of a key it refuses. `vault_settings = false` in `config.toml` reads no setting from any vault, and `vault_settings = ["appearance.theme"]` declines only the keys named. A change made in Settings is written to `config.toml`, never to the vault. `daftar-cli config` prints every key with its value and where it came from.
+
+The vault can also keep agents out of its read-only clones: with `[agents]` and `read_only_clones = false` in `.daftar.toml`, `daftar-cli mcp` does not serve in a clone that is read-only.
 
 `daftar Notes/Inbox.md` opens that note, for a keybinding in the compositor or a script.
 

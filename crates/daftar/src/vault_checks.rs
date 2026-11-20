@@ -397,6 +397,10 @@ impl VaultChecks {
         if self.fixing.get() {
             return;
         }
+        if daftar_core::Git::read_only(&root) {
+            self.notice("This vault is read-only.");
+            return;
+        }
         let Some(cli) = self.cli() else {
             self.notice(daftar_cli::MISSING);
             return;

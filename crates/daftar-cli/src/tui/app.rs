@@ -719,8 +719,17 @@ impl App {
                     if done.pushed {
                         steps.push("pushed");
                     }
-                    (if steps.is_empty() { "Up to date".to_string() } else { format!("Synced: {}", steps.join(", ")) }, false)
+                    let read_only = git.is_read_only();
+                    (
+                        match (steps.is_empty(), read_only) {
+                            (true, _) => "Up to date".to_string(),
+                            (false, true) => "Pulled".to_string(),
+                            (false, false) => format!("Synced: {}", steps.join(", ")),
+                        },
+                        false,
+                    )
                 }
+                Err(failure @ (SyncFailure::ReadOnlyDiverged(_) | SyncFailure::PushRefusedReadOnly(_))) => (failure.to_string(), true),
                 Err(SyncFailure::Stopped(stopped)) => (format!("{stopped} Resolve it in Daftar, or run daftar-cli sync --abort"), true),
                 Err(SyncFailure::Git(failure)) => (format!("Sync failed: {}", failure.output.lines().last().unwrap_or("")), true),
             })
