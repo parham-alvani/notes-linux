@@ -126,6 +126,10 @@ impl Inspector {
             path.clone_into(&mut self.path.borrow_mut());
         }
         let text = std::fs::read_to_string(store.root.join(path)).unwrap_or_default();
+        // A concept of the Open Knowledge Format: its type, who confirmed it, and whether it still holds.
+        if let Some(concept) = daftar_core::Okf::concept_of(path, &text) {
+            self.content.append(&concept_row(&concept, chrono::Utc::now()));
+        }
         let count = match daftar_core::properties::PropertySheet::read(&text) {
             daftar_core::properties::FrontMatterForm::Form(sheet) => sheet.properties().len(),
             _ => 0,
@@ -588,6 +592,60 @@ fn find(root: &Path, names: &[String], candidates: &[String]) -> Vec<(String, Me
     out
 }
 
+/// The chips of a concept: the trust tier, the status when it is not
+/// stable, and whether it is stale; each its words, its colour and its
+/// tooltip.
+fn concept_chips(concept: &daftar_core::Concept, now: chrono::DateTime<chrono::Utc>) -> Vec<(String, &'static str, Option<String>)> {
+    use daftar_core::okf::{Stale, Status, Tier};
+    let tier = concept.tier();
+    let verified = concept.last_verified().map(|event| {
+        let day = event.at.instant().map_or_default(|at| at.format("%Y-%m-%d").to_string());
+        format!("Last verified by {} on {day}", event.by)
+    });
+    let colour = match tier {
+        Tier::HumanReviewed => "success",
+        Tier::MachineConfirmed => "accent",
+        Tier::Unverified => "dim-label",
+    };
+    let mut chips =
+        vec![(tier.title().to_string(), colour, verified.or_else(|| Some("No one confirmed the text as it is now".to_string())))];
+    if concept.status != Status::Stable {
+        chips.push((concept.status.title(), "warning", None));
+    }
+    match concept.stale(now) {
+        Some(Stale::Since(at)) => chips.push((format!("Stale since {}", at.format("%Y-%m-%d")), "error", None)),
+        Some(Stale::Malformed(raw)) => {
+            chips.push(("Stale: bad date".to_string(), "error", Some(format!("stale_after is not a time: {raw}"))));
+        }
+        None => {}
+    }
+    chips
+}
+
+/// The Concept row above the properties: the type, the chips, and Mark as Verified.
+fn concept_row(concept: &daftar_core::Concept, now: chrono::DateTime<chrono::Utc>) -> gtk::Box {
+    let row = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).margin_top(8).margin_bottom(4).build();
+    let head = gtk::Box::builder().spacing(8).build();
+    head.append(&gtk::Label::builder().label("Concept").css_classes(["heading"]).build());
+    head.append(&gtk::Label::builder().label(&concept.kind).hexpand(true).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build());
+    let mark = gtk::Button::builder()
+        .icon_name("object-select-symbolic")
+        .tooltip_text("Mark as Verified: you read it, and it holds")
+        .action_name("win.mark-verified")
+        .css_classes(["flat"])
+        .build();
+    head.append(&mark);
+    row.append(&head);
+    let chips = gtk::Box::builder().spacing(10).build();
+    for (text, colour, tooltip) in concept_chips(concept, now) {
+        let chip = gtk::Label::builder().label(&text).css_classes(["caption-heading", colour]).build();
+        chip.set_tooltip_text(tooltip.as_deref());
+        chips.append(&chip);
+    }
+    row.append(&chips);
+    row
+}
+
 fn title(text: &str, count: usize) -> gtk::Box {
     let head = gtk::Box::builder().spacing(8).margin_top(8).build();
     head.append(&gtk::Label::builder().label(text).xalign(0.0).css_classes(["heading"]).build());
@@ -609,6 +667,29 @@ fn empty(text: &str) -> gtk::Label {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_concept_has_its_chips() {
+        let now = daftar_core::Okf::time("2026-09-23T00:00:00Z").unwrap();
+        let chips = |front: &str| {
+            concept_chips(&daftar_core::Okf::concept(&format!("type: Metric\n{front}")).unwrap(), now)
+                .into_iter()
+                .map(|(text, colour, _)| format!("{text} ({colour})"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(chips(""), ["Unverified (dim-label)"]);
+        assert_eq!(chips("verified: { by: \"human:parham\", at: 2026-06-25 }\n"), ["Human-reviewed (success)"]);
+        assert_eq!(
+            chips("verified: { by: process:nightly, at: 2026-06-25 }\nstatus: draft\nstale_after: 2026-09-01\n"),
+            ["Machine-confirmed (accent)", "Draft (warning)", "Stale since 2026-09-01 (error)"]
+        );
+        assert_eq!(
+            chips("status: archived\nstale_after: soon\n"),
+            ["Unverified (dim-label)", "archived (warning)", "Stale: bad date (error)"]
+        );
+        let concept = daftar_core::Okf::concept("type: T\nverified: { by: \"human:parham\", at: 2026-06-25 }\n").unwrap();
+        assert_eq!(concept_chips(&concept, now)[0].2.as_deref(), Some("Last verified by human:parham on 2026-06-25"));
+    }
 
     #[test]
     fn mentions_come_a_few_from_each_note() {

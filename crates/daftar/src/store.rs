@@ -323,6 +323,22 @@ impl VaultStore {
         self.write(path, |text| VaultEdits::edit_task(text, line, before, fields))
     }
 
+    /// Whether the note at [path] is a deprecated concept of the Open
+    /// Knowledge Format, which quick open and search show dimmed.
+    pub fn is_deprecated(&self, path: &str) -> bool {
+        self.index().notes.get(path).is_some_and(|note| daftar_core::Okf::is_deprecated(path, &note.parsed.properties))
+    }
+
+    /// Mark as Verified: `{ by: <actor>, at: now }` in the concept's
+    /// `verified`, every other line of the note as it is; refused on a
+    /// note that is not a concept.
+    pub fn mark_verified(&self, path: &str, actor: &str) -> Result<(), Failure> {
+        self.write(path, |text| {
+            daftar_core::Okf::mark_verified(path, text, actor, chrono::Utc::now())
+                .map_err(|refused| Failure::Unwritable(refused.to_string()))
+        })
+    }
+
     /// Whether New Task may write in the note at [path]: not a week note in
     /// `Calendar/`, which is read-only here, as the phone writes it whole
     /// and would drop the task at its next change.

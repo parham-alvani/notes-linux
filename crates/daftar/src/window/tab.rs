@@ -54,6 +54,11 @@ pub(crate) struct Tab {
     /// `board`, `editor` and `choose`.
     pub stack: gtk::Stack,
     pub reader: Reader,
+    /// The one line above a deprecated or stale concept's text, and
+    /// nothing above any other note (`docs/specs/open-knowledge-format.md`).
+    pub concept_line: adw::Banner,
+    /// The note a deprecated concept was replaced by, which the line opens.
+    pub replaced_by: RefCell<Option<String>>,
     pub editor: Rc<Editor>,
     pub today: Rc<Today>,
     pub board: Rc<Board>,

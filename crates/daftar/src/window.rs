@@ -94,7 +94,8 @@ pub struct Window {
 
 /// The actions that write a file of the vault, which a read-only vault
 /// turns off.
-const WRITING_ACTIONS: [&str; 23] = [
+const WRITING_ACTIONS: [&str; 24] = [
+    "mark-verified",
     "edit",
     "save",
     "new-note",
@@ -526,7 +527,13 @@ impl Window {
                     .build(),
                 Some("loading"),
             );
-            stack.add_named(&reader.view, Some("reader"));
+            // The reader, under the one line a deprecated or stale concept has.
+            let concept_line = adw::Banner::new("");
+            let reading = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
+            reader.view.set_vexpand(true);
+            reading.append(&concept_line);
+            reading.append(&reader.view);
+            stack.add_named(&reading, Some("reader"));
             stack.add_named(&today.widget, Some("today"));
             stack.add_named(&board.widget, Some("board"));
             stack.add_named(&editor.widget, Some("editor"));
@@ -534,6 +541,8 @@ impl Window {
             Tab {
                 stack,
                 reader,
+                concept_line,
+                replaced_by: RefCell::new(None),
                 editor,
                 today,
                 board,
@@ -546,6 +555,16 @@ impl Window {
                 pending: RefCell::new(None),
             }
         });
+        {
+            let (this, weak) = (self.clone(), Rc::downgrade(&tab));
+            tab.concept_line.connect_button_clicked(move |_| {
+                let Some(tab) = weak.upgrade() else { return };
+                let replacement = tab.replaced_by.borrow().clone();
+                if let Some(path) = replacement {
+                    this.go_in(&tab, &path, None, None, true);
+                }
+            });
+        }
         {
             let (this, weak) = (self.clone(), Rc::downgrade(&tab));
             tab.reader.connect_open(move |path, anchor, place| {
@@ -1195,6 +1214,7 @@ impl Window {
             self.set_titles(tab, &Vault::title(path), &self.reading_subtitle(path));
         }
         tab.stack.set_visible_child_name("reader");
+        self.show_concept_line(tab, &store, path);
         self.split.set_show_content(true);
         // A note opens where it was being read, unless a link names a place in it.
         let line = line.or_else(|| anchor.is_none().then(|| self.place(path)).flatten());
@@ -1402,6 +1422,53 @@ impl Window {
         self.plan_notifications();
     }
 
+    /// The line above the text of the note at [path] in [tab]: "Deprecated.
+    /// Replaced by …" with the note that replaced it to open, or "Stale
+    /// since …", for a concept that is one or the other; none for any
+    /// other note.
+    fn show_concept_line(&self, tab: &Tab, store: &VaultStore, path: &str) {
+        let concept = std::fs::read_to_string(store.root.join(path)).ok().and_then(|text| daftar_core::Okf::concept_of(path, &text));
+        let replacement = concept
+            .as_ref()
+            .filter(|concept| concept.is_deprecated())
+            .and_then(|concept| store.index().resolve(concept.superseded_by.as_deref()?, path))
+            .filter(|new| new != path);
+        let name = replacement.as_deref().map(Vault::title);
+        let line = concept.and_then(|concept| concept.reader_line(name.as_deref(), chrono::Utc::now()));
+        tab.concept_line.set_title(line.as_deref().unwrap_or_default());
+        tab.concept_line.set_button_label(name.as_ref().map(|name| format!("Open {name}")).as_deref());
+        tab.concept_line.set_revealed(line.is_some());
+        *tab.replaced_by.borrow_mut() = replacement;
+    }
+
+    /// Mark as Verified: the concept on screen was read and holds, by the
+    /// person `okf.actor` names, else the clone's `user.email`.
+    fn mark_verified(&self) {
+        let Some(store) = self.store.borrow().clone() else { return };
+        let tab = self.tab();
+        let Some(path) = tab.note_in_view().filter(|path| Vault::is_note(path)) else { return };
+        if tab.editing() {
+            tab.editor.save();
+        }
+        let setting = self.settings.borrow().file.string("okf.actor");
+        let email = daftar_core::Git::new(&store.root).local("user.email");
+        let marked = daftar_core::Okf::actor(setting.as_deref(), email.as_deref())
+            .map_err(|refused| refused.to_string())
+            .and_then(|actor| store.mark_verified(&path, &actor).map(|()| actor).map_err(|refused| refused.to_string()));
+        match marked {
+            Ok(actor) => {
+                self.toasts.add_toast(crate::toast(&format!("{} is verified by {actor}.", Vault::title(&path))));
+                if tab.editing() {
+                    tab.editor.changed_on_disk();
+                } else {
+                    tab.reader.reload();
+                }
+                self.refresh_inspector();
+            }
+            Err(why) => self.toasts.add_toast(crate::toast(&format!("Not marked as verified: {why}."))),
+        }
+    }
+
     /// Whether the open vault is a read-only clone, asked again: after the
     /// switch in Settings, a sync, or `git config` in a shell.
     fn refresh_read_only(&self) {
@@ -1564,6 +1631,8 @@ impl Window {
                 drop(index);
                 if touched {
                     tab.reader.reload();
+                    // The line above a concept follows its front matter.
+                    self.show_concept_line(tab, store, &shown.path);
                 }
             }
             _ => {}
@@ -1899,6 +1968,10 @@ impl Window {
             action.connect_activate(move |_, _| git.run(kind, true));
             self.window.add_action(&action);
         }
+        let mark_verified = gio::SimpleAction::new("mark-verified", None);
+        let this = self.clone();
+        mark_verified.connect_activate(move |_, _| this.mark_verified());
+        self.window.add_action(&mark_verified);
         let make_read_only = gio::SimpleAction::new("make-read-only", None);
         let this = self.clone();
         make_read_only.connect_activate(move |_, _| this.make_read_only());

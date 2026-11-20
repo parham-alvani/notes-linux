@@ -40,6 +40,7 @@ A repository is text that other people and other computers can change. It must n
 | `vault`, `vault_settings` | never |
 | `editor.vim_mode`, `editor.neovide`, `editor.nvim`, `editor.nvim_config`, `terminal.shell` | never: they name or start a program |
 | `wakatime.*` | never: it sends the notes' paths to a service |
+| `okf.actor` | never: it says who the person is when they mark a concept as verified ([the Open Knowledge Format](open-knowledge-format.md)); the vault's own `[okf]` keys (`include`, `exclude`, `title`, `description`, `license`, `[okf.types]`) are the vault's, not app settings |
 
 A key the list refuses is ignored in `.daftar.toml`, and `daftar-cli doctor` warns of it by name (`vault-config-refused`), so a vault that tries is seen. A new setting is added to this table, with its line, in the same change that adds it to the template; a key not in the table is refused.
 

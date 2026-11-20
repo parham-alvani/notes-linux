@@ -177,6 +177,22 @@ impl Concept {
         self.status == Status::Deprecated
     }
 
+    /// The one line the reader has above a deprecated or stale concept's
+    /// text, and nothing above any other. [replacement] is the name of the
+    /// note `superseded_by` resolves to, when it does.
+    pub fn reader_line(&self, replacement: Option<&str>, now: DateTime<Utc>) -> Option<String> {
+        if self.is_deprecated() {
+            return Some(match replacement {
+                Some(name) => format!("Deprecated. Replaced by {name}."),
+                None => "Deprecated.".to_string(),
+            });
+        }
+        match self.stale(now)? {
+            Stale::Since(at) => Some(format!("Stale since {}: check it again.", at.format("%Y-%m-%d"))),
+            Stale::Malformed(_) => Some("Stale: bad date. Check it again.".to_string()),
+        }
+    }
+
     /// `concept: <type>; <tier>; <status>; stale since …`, as the MCP
     /// server says it of a note.
     pub fn summary(&self, now: DateTime<Utc>) -> String {
@@ -280,6 +296,14 @@ impl Okf {
             return None;
         }
         Self::concept(front_matter(note)?.yaml)
+    }
+
+    /// Whether the note at [path] with the front matter's [properties], as
+    /// the index holds them, is a deprecated concept: what quick open and
+    /// search dim, with no file to read.
+    pub fn is_deprecated(path: &str, properties: &[(String, Vec<String>)]) -> bool {
+        let first = |key: &str| properties.iter().find(|(name, _)| name == key).and_then(|(_, values)| values.first()).map(|v| v.trim());
+        !Self::is_reserved(path) && first("type").is_some_and(|kind| !kind.is_empty()) && first("status") == Some("deprecated")
     }
 
     /// `index.md` and `log.md`, which list a folder and its changes.
@@ -671,6 +695,23 @@ mod tests {
             Okf::concept("type: T\nstatus: deprecated\nsuperseded_by: /New.md\n").unwrap().superseded_by.as_deref(),
             Some("/New.md")
         );
+    }
+
+    #[test]
+    fn the_reader_has_one_line_above_a_deprecated_or_stale_concept() {
+        let now = at("2026-09-23T00:00:00Z");
+        let line = |front: &str, replacement| Okf::concept(&format!("type: T\n{front}")).unwrap().reader_line(replacement, now);
+        assert_eq!(line("", None), None);
+        assert_eq!(line("status: draft\n", None), None);
+        assert_eq!(line("status: deprecated\nstale_after: 2020-01-01\n", Some("New")).as_deref(), Some("Deprecated. Replaced by New."));
+        assert_eq!(line("status: deprecated\n", None).as_deref(), Some("Deprecated."));
+        assert_eq!(line("stale_after: 2026-09-01\n", None).as_deref(), Some("Stale since 2026-09-01: check it again."));
+        assert_eq!(line("stale_after: soon\n", None).as_deref(), Some("Stale: bad date. Check it again."));
+        let properties = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| ((*k).to_string(), vec![(*v).to_string()])).collect::<Vec<_>>();
+        assert!(Okf::is_deprecated("N.md", &properties(&[("type", "T"), ("status", "deprecated")])));
+        assert!(!Okf::is_deprecated("N.md", &properties(&[("status", "deprecated")])));
+        assert!(!Okf::is_deprecated("N.md", &properties(&[("type", "T"), ("status", "draft")])));
+        assert!(!Okf::is_deprecated("index.md", &properties(&[("type", "T"), ("status", "deprecated")])));
     }
 
     #[test]

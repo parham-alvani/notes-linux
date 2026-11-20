@@ -149,6 +149,7 @@ impl Window {
             command(next, "Go", "win.periodic-next", "Ctrl+Alt+Right"),
             command("New Task…", "File", "win.new-task", "Ctrl+Alt+T"),
             command("Sort Tasks (Done First)", "Note", "win.sort-tasks", ""),
+            command("Mark as Verified", "Note", "win.mark-verified", ""),
             command("Sort Headings Under This", "Note", "win.sort-headings::", ""),
             command("Rename a Tag…", "Edit", "win.rename-tag::", ""),
             command("Find and Replace in the Vault", "Edit", "win.replace-in-vault", "Ctrl+Shift+H"),

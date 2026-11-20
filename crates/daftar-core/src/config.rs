@@ -327,6 +327,12 @@ enabled = false
 # Empty finds wakatime-cli in ~/.wakatime or on $PATH.
 cli = ""
 
+[okf]
+# Who you are when you mark a concept as verified (a note whose front
+# matter has a `type`, as the Open Knowledge Format has it): the id of
+# `human:<id>`. Empty is the local part of the vault's git user.email.
+actor = ""
+
 [export]
 # `daftar-cli export`, which the app's Export as PDF runs: an SVG or PNG at
 # the head of every PDF. A note in a folder that holds a logo.svg or

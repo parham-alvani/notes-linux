@@ -46,10 +46,18 @@ fn candidates(store: &VaultStore) -> Vec<Candidate> {
         .iter()
         .filter(|path| !store.is_hidden(path))
         .map(|path| {
-            let aliases = index.notes.get(path).map_or_default(|n| n.parsed.aliases.clone());
-            Candidate::new(path, &Vault::title(path), &aliases)
+            let note = index.notes.get(path);
+            let aliases = note.map_or_default(|n| n.parsed.aliases.clone());
+            let deprecated = note.is_some_and(|n| daftar_core::Okf::is_deprecated(path, &n.parsed.properties));
+            Candidate::new(path, &Vault::title(path), &aliases).deprecated(deprecated)
         })
         .collect()
+}
+
+/// [title], a row's markup, dimmed when the note at [path] is a deprecated
+/// concept (`docs/specs/open-knowledge-format.md`).
+fn dimmed(store: &VaultStore, path: &str, title: String) -> String {
+    if store.is_deprecated(path) { format!("<span alpha=\"55%\">{title}</span>") } else { title }
 }
 
 /// The file the quick switcher ranks first for [query], as the home page's
@@ -84,7 +92,7 @@ pub fn present(
                     let folder = QuickSwitcher::folder(&path);
                     let title = Vault::title(&path);
                     let (in_title, in_folder) = QuickSwitcher::highlights(query, &title, &folder);
-                    Row { title: marked(&title, &in_title), subtitle: marked(&folder, &in_folder), path }
+                    Row { title: dimmed(&store, &path, marked(&title, &in_title)), subtitle: marked(&folder, &in_folder), path }
                 })
                 .collect(),
             // `#tag`: the notes with the tag or one under it, as the Mac's search lists them.
@@ -94,7 +102,7 @@ pub fn present(
                 .filter(|path| !store.is_hidden(path))
                 .take(LIMIT)
                 .map(|path| Row {
-                    title: glib::markup_escape_text(&Vault::title(&path)).into(),
+                    title: dimmed(&store, &path, glib::markup_escape_text(&Vault::title(&path)).into()),
                     subtitle: glib::markup_escape_text(&QuickSwitcher::folder(&path)).into(),
                     path,
                 })
@@ -105,7 +113,7 @@ pub fn present(
                 .into_iter()
                 .filter(|hit| !store.is_hidden(&hit.path))
                 .map(|hit| Row {
-                    title: glib::markup_escape_text(&Vault::title(&hit.path)).into(),
+                    title: dimmed(&store, &hit.path, glib::markup_escape_text(&Vault::title(&hit.path)).into()),
                     subtitle: snippet(&hit.snippet),
                     path: hit.path,
                 })

@@ -1032,6 +1032,10 @@ fn okf_problems(index: &VaultIndex, root: &Path, path: &str, replaced: &HashMap<
     let note = &index.notes[path];
     for link in &note.parsed.links {
         let Some(new) = index.resolve(&link.target, path).and_then(|to| replaced.get(&to)) else { continue };
+        // The note that replaced it may name what it replaced.
+        if new == path {
+            continue;
+        }
         let name = Vault::title(new);
         let name = if index.resolve(&name, path).as_ref() == Some(new) { name } else { new.strip_suffix(".md").unwrap_or(new).to_string() };
         found.push((link.line + 1, "okf-superseded", format!("{}\t{name}", link.target)));
@@ -1146,9 +1150,10 @@ mod tests {
                 "---\ntype: Metric\nstatus: archived\nstale_after: soon\nverified:\n  - by: \"human:x\"\ngenerated: { at: 2026-01-01 }\n---\n",
             ),
             ("Old.md", "---\ntype: Guide\nstatus: deprecated\nsuperseded_by: /New.md\n---\n# Old\n"),
-            ("New.md", "---\ntype: Guide\n---\n# New\n"),
+            ("New.md", "---\ntype: Guide\n---\n# New\n\nIt replaced [[Old]].\n"),
             ("Reader.md", "# Reader\n\nSee [[Old]] and [[Old|the guide]], and [md](Old.md).\nAnd [[Fresh]].\n"),
             ("Plain.md", "---\nstatus: archived\nstale_after: 2020-01-01\n---\nNot a concept.\n"),
+            ("Notes/About.md", "It replaced [[Old]].\n"),
         ]);
         let with = Options { okf: true, ..options() };
         let okf = |options: &Options| -> Vec<String> {
@@ -1161,6 +1166,7 @@ mod tests {
                 "Archived.md:1\twarning\tokf-event\tgenerated lacks by",
                 "Archived.md:1\twarning\tokf-status\tstatus is none of draft, stable and deprecated: archived",
                 "Archived.md:1\twarning\tokf-time\tstale_after is not a time (a date, or a date and time with an offset): soon, so the concept counts as stale",
+                "Notes/About.md:1\twarning\tokf-superseded\tOld is deprecated: it was replaced by New",
                 "Reader.md:3\twarning\tokf-superseded\tOld is deprecated: it was replaced by New",
                 "Reader.md:3\twarning\tokf-superseded\tOld.md is deprecated: it was replaced by New",
                 "Stale.md:1\twarning\tokf-stale\tthe concept is stale since 2020-01-01: check it again",

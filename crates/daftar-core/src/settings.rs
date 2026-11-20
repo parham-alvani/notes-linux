@@ -100,7 +100,7 @@ const ALLOWED: &[(&str, Rule)] = &[
 /// The keys a vault never sets: they are the computer's own, they name or
 /// start a program, or they send the notes' paths to a service.
 const NEVER: &[&str] =
-    &["vault", "vault_settings", "editor.vim_mode", "editor.neovide", "editor.nvim", "editor.nvim_config", "terminal.shell"];
+    &["vault", "vault_settings", "editor.vim_mode", "editor.neovide", "editor.nvim", "editor.nvim_config", "terminal.shell", "okf.actor"];
 
 /// The sections every key of which a vault never sets.
 const NEVER_SECTIONS: &[&str] = &["wakatime"];

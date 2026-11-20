@@ -22,6 +22,9 @@ pub struct Candidate {
     /// The folders and the name, as a word with a `/` is matched.
     full: String,
     note: bool,
+    /// A deprecated concept (`docs/specs/open-knowledge-format.md`): it
+    /// comes after the others of the same rank.
+    deprecated: bool,
 }
 
 impl Candidate {
@@ -36,7 +39,15 @@ impl Candidate {
             folders,
             full,
             note: Vault::opens_in_app(path),
+            deprecated: false,
         }
+    }
+
+    /// The candidate as a deprecated concept, or not.
+    #[must_use]
+    pub fn deprecated(mut self, deprecated: bool) -> Candidate {
+        self.deprecated = deprecated;
+        self
     }
 }
 
@@ -58,7 +69,7 @@ impl QuickSwitcher {
         for (at, path) in recent.iter().enumerate() {
             recency.entry(path.as_str()).or_insert(at);
         }
-        let mut scored: Vec<(&str, i64, i64)> = Vec::with_capacity(64);
+        let mut scored: Vec<(&str, i64, i64, bool)> = Vec::with_capacity(64);
         for candidate in candidates {
             let Some(matched) = score(&words, candidate) else { continue };
             let mut total = matched;
@@ -76,9 +87,9 @@ impl QuickSwitcher {
             if let Some(&at) = recency.get(candidate.path.as_str()) {
                 total += 1.max(12 - at as i64);
             }
-            scored.push((&candidate.path, total, matched));
+            scored.push((&candidate.path, total, matched, candidate.deprecated));
         }
-        scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.chars().count().cmp(&b.0.chars().count())).then(a.0.cmp(b.0)));
+        scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.3.cmp(&b.3)).then(a.0.chars().count().cmp(&b.0.chars().count())).then(a.0.cmp(b.0)));
         // Letters spread over a path match nearly anything: once something
         // matches well, what matches under half as well is noise, not a
         // result. The words alone are compared, not the bonus of an exact
@@ -293,5 +304,14 @@ mod tests {
         let (title, folder) = QuickSwitcher::highlights("acme int", "Interview", "Companies/Acme");
         assert_eq!(title, [0, 1, 2].into());
         assert_eq!(folder, [10, 11, 12, 13].into());
+    }
+    #[test]
+    fn a_deprecated_concept_comes_after_the_others_of_its_rank() {
+        let plain = |path: &str| Candidate::new(path, &Vault::title(path), &[]);
+        let candidates = [plain("A/Plan.md").deprecated(true), plain("B/Plan.md"), plain("Planning.md").deprecated(true)];
+        assert_eq!(QuickSwitcher::rank("plan", &candidates, &[], 10), ["B/Plan.md", "A/Plan.md", "Planning.md"]);
+        // A better match still comes first, deprecated or not.
+        let candidates = [plain("Plan.md").deprecated(true), plain("Old/Planning.md")];
+        assert_eq!(QuickSwitcher::rank("plan", &candidates, &[], 10), ["Plan.md", "Old/Planning.md"]);
     }
 }

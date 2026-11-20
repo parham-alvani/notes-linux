@@ -30,9 +30,9 @@ A note is a concept when its front matter has a `type` that is not empty (§3.2)
 
 ## 2. How it is shown
 
-- **The inspector** (the properties form of [Properties](properties.md)) has a Concept row above the properties of a concept: its type, then chips for the trust tier ("Unverified", "Machine-confirmed", "Human-reviewed", with the last current verifier and day in the tooltip), the status when it is not `stable` ("Draft", "Deprecated", or the raw value), and "Stale since <day>" or "Stale: bad date". A note that is not a concept has no row.
-- **The reader** has one line above a deprecated or stale concept's text, and nothing above any other: "Deprecated. Replaced by <link>." (the link from `superseded_by`, left out when it is absent or does not resolve) or "Stale since <day>: check it again."
-- **Quick open and search** show a deprecated concept dimmed, after the others of the same rank.
+- **The inspector** (the properties form of [Properties](properties.md)) has a Concept row above the properties of a concept (on Linux the row is the inspector's own, above the form, since a front matter with `verified` events is shown there as YAML): its type, then chips for the trust tier ("Unverified", "Machine-confirmed", "Human-reviewed", with the last current verifier and day in the tooltip), the status when it is not `stable` ("Draft", "Deprecated", or the raw value), and "Stale since <day>" or "Stale: bad date". A note that is not a concept has no row.
+- **The reader** has one line above a deprecated or stale concept's text, and nothing above any other (the host's, not the page's: on Linux a banner over the web view, whose button opens the replacement; deprecated wins over stale, and a malformed date says "Stale: bad date. Check it again."): "Deprecated. Replaced by <link>." (the link from `superseded_by`, left out when it is absent or does not resolve) or "Stale since <day>: check it again."
+- **Quick open and search** show a deprecated concept dimmed, and quick open puts it after the others of the same rank (search keeps its own order).
 - **Mark as Verified** (the palette, and a button in the Concept row): adds `{ by: "human:<id>", at: "<now, UTC, to the second>" }` to `verified` by writing that one key again in the front matter, as a block list of `by` and `at` in double quotes, which keeps every other line byte for byte (the properties form of `PropertySheet` holds no list of mappings, so the write is the format's own). `<id>` is `okf.actor` in `config.toml` (the app's settings on Android), else the local part of the clone's `user.email`, else the command is off and says to set it. An event of that actor already there is replaced, not added twice. It is offered on a concept only, and never in a read-only vault.
 
 ## 3. Links, as OKF reads them
@@ -58,7 +58,7 @@ OKF's links are Markdown links, `[text](target)`, not wikilinks. A vault may hol
 | `okf-time` | a time key (`stale_after`, `generated.at`, `verified[].at`) is malformed; a malformed `stale_after` is said here once, with that it counts as stale, and not as `okf-stale` too |
 | `okf-status` | `status` is none of the three |
 | `okf-event` | a `verified` event, or `generated`, lacks `by` (or an event `at`) |
-| `okf-superseded` | a link or wikilink goes to a deprecated concept that has a `superseded_by`; the message names the replacement, and `--fix` writes it in a wikilink, which shows what it showed (`[[Old]]` is `[[New\|Old]]`); a Markdown link is warned of and left |
+| `okf-superseded` | a link or wikilink goes to a deprecated concept that has a `superseded_by`; the message names the replacement, and `--fix` writes it in a wikilink, which shows what it showed (`[[Old]]` is `[[New\|Old]]`); a Markdown link is warned of and left; a link in the replacement itself is not warned of |
 
 **The MCP server**: `note_info` and `note_context` say `concept: <type>; <tier>; <status>; stale since …` for a concept. A new reading tool, `concepts`, lists them (`type`, `status`, `tier`, `stale`, `folder` as filters; each line the path, the type and the description), so an agent sees what there is before it opens a note, as an `index.md` would show it.
 
