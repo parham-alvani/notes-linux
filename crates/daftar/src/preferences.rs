@@ -39,22 +39,78 @@ pub type Forget = Box<dyn Fn(&str, &str)>;
 
 /// What a setting the vault holds says in place of its control.
 const FROM_VAULT: &str = "From the vault";
-const FROM_VAULT_TIP: &str = "The vault's .daftar.toml sets this for every computer that opens it. To keep your own, name the key in vault_settings in config.toml, or set vault_settings = false.";
+const FROM_VAULT_TIP: &str = "The vault's .daftar.toml sets this, and the vault cannot be written here (a read-only clone), so it is not changed. To keep your own, name the key in vault_settings in config.toml, or set vault_settings = false.";
 
-/// A key the vault sets is shown with its value and "From the vault", and
-/// its control is off (docs/specs/vault-config.md).
-fn from_vault(settings: &Rc<RefCell<AppSettings>>, key: &str, row: &impl IsA<adw::PreferencesRow>) {
-    if !settings.borrow().is_from_vault(key) {
-        return;
-    }
-    let row: &adw::PreferencesRow = row.as_ref();
-    row.set_sensitive(false);
-    row.set_tooltip_text(Some(FROM_VAULT_TIP));
-    match row.dynamic_cast_ref::<adw::ActionRow>() {
-        Some(row) => row.set_subtitle(FROM_VAULT),
-        // An entry has no second line: its name says it.
-        None => row.set_title(&format!("{} · {FROM_VAULT}", row.title())),
-    }
+/// A key a vault may hold: when the vault sets it, the row says "From the
+/// vault", and its control works where the vault can be written (the
+/// change goes to `.daftar.toml`); in a read-only clone it is off. The
+/// row's context menu has Keep on This Device, which declines the key in
+/// `vault_settings`, and Follow the Vault, which takes it off that list
+/// (`docs/specs/vault-config.md`, sections 4 and 5).
+fn from_vault(settings: &Rc<RefCell<AppSettings>>, key: &'static str, row: &impl IsA<adw::PreferencesRow>) {
+    let row: adw::PreferencesRow = row.as_ref().clone();
+    let action = row.clone().downcast::<adw::ActionRow>().ok();
+    // What the row said of itself, before the mark.
+    let own = action.as_ref().map_or_else(|| row.title().to_string(), |row| row.subtitle().unwrap_or_default().to_string());
+    let mark = {
+        let (settings, row) = (settings.clone(), row.clone());
+        Rc::new(move || {
+            let settings = settings.borrow();
+            let state = if settings.is_kept_on_device(key) {
+                "Kept on this device"
+            } else if settings.is_from_vault(key) {
+                FROM_VAULT
+            } else {
+                ""
+            };
+            let said = match (state.is_empty(), own.is_empty()) {
+                (true, _) => own.clone(),
+                (false, true) => state.to_string(),
+                (false, false) => format!("{state} · {own}"),
+            };
+            match &action {
+                Some(row) => row.set_subtitle(&said),
+                // An entry has no second line: its name says it.
+                None => row.set_title(&said),
+            }
+            // Off where the vault sets it and cannot be written; what else turns a row off stays.
+            if !settings.can_change(key) {
+                row.set_sensitive(false);
+                row.set_tooltip_text(Some(FROM_VAULT_TIP));
+            }
+        })
+    };
+    mark();
+    let click = gtk::GestureClick::builder().button(gtk::gdk::BUTTON_SECONDARY).build();
+    let settings = settings.clone();
+    click.connect_pressed(move |gesture, _, x, y| {
+        let Some(row) = gesture.widget() else { return };
+        // A key the vault sets in a clone that cannot be written is the vault's: nothing to choose.
+        let kept = settings.borrow().is_kept_on_device(key);
+        let button =
+            gtk::Button::builder().label(if kept { "Follow the Vault" } else { "Keep on This Device" }).css_classes(["flat"]).build();
+        let popover = gtk::Popover::builder().child(&button).has_arrow(true).build();
+        popover.set_parent(&row);
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        {
+            let (settings, mark, popover) = (settings.clone(), mark.clone(), popover.clone());
+            button.connect_clicked(move |_| {
+                // The window follows `config.toml`, and draws with the value now in use.
+                let changed = if kept { settings.borrow_mut().follow_vault(key) } else { settings.borrow_mut().keep_on_device(key) };
+                if changed.is_ok() {
+                    mark();
+                    if settings.borrow().can_change(key) {
+                        row.set_sensitive(true);
+                        row.set_tooltip_text(None);
+                    }
+                }
+                popover.popdown();
+            });
+        }
+        popover.connect_closed(WidgetExt::unparent);
+        popover.popup();
+    });
+    row.add_controller(click);
 }
 
 const THEMES: [(&str, &str); 3] = [("system", "Follow the System"), ("light", "Daylight"), ("dark", "Naz")];
@@ -575,9 +631,11 @@ fn home_group(
     });
     group.add(&row);
     if settings.borrow().is_from_vault("home.image") {
-        row.set_sensitive(false);
-        row.set_tooltip_text(Some(FROM_VAULT_TIP));
         row.set_subtitle(&gtk::glib::markup_escape_text(&format!("{} · {FROM_VAULT}", row.subtitle().unwrap_or_default())));
+        if !settings.borrow().can_change("home.image") {
+            row.set_sensitive(false);
+            row.set_tooltip_text(Some(FROM_VAULT_TIP));
+        }
     }
     group
 }

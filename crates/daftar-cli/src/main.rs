@@ -854,7 +854,8 @@ enum Command {
     },
     /// Every setting with its value and where it came from, a line each
     /// (`key`, a tab, the value as the file writes it, a tab, `vault`,
-    /// `computer` or `default`): the vault's `.daftar.toml` may set the
+    /// `vault (linux)` for the vault's table of this platform, `computer`
+    /// or `default`): the vault's `.daftar.toml` may set the
     /// app's settings for every computer that opens it, and
     /// `vault_settings` in the config file declines them. A key the vault
     /// may not set is listed last as `refused`, with the value it wrote.
@@ -2272,8 +2273,14 @@ mod tests {
         assert_eq!(row("files.hidden", "default")["value"][0], "CLAUDE.md");
         assert_eq!(row("git.name", "default")["value"], serde_json::Value::Null);
         assert_eq!(row("terminal.shell", "refused")["value"], "/tmp/x");
+        // The vault's table for this platform is said as such.
         assert_eq!(row("terminal.shell", "default")["value"], "");
         assert_eq!(entries.last().unwrap().from.name(), "refused");
+        // The vault's table for this platform is said as such.
+        let tabled =
+            daftar_core::Settings::resolved("[appearance]\ntheme = \"dark\"\n\n[linux.appearance]\nfont = \"Inter\"\n", "").entries();
+        let from = |key: &str| tabled.iter().find(|e| e.key == key).unwrap().from.name();
+        assert_eq!((from("appearance.font"), from("appearance.theme")), ("vault (linux)", "vault"));
     }
 
     /// The Mac's `CaptureTests`, through the command line's capture.

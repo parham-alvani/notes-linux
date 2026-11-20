@@ -131,7 +131,7 @@ pub use reading_places::ReadingPlaces;
 pub use search::{Hit, SearchIndex};
 pub use sections::{Moved, Sections};
 pub use semantic::{Chunk, Embedder, Nearby, SemanticIndex};
-pub use settings::{Entry as SettingEntry, Origin, Settings};
+pub use settings::{Entry as SettingEntry, Origin, Platform, Settings, Target as SettingTarget};
 pub use tag_rename::TagRename;
 pub use tag_tree::TagNode;
 pub use task_board::{Column, Drop as BoardDrop, Grouping, Postpone, TaskBoard};

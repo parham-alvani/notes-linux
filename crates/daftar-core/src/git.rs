@@ -398,8 +398,10 @@ impl Git {
     pub fn read_only(root: &Path) -> bool {
         let mut known = KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let known = known.get_or_insert_default();
+        // A folder that was no repository and has a `.git` now is asked about again at once.
         if let Some(entry) = known.get(root)
             && entry.holds()
+            && (entry.config.is_some() || !root.join(".git").exists())
         {
             return entry.read_only;
         }

@@ -277,6 +277,11 @@ impl Window {
             .tooltip_text("This vault is read-only on this computer. Daftar pulls and never writes.")
             .visible(false)
             .build();
+        {
+            // A setting written to the vault's `.daftar.toml` is an edit: the sync that follows one takes it.
+            let git = git.clone();
+            settings.borrow_mut().on_vault_written = Some(Rc::new(move || git.edited()));
+        }
         let this = Window {
             read_only: Rc::default(),
             read_only_badge: read_only_badge.clone(),

@@ -17,6 +17,8 @@ use crate::{ConfigFile, Value, VaultEdits, VaultSettings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
     Vault,
+    /// The vault's table for this platform (`[linux.…]`).
+    Platform(Platform),
     Computer,
     Default,
     /// A key of `.daftar.toml` the vault may not set: its value is not used.
@@ -27,11 +29,69 @@ impl Origin {
     pub fn name(self) -> &'static str {
         match self {
             Origin::Vault => "vault",
+            Origin::Platform(Platform::Linux) => "vault (linux)",
+            Origin::Platform(Platform::Macos) => "vault (macos)",
+            Origin::Platform(Platform::Android) => "vault (android)",
             Origin::Computer => "computer",
             Origin::Default => "default",
             Origin::Refused => "refused",
         }
     }
+}
+
+/// The platforms the vault's `.daftar.toml` may hold a table for: each
+/// reads its own over the shared sections, and never another's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Linux,
+    Macos,
+    Android,
+}
+
+impl Platform {
+    pub const ALL: [Platform; 3] = [Platform::Linux, Platform::Macos, Platform::Android];
+
+    /// The table's name in `.daftar.toml`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Platform::Linux => "linux",
+            Platform::Macos => "macos",
+            Platform::Android => "android",
+        }
+    }
+
+    /// The settings only this platform has that a vault may hold: they
+    /// live in the platform's table, under the name its app gives them.
+    fn own_keys(self) -> &'static [&'static str] {
+        match self {
+            Platform::Linux => &["scratchpad.folder"],
+            Platform::Macos => &["capture.hotkey"],
+            Platform::Android => &[],
+        }
+    }
+
+    /// The platform whose table [key] of `.daftar.toml` is in, and the key
+    /// under it.
+    fn of(key: &str) -> Option<(Platform, &str)> {
+        Self::ALL.into_iter().find_map(|platform| Some((platform, key.strip_prefix(platform.name())?.strip_prefix('.')?)))
+    }
+}
+
+/// The keys that differ by platform by nature: a font one system has and
+/// another has not, a size in another unit.
+const BY_PLATFORM: &[&str] = &["appearance.font", "appearance.code_font", "terminal.font_size"];
+
+/// Where a setting changed in the app is written
+/// (`docs/specs/vault-config.md`, section 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// `config.toml`: what a repository may never hold, what the device
+    /// declines, and every change while the vault cannot be written.
+    Device,
+    /// The platform's table in the vault's `.daftar.toml`.
+    Platform,
+    /// The vault's shared section.
+    Shared,
 }
 
 /// One line of `daftar-cli config`.
@@ -152,7 +212,10 @@ pub struct Settings {
     /// The computer's file with the vault's values set in it.
     file: ConfigFile,
     from_vault: Vec<String>,
+    /// The keys of [from_vault] that the platform's table sets.
+    from_platform: Vec<String>,
     refused: Vec<(String, Option<Value>)>,
+    platform: Platform,
 }
 
 impl Settings {
@@ -160,20 +223,26 @@ impl Settings {
     /// [vault] (the text of `.daftar.toml`) may set on top. A path is
     /// checked by how it is written only; `resolved_in` follows links too.
     pub fn resolved(vault: &str, computer: &str) -> Settings {
-        Self::resolve(vault, computer, None)
+        Self::resolve(vault, computer, None, Platform::Linux)
+    }
+
+    /// As `resolved`, as [platform] reads the vault: its own table over
+    /// the shared sections.
+    pub fn resolved_on(platform: Platform, vault: &str, computer: &str) -> Settings {
+        Self::resolve(vault, computer, None, platform)
     }
 
     /// As `resolved`, for the vault at [root]: a path that is a link out of
     /// the vault is refused.
     pub fn resolved_in(vault: &str, computer: &str, root: &Path) -> Settings {
-        Self::resolve(vault, computer, Some(root))
+        Self::resolve(vault, computer, Some(root), Platform::Linux)
     }
 
     /// The settings for the vault at [root], whose `.daftar.toml` is read
     /// now, with [computer] as the text of `config.toml`.
     pub fn of(root: &Path, computer: &str) -> Settings {
         let vault = std::fs::read_to_string(root.join(VaultSettings::FILE)).unwrap_or_default();
-        Self::resolve(&vault, computer, Some(root))
+        Self::resolve(&vault, computer, Some(root), Platform::Linux)
     }
 
     /// The settings for the vault at [root] with the computer's own file.
@@ -181,24 +250,48 @@ impl Settings {
         Self::of(root, &std::fs::read_to_string(ConfigFile::default_path()).unwrap_or_default())
     }
 
-    fn resolve(vault: &str, computer: &str, root: Option<&Path>) -> Settings {
+    fn resolve(vault: &str, computer: &str, root: Option<&Path>, platform: Platform) -> Settings {
         let computer = ConfigFile::new(computer);
         let follows = Follows::of(&computer);
         let mut file = computer.clone();
-        let (mut from_vault, mut refused) = (Vec::new(), Vec::new());
-        for (key, value) in ConfigFile::new(vault).keys() {
-            match verdict(&key, value.as_ref(), root) {
-                Verdict::Used if follows.key(&key) => {
-                    if let Some(value) = value {
-                        file.set(&key, value);
-                        from_vault.push(key);
+        let (mut from_vault, mut from_platform, mut refused) = (Vec::new(), Vec::new(), Vec::new());
+        let keys = ConfigFile::new(vault).keys();
+        // The shared sections first, then the platform's own table over them.
+        for own in [false, true] {
+            for (written, value) in &keys {
+                let key = match Platform::of(written) {
+                    Some((table, key)) if table == platform && own => key,
+                    None if !own => written.as_str(),
+                    // Another platform's table is never read.
+                    _ => continue,
+                };
+                match verdict(key, value.as_ref(), root) {
+                    Verdict::Used if follows.key(key) => {
+                        if let Some(value) = value {
+                            file.set(key, value.clone());
+                            if !from_vault.iter().any(|known| known == key) {
+                                from_vault.push(key.to_string());
+                            }
+                            if own {
+                                from_platform.push(key.to_string());
+                            }
+                        }
                     }
+                    Verdict::Used | Verdict::Skipped => {}
+                    Verdict::Refused => refused.push((written.clone(), value.clone())),
                 }
-                Verdict::Used | Verdict::Skipped => {}
-                Verdict::Refused => refused.push((key, value)),
             }
         }
-        Settings { vault: vault.to_string(), computer, root: root.map(Path::to_path_buf), file, from_vault, refused }
+        Settings {
+            vault: vault.to_string(),
+            computer,
+            root: root.map(Path::to_path_buf),
+            file,
+            from_vault,
+            from_platform,
+            refused,
+            platform,
+        }
     }
 
     /// The settings in use, as one file: the computer's, with the vault's
@@ -238,16 +331,85 @@ impl Settings {
         self.refused.iter().map(|(key, _)| key.as_str()).collect()
     }
 
-    /// A change made in the app: it goes to the computer's file, never to
-    /// the vault's. The caller writes `computer().text()` to `config.toml`.
-    /// A change to a key the vault sets (the zoom, the export's choices)
-    /// holds until the settings are read again; then the vault's value
-    /// returns.
-    pub fn set(&mut self, key: &str, value: Value) {
+    /// Whether a vault may hold [key] at all: it is on the list.
+    pub fn may_hold(key: &str) -> bool {
+        ALLOWED.iter().any(|(allowed, _)| *allowed == key)
+    }
+
+    /// Whether this device keeps [key] for itself: `vault_settings` is
+    /// `false`, or names it.
+    pub fn is_kept_on_device(&self, key: &str) -> bool {
+        !Follows::of(&self.computer).key(key)
+    }
+
+    /// Where a change of [key] to [value] made in the app is written, the
+    /// first that applies: the device, when a repository may never hold the
+    /// key or the value, when the device keeps the key, or when the vault
+    /// cannot be written ([writable] false: a read-only clone, a folder
+    /// with no `.daftar.toml` that is no repository); the platform's table,
+    /// when the key is there already or differs by platform by nature;
+    /// else the vault's shared section.
+    pub fn write_target(&self, key: &str, value: &Value, writable: bool) -> Target {
+        let held = matches!(verdict(key, Some(value), self.root.as_deref()), Verdict::Used);
+        if !writable || !held || self.is_kept_on_device(key) {
+            return Target::Device;
+        }
+        let in_table = ConfigFile::new(self.vault.as_str()).get(&format!("{}.{key}", self.platform.name())).is_some();
+        if in_table || BY_PLATFORM.contains(&key) || self.platform.own_keys().contains(&key) { Target::Platform } else { Target::Shared }
+    }
+
+    /// A change made in the app: [key] is [value], written where
+    /// `write_target` says. Only the line of that key changes in the file
+    /// it goes to, every other line stays byte for byte; a key that is not
+    /// there is added at the end of its section, and a section that is not
+    /// there at the end of the file. The caller writes `vault_text()` to
+    /// `.daftar.toml` or `computer().text()` to `config.toml`, the one
+    /// that changed. A change that goes to the device for a key the vault
+    /// sets holds until the settings are read again.
+    pub fn set(&mut self, key: &str, value: Value, writable: bool) -> Target {
+        let target = self.write_target(key, &value, writable);
+        let (mut vault, mut computer) = (ConfigFile::new(self.vault.as_str()), self.computer.clone());
+        match target {
+            Target::Device => computer.set(key, value.clone()),
+            Target::Platform => vault.set(&format!("{}.{key}", self.platform.name()), value.clone()),
+            Target::Shared => vault.set(key, value.clone()),
+        }
+        *self = Self::resolve(vault.text(), computer.text(), self.root.as_deref(), self.platform);
+        if target == Target::Device {
+            self.file.set(key, value);
+        }
+        target
+    }
+
+    /// Keep on This Device: [key] is added to the keys `vault_settings`
+    /// declines, and its value in use is written to the device. The
+    /// vault's line stays.
+    pub fn keep_on_device(&mut self, key: &str) {
         let mut computer = self.computer.clone();
-        computer.set(key, value.clone());
-        *self = Self::resolve(&self.vault, computer.text(), self.root.as_deref());
-        self.file.set(key, value);
+        let mut declined = match computer.get("vault_settings") {
+            // Every key is the device's already.
+            Some(Value::Bool(false)) => return,
+            Some(Value::Strings(declined)) => declined,
+            _ => Vec::new(),
+        };
+        if !declined.iter().any(|known| known == key) {
+            declined.push(key.to_string());
+        }
+        if let Some(value) = self.file.get(key) {
+            computer.set(key, value);
+        }
+        computer.set("vault_settings", Value::Strings(declined));
+        *self = Self::resolve(&self.vault, computer.text(), self.root.as_deref(), self.platform);
+    }
+
+    /// Follow the Vault: [key] is taken off the keys `vault_settings`
+    /// declines, and the vault's value is used again.
+    pub fn follow_vault(&mut self, key: &str) {
+        let mut computer = self.computer.clone();
+        let Some(Value::Strings(mut declined)) = computer.get("vault_settings") else { return };
+        declined.retain(|known| known != key);
+        computer.set("vault_settings", Value::Strings(declined));
+        *self = Self::resolve(&self.vault, computer.text(), self.root.as_deref(), self.platform);
     }
 
     /// The text of the vault's file these settings were made from.
@@ -280,7 +442,9 @@ impl Settings {
         let mut entries: Vec<Entry> = keys
             .into_iter()
             .map(|key| {
-                let from = if self.is_from_vault(&key) {
+                let from = if self.from_platform.contains(&key) {
+                    Origin::Platform(self.platform)
+                } else if self.is_from_vault(&key) {
                     Origin::Vault
                 } else if self.computer.get(&key).is_some() {
                     Origin::Computer
@@ -525,21 +689,160 @@ mod tests {
     }
 
     #[test]
-    fn a_setting_changed_in_the_app_goes_to_the_computer() {
-        let vault = "# The vault's taste.\n[appearance]\ntheme = \"dark\"\n";
+    fn a_setting_changed_in_the_app_goes_to_the_vault() {
+        let vault = "# mine\n[appearance]\ntheme = \"dark\" # night\n";
         let mut settings = Settings::resolved(vault, COMPUTER);
-        settings.set("appearance.text_size", Value::Int(18));
-        assert_eq!(settings.computer().int("appearance.text_size"), Some(18));
-        assert_eq!(settings.int("appearance.text_size"), Some(18));
+        // A key that is not there is added at the end of its section.
+        assert_eq!(settings.set("appearance.text_size", Value::Int(16), true), Target::Shared);
+        assert_eq!(settings.vault_text(), "# mine\n[appearance]\ntheme = \"dark\" # night\ntext_size = 16\n");
+        assert_eq!(settings.computer().text(), COMPUTER);
+        assert_eq!(settings.int("appearance.text_size"), Some(16));
+        // Only the line of the key changes, and its comment stays.
+        assert_eq!(settings.set("appearance.theme", Value::String("light".into()), true), Target::Shared);
+        assert_eq!(settings.vault_text(), "# mine\n[appearance]\ntheme = \"light\" # night\ntext_size = 16\n");
+        // A section that is not there is added at the end of the file, with one blank line before it.
+        assert_eq!(settings.set("notifications.digest", Value::Bool(false), true), Target::Shared);
+        assert_eq!(
+            settings.vault_text(),
+            "# mine\n[appearance]\ntheme = \"light\" # night\ntext_size = 16\n\n[notifications]\ndigest = false\n"
+        );
+        assert_eq!(settings.computer().text(), COMPUTER);
+        assert_eq!(settings.bool("notifications.digest"), Some(false));
+        // A value equal to the default is still written: the vault says it on purpose.
+        let mut plain = Settings::resolved("", "");
+        assert_eq!(plain.set("appearance.text_size", Value::Int(14), true), Target::Shared);
+        assert_eq!(plain.vault_text(), "\n[appearance]\ntext_size = 14\n");
+    }
+
+    #[test]
+    fn a_platform_reads_its_own_table() {
+        let vault = "[appearance]\ntext_size = 14\n[macos.appearance]\ntext_size = 15\n[android.appearance]\ntext_size = 16\n";
+        let size = |platform| Settings::resolved_on(platform, vault, "[appearance]\ntext_size = 12\n").int("appearance.text_size");
+        assert_eq!(size(Platform::Macos), Some(15));
+        assert_eq!(size(Platform::Android), Some(16));
+        assert_eq!(size(Platform::Linux), Some(14));
+        // The platform's table is over the shared section, whatever the order of the file.
+        let first = "[linux.appearance]\ntext_size = 18\n[appearance]\ntext_size = 14\ntheme = \"dark\"\n";
+        let linux = Settings::resolved(first, "");
+        assert_eq!((linux.int("appearance.text_size"), linux.string("appearance.theme").as_deref()), (Some(18), Some("dark")));
+        let from = |settings: &Settings, key: &str| settings.entries().into_iter().find(|e| e.key == key).unwrap().from;
+        assert_eq!(from(&linux, "appearance.text_size").name(), "vault (linux)");
+        assert_eq!(from(&linux, "appearance.theme").name(), "vault");
+        // The allow-list, the ranges and the path rules hold in a table as in a shared section.
+        let refused =
+            Settings::resolved_on(Platform::Macos, "[macos.terminal]\nshell = \"/tmp/x\"\n[macos.appearance]\ntext_size = 99\n", "");
+        assert_eq!(refused.refused(), ["macos.terminal.shell"]);
+        assert_eq!(refused.string("terminal.shell"), None);
+        assert!(!refused.is_from_vault("appearance.text_size"));
+        // Another platform's table is never read, nor named.
+        let other = Settings::resolved("[macos.terminal]\nshell = \"/tmp/x\"\n[macos.appearance]\ntheme = \"dark\"\n", "");
+        assert!(other.refused().is_empty() && !other.is_from_vault("appearance.theme"));
+        // A device that declines a key declines it in the table too.
+        let declined = Settings::resolved("[linux.appearance]\ntext_size = 18\n", "vault_settings = [\"appearance.text_size\"]\n");
+        assert!(!declined.is_from_vault("appearance.text_size"));
+    }
+
+    #[test]
+    fn a_font_is_written_to_the_platforms_table() {
+        let mut mac = Settings::resolved_on(Platform::Macos, "[appearance]\ntext_size = 14\n", "");
+        assert_eq!(mac.set("appearance.font", Value::String("SF Pro".into()), true), Target::Platform);
+        assert_eq!(mac.vault_text(), "[appearance]\ntext_size = 14\n\n[macos.appearance]\nfont = \"SF Pro\"\n");
+        assert_eq!(mac.string("appearance.font").as_deref(), Some("SF Pro"));
+        // A key the platform's table has already changes there, not in the shared section.
+        let mut mac = Settings::resolved_on(Platform::Macos, "[appearance]\ntext_size = 14\n[macos.appearance]\ntext_size = 15\n", "");
+        assert_eq!(mac.set("appearance.text_size", Value::Int(17), true), Target::Platform);
+        assert_eq!(mac.vault_text(), "[appearance]\ntext_size = 14\n[macos.appearance]\ntext_size = 17\n");
+        // On Linux the fonts, the terminal's size and the settings only Linux has go to `[linux]`.
+        let mut linux = Settings::resolved("", "");
+        for (key, value) in [
+            ("appearance.font", Value::String("Inter".into())),
+            ("appearance.code_font", Value::String("JetBrains Mono".into())),
+            ("terminal.font_size", Value::Int(12)),
+            ("scratchpad.folder", Value::String("Scratch".into())),
+        ] {
+            assert_eq!(linux.set(key, value, true), Target::Platform, "{key}");
+        }
+        assert_eq!(
+            linux.vault_text(),
+            "\n[linux.appearance]\nfont = \"Inter\"\ncode_font = \"JetBrains Mono\"\n\n[linux.terminal]\nfont_size = 12\n\n[linux.scratchpad]\nfolder = \"Scratch\"\n"
+        );
+        assert_eq!(linux.set("appearance.theme", Value::String("dark".into()), true), Target::Shared);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn what_a_vault_may_not_hold_goes_to_the_device() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("vault");
+        std::fs::create_dir_all(root.join("uploads")).unwrap();
+        std::fs::write(root.join("uploads/home.webp"), "").unwrap();
+        let vault = "# The vault's taste.\n[appearance]\ntheme = \"dark\"\n";
+        let computer = "vault = \"~/notes\"\n";
+        let device = |key: &str, value: Value| {
+            let mut settings = Settings::resolved_in(vault, computer, &root);
+            assert_eq!(settings.set(key, value.clone(), true), Target::Device, "{key}");
+            assert_eq!(settings.vault_text(), vault, "{key}");
+            assert_eq!(settings.computer().get(key), Some(value), "{key}");
+        };
+        // A program, what a vault may only turn off, a file outside the vault, the device's own keys.
+        device("terminal.shell", Value::String("/bin/fish".into()));
+        device("editor.vim_mode", Value::Bool(true));
+        device("wakatime.enabled", Value::Bool(true));
+        device("appearance.remote_images", Value::Bool(true));
+        device("home.image", Value::String("~/Pictures/home.png".into()));
+        device("home.image", Value::String("/etc/passwd".into()));
+        device("okf.actor", Value::String("parham".into()));
+        device("vault", Value::String("~/other".into()));
+        device("vaults", Value::Strings(vec!["~/other".into()]));
+        device("vault_settings", Value::Bool(true));
+        // What a vault may hold goes to it: pictures off, a picture in the vault.
+        let mut settings = Settings::resolved_in(vault, computer, &root);
+        assert_eq!(settings.set("appearance.remote_images", Value::Bool(false), true), Target::Shared);
+        assert_eq!(settings.set("home.image", Value::String("uploads/home.webp".into()), true), Target::Shared);
+        assert_eq!(settings.computer().text(), computer);
+        // Every change in a read-only clone, and with `vault_settings = false`, goes to the device.
+        let mut read_only = Settings::resolved_in(vault, computer, &root);
+        assert_eq!(read_only.set("appearance.text_size", Value::Int(18), false), Target::Device);
+        assert_eq!(read_only.set("appearance.theme", Value::String("system".into()), false), Target::Device);
+        assert_eq!(read_only.vault_text(), vault);
+        assert_eq!(read_only.computer().int("appearance.text_size"), Some(18));
+        // A change to a key the vault sets holds until the settings are read again; then the vault's value returns.
+        assert_eq!(read_only.string("appearance.theme").as_deref(), Some("system"));
+        assert_eq!(Settings::resolved(vault, read_only.computer().text()).string("appearance.theme").as_deref(), Some("dark"));
+        let mut declined = Settings::resolved_in(vault, "vault_settings = false\n", &root);
+        assert_eq!(declined.set("appearance.text_size", Value::Int(18), true), Target::Device);
+        assert_eq!(declined.vault_text(), vault);
+        assert_eq!(declined.computer().text(), "vault_settings = false\n\n[appearance]\ntext_size = 18\n");
+    }
+
+    #[test]
+    fn keep_on_this_device_declines_the_key() {
+        let vault = "[appearance]\ntheme = \"dark\"\ntext_size = 16\n";
+        let mut settings = Settings::resolved(vault, "vault = \"~/notes\"\n\n[appearance]\ntheme = \"light\"\n");
+        assert_eq!(settings.string("appearance.theme").as_deref(), Some("dark"));
+        settings.keep_on_device("appearance.theme");
+        // The key is declined, the value in use is the device's, and the vault's line stays.
+        assert_eq!(
+            settings.computer().text(),
+            "vault = \"~/notes\"\nvault_settings = [\"appearance.theme\"]\n\n[appearance]\ntheme = \"dark\"\n"
+        );
         assert_eq!(settings.vault_text(), vault);
-        // A change to a key the vault sets is written to the computer's file and holds
-        // until the settings are read again; then the vault's value returns.
-        settings.set("appearance.theme", Value::String("system".into()));
+        assert!(settings.is_kept_on_device("appearance.theme") && !settings.is_from_vault("appearance.theme"));
+        assert_eq!(settings.string("appearance.theme").as_deref(), Some("dark"));
+        // A later change of the key writes the device.
+        assert_eq!(settings.set("appearance.theme", Value::String("system".into()), true), Target::Device);
+        assert_eq!(settings.vault_text(), vault);
         assert_eq!(settings.string("appearance.theme").as_deref(), Some("system"));
-        assert_eq!(settings.computer().string("appearance.theme").as_deref(), Some("system"));
+        // Another key still goes to the vault.
+        assert_eq!(settings.write_target("appearance.text_size", &Value::Int(18), true), Target::Shared);
+        // A second key joins the list; Follow the Vault takes one off, and the vault's value is used again.
+        settings.keep_on_device("appearance.text_size");
+        assert_eq!(settings.computer().strings("vault_settings").unwrap(), ["appearance.theme", "appearance.text_size"]);
+        settings.follow_vault("appearance.theme");
+        assert_eq!(settings.computer().strings("vault_settings").unwrap(), ["appearance.text_size"]);
+        assert_eq!(settings.string("appearance.theme").as_deref(), Some("dark"));
+        assert!(settings.is_from_vault("appearance.theme"));
         assert_eq!(settings.vault_text(), vault);
-        let again = Settings::resolved(vault, settings.computer().text());
-        assert_eq!(again.string("appearance.theme").as_deref(), Some("dark"));
     }
 
     #[test]
