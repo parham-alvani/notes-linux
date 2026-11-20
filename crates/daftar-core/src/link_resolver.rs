@@ -105,18 +105,24 @@ impl LinkResolver {
         if target.is_empty() {
             return Some(source.to_string());
         }
-        // A path as OKF reads it: `/` from the bundle's root, and one that
-        // climbs out of the vault names nothing.
+        // A path as OKF reads it: `/` from the bundle's root, `./` and `../`
+        // from the note's folder, with no other way to find it; one that
+        // climbs out of the vault names nothing. `name/` is `name/index.md`.
         let written = slugs::normalize(target);
         let written = written.trim_matches([' ', '\t']);
+        let folder = written.ends_with('/');
+        let at = |path: String| if folder { self.file(&format!("{path}/index.md")) } else { self.file(&path) };
         if written.starts_with('/') || written.starts_with("./") || written.starts_with("../") {
-            let path = crate::Okf::path(written.trim_end_matches('/'), source, &self.roots)?;
-            if written.starts_with('/') {
-                return self.file(&path);
+            let inner = if written.trim_matches('/').is_empty() { "/" } else { written.trim_end_matches('/') };
+            let found = crate::Okf::path(inner, source, &self.roots).and_then(at);
+            // A wikilink to a folder names its folder note, as before.
+            if found.is_some() || !folder {
+                return found;
             }
         } else if written.contains('/') || written.contains('.') {
-            // A path with no `/` first is from the note's folder, when a file is there.
-            if let Some(found) = crate::Okf::path(written, source, &self.roots).and_then(|path| self.file(&path)) {
+            // A path with no `/` first is from the note's folder, when a file is there;
+            // else it is found as a wikilink is, so the links the vault has keep working.
+            if let Some(found) = crate::Okf::path(written.trim_end_matches('/'), source, &self.roots).and_then(at) {
                 return Some(found);
             }
         }

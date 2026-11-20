@@ -48,7 +48,14 @@ enum Rule {
     Bool,
     /// A whole number from the first to the second.
     Int(i64, i64),
+    /// Any text of one line.
     Text,
+    /// Text of one line that says something: a font, a name.
+    Name,
+    /// `calendar.place`: a place the app knows, or empty for none.
+    Place,
+    /// `capture.target`: `daily`, or a path in the vault.
+    Target,
     /// One of these words.
     Choice(&'static [&'static str]),
     /// A list of strings.
@@ -57,7 +64,8 @@ enum Rule {
     Time,
     /// Only `false`: a vault can turn it off, never on.
     OnlyFalse,
-    /// A path in the vault: relative, with no `..`, and not a link out.
+    /// A path in the vault, or empty for none: relative, with no `..`,
+    /// and not a link out.
     InVault,
 }
 
@@ -65,25 +73,25 @@ enum Rule {
 const ALLOWED: &[(&str, Rule)] = &[
     ("appearance.theme", Rule::Choice(&["system", "light", "dark"])),
     ("appearance.text_size", Rule::Int(10, 28)),
-    ("appearance.font", Rule::Text),
-    ("appearance.code_font", Rule::Text),
-    ("appearance.text_width", Rule::Int(0, 200)),
+    ("appearance.font", Rule::Name),
+    ("appearance.code_font", Rule::Name),
+    ("appearance.text_width", Rule::Int(0, 400)),
     ("appearance.reading_line", Rule::Int(0, 100)),
     ("appearance.fold_sections", Rule::Choice(&["vault", "always", "never"])),
     ("appearance.persian_calendar", Rule::Bool),
     ("appearance.remote_images", Rule::OnlyFalse),
-    ("calendar.place", Rule::Text),
+    ("calendar.place", Rule::Place),
     ("editor.live_preview", Rule::Bool),
     ("editor.format_on_save", Rule::Bool),
-    ("git.sync_interval", Rule::Int(0, 1440)),
+    ("git.sync_interval", Rule::Int(0, 10_080)),
     ("git.pull_on_launch", Rule::Bool),
-    ("git.name", Rule::Text),
-    ("git.email", Rule::Text),
+    ("git.name", Rule::Name),
+    ("git.email", Rule::Name),
     ("notifications.meetings", Rule::Bool),
-    ("notifications.meeting_lead", Rule::Int(0, 120)),
+    ("notifications.meeting_lead", Rule::Int(0, 1440)),
     ("notifications.digest", Rule::Bool),
     ("notifications.digest_time", Rule::Time),
-    ("terminal.font_size", Rule::Int(6, 72)),
+    ("terminal.font_size", Rule::Int(9, 24)),
     ("home.image", Rule::InVault),
     ("export.logo", Rule::InVault),
     ("export.footer", Rule::Text),
@@ -91,22 +99,39 @@ const ALLOWED: &[(&str, Rule)] = &[
     ("export.landscape", Rule::Bool),
     ("scratchpad.folder", Rule::InVault),
     ("scratchpad.note", Rule::InVault),
-    ("capture.target", Rule::InVault),
+    ("capture.hotkey", Rule::Text),
+    ("capture.target", Rule::Target),
     ("capture.heading", Rule::Text),
     ("files.hidden", Rule::List),
     ("files.show_hidden", Rule::Bool),
 ];
 
-/// The keys a vault never sets: they are the computer's own, they name or
-/// start a program, or they send the notes' paths to a service.
-const NEVER: &[&str] =
-    &["vault", "vault_settings", "editor.vim_mode", "editor.neovide", "editor.nvim", "editor.nvim_config", "terminal.shell", "okf.actor"];
+/// The keys at the top of `config.toml`, never the vault's to say.
+const TOP: &[&str] = &["vault", "vault_settings"];
 
-/// The sections every key of which a vault never sets.
-const NEVER_SECTIONS: &[&str] = &["wakatime"];
+/// The sections of the app's own settings. A key in one of them that is
+/// not on the list is refused, by name: it names or starts a program
+/// (`editor.nvim`, `terminal.shell`), sends the notes' paths to a service
+/// (`wakatime.*`), or is another app's own. Every other section (`[check]`,
+/// `[audit]`, `[reader]`, `[agents]`, `[okf]`) is the vault's own.
+const SECTIONS: &[&str] = &[
+    "appearance",
+    "calendar",
+    "editor",
+    "git",
+    "notifications",
+    "terminal",
+    "scratchpad",
+    "capture",
+    "meaning",
+    "home",
+    "files",
+    "wakatime",
+    "export",
+];
 
-/// The sections whose other keys a vault may set, whatever this app knows
-/// of them; a string in the last two is a path in the vault.
+/// The sections a vault may set whole (`notifications.*`, `scratchpad.*`,
+/// `capture.*`): a key there this app does not know is left alone.
 const OPEN_SECTIONS: &[&str] = &["notifications", "scratchpad", "capture"];
 
 /// The keys only a vault has: the computer's own author is git's.
@@ -215,10 +240,14 @@ impl Settings {
 
     /// A change made in the app: it goes to the computer's file, never to
     /// the vault's. The caller writes `computer().text()` to `config.toml`.
+    /// A change to a key the vault sets (the zoom, the export's choices)
+    /// holds until the settings are read again; then the vault's value
+    /// returns.
     pub fn set(&mut self, key: &str, value: Value) {
         let mut computer = self.computer.clone();
-        computer.set(key, value);
+        computer.set(key, value.clone());
         *self = Self::resolve(&self.vault, computer.text(), self.root.as_deref());
+        self.file.set(key, value);
     }
 
     /// The text of the vault's file these settings were made from.
@@ -289,28 +318,25 @@ impl Follows {
 }
 
 fn verdict(key: &str, value: Option<&Value>, root: Option<&Path>) -> Verdict {
-    let (section, name) = key.rsplit_once('.').unwrap_or(("", key));
-    if NEVER.contains(&key) || NEVER_SECTIONS.contains(&section) {
-        return Verdict::Refused;
-    }
-    let Some(value) = value else { return Verdict::Skipped };
-    let rule = match ALLOWED.iter().find(|(allowed, _)| *allowed == key) {
-        Some((_, rule)) => *rule,
-        // `[check]`, `[audit]`, `[reader]`, `[agents]` and the top of the
-        // file are the vault's own, and a key this app does not know is
-        // left alone.
-        None if !OPEN_SECTIONS.contains(&section) => return Verdict::Skipped,
-        None if name.is_empty() => return Verdict::Skipped,
-        None if section != "notifications" && matches!(value, Value::String(_)) => Rule::InVault,
-        None => return Verdict::Used,
+    let section = key.rsplit_once('.').map_or("", |(section, _)| section);
+    let Some((_, rule)) = ALLOWED.iter().find(|(allowed, _)| *allowed == key) else {
+        let refused =
+            if section.is_empty() { TOP.contains(&key) } else { SECTIONS.contains(&section) && !OPEN_SECTIONS.contains(&section) };
+        return if refused { Verdict::Refused } else { Verdict::Skipped };
     };
-    let fits = match (rule, value) {
-        (Rule::Bool, Value::Bool(_)) | (Rule::Text, Value::String(_)) | (Rule::List, Value::Strings(_)) => true,
-        (Rule::Int(low, high), Value::Int(number)) => (low..=high).contains(number),
-        (Rule::Choice(words), Value::String(word)) => words.contains(&word.as_str()),
-        (Rule::Time, Value::String(time)) => is_time(time),
-        (Rule::OnlyFalse, Value::Bool(on)) => return if *on { Verdict::Refused } else { Verdict::Used },
-        (Rule::InVault, Value::String(path)) => return if in_vault(path, root) { Verdict::Used } else { Verdict::Refused },
+    let one_line = |text: &str| !text.chars().any(char::is_control);
+    let fits = match (*rule, value) {
+        (Rule::Bool, Some(Value::Bool(_))) => true,
+        (Rule::OnlyFalse, Some(Value::Bool(on))) => !on,
+        (Rule::Int(low, high), Some(Value::Int(number))) => (low..=high).contains(number),
+        (Rule::Text, Some(Value::String(text))) => one_line(text),
+        (Rule::Name, Some(Value::String(text))) => one_line(text) && !text.trim().is_empty(),
+        (Rule::Place, Some(Value::String(text))) => text.is_empty() || crate::Place::parse(text).is_some(),
+        (Rule::Choice(words), Some(Value::String(word))) => words.contains(&word.as_str()),
+        (Rule::List, Some(Value::Strings(list))) => list.iter().all(|item| one_line(item)),
+        (Rule::Time, Some(Value::String(time))) => is_time(time),
+        (Rule::InVault, Some(Value::String(path))) => in_vault(path, root),
+        (Rule::Target, Some(Value::String(path))) => path == "daily" || (!path.trim().is_empty() && in_vault(path, root)),
         _ => false,
     };
     if fits { Verdict::Used } else { Verdict::Skipped }
@@ -397,10 +423,16 @@ mod tests {
         let listed: Vec<Entry> = settings.entries().into_iter().filter(|e| e.from == Origin::Refused).collect();
         assert_eq!(listed.len(), 8);
         assert_eq!(listed[2], Entry { key: "terminal.shell".into(), value: Some(Value::String("/tmp/x".into())), from: Origin::Refused });
-        // The vault's own sections, and a key this app does not know, are neither used nor refused.
-        let own = Settings::resolved("memory = true\n\n[check]\norphans = true\n\n[appearance]\ndock_badge = true\n", computer);
+        // The vault's own sections, an unknown key at the top, and a key this app does not
+        // know under a section a vault may set whole, are neither used nor refused.
+        let own = "memory = true\n\n[check]\norphans = true\n\n[okf]\nactor = \"x\"\n\n[notifications]\nsound = true\n\n[capture]\nlater = \"x\"\n";
+        let own = Settings::resolved(own, computer);
         assert!(own.refused().is_empty());
         assert_eq!(own.file().text(), computer);
+        // A key under one of the app's own sections that is not on the list is refused: another app's too.
+        let other = Settings::resolved("[appearance]\ndock_badge = true\n\n[meaning]\nmodel = \"x\"\n", computer);
+        assert_eq!(other.refused(), ["appearance.dock_badge", "meaning.model"]);
+        assert_eq!(other.file().text(), computer);
     }
 
     #[test]
@@ -411,7 +443,7 @@ mod tests {
         assert_eq!(of(true, false).bool("appearance.remote_images"), Some(false));
         assert_eq!(of(false, true).bool("appearance.remote_images"), Some(false));
         assert_eq!(of(true, true).bool("appearance.remote_images"), Some(true));
-        assert_eq!(of(false, true).refused(), ["appearance.remote_images"]);
+        assert!(of(false, true).refused().is_empty());
     }
 
     #[cfg(unix)]
@@ -432,7 +464,7 @@ mod tests {
         for path in ["/etc/passwd", "~/x.png", "../x.png", "uploads/../../x.png", "uploads/link.png"] {
             let settings = of(path);
             assert_eq!(settings.string("home.image").as_deref(), Some("~/mine.png"), "{path}");
-            assert_eq!(settings.refused(), ["home.image"], "{path}");
+            assert!(settings.refused().is_empty(), "{path}");
         }
         // The capture note and the scratchpad are in the vault by the same rule.
         let capture = Settings::resolved_in(
@@ -440,7 +472,10 @@ mod tests {
             "",
             &root,
         );
-        assert_eq!(capture.refused(), ["capture.target"]);
+        assert_eq!(capture.string("capture.target"), None);
+        // An empty path is none, and `daily` is today's note.
+        assert_eq!(Settings::resolved_in("[home]\nimage = \"\"\n", computer, &root).string("home.image").as_deref(), Some(""));
+        assert_eq!(Settings::resolved_in("[capture]\ntarget = \"daily\"\n", "", &root).string("capture.target").as_deref(), Some("daily"));
         assert_eq!(capture.string("capture.heading").as_deref(), Some("../Ideas"));
         assert_eq!(capture.string("scratchpad.folder").as_deref(), Some("Scratch"));
     }
@@ -451,6 +486,27 @@ mod tests {
             let settings = Settings::resolved(vault, COMPUTER);
             assert_eq!(settings.int("appearance.text_size"), Some(14), "{vault}");
             assert!(settings.refused().is_empty());
+        }
+        // The ranges are the same in every app.
+        for (vault, key) in [
+            ("[appearance]\ntext_width = 401\n", "appearance.text_width"),
+            ("[git]\nsync_interval = 10081\n", "git.sync_interval"),
+            ("[notifications]\nmeeting_lead = 1441\n", "notifications.meeting_lead"),
+            ("[terminal]\nfont_size = 8\n", "terminal.font_size"),
+            ("[terminal]\nfont_size = 25\n", "terminal.font_size"),
+            ("[appearance]\nfont = \" \"\n", "appearance.font"),
+            ("[calendar]\nplace = \"atlantis\"\n", "calendar.place"),
+        ] {
+            assert!(!Settings::resolved(vault, "").is_from_vault(key), "{vault}");
+        }
+        for (vault, key) in [
+            ("[appearance]\ntext_width = 400\n", "appearance.text_width"),
+            ("[git]\nsync_interval = 10080\n", "git.sync_interval"),
+            ("[terminal]\nfont_size = 24\n", "terminal.font_size"),
+            ("[calendar]\nplace = \"barcelona\"\n", "calendar.place"),
+            ("[calendar]\nplace = \"\"\n", "calendar.place"),
+        ] {
+            assert!(Settings::resolved(vault, "").is_from_vault(key), "{vault}");
         }
         let settings = Settings::resolved("[appearance]\ntheme = \"neon\"\n\n[notifications]\ndigest_time = \"25:00\"\n", COMPUTER);
         assert_eq!(settings.string("appearance.theme").as_deref(), Some("light"));
@@ -465,11 +521,14 @@ mod tests {
         assert_eq!(settings.computer().int("appearance.text_size"), Some(18));
         assert_eq!(settings.int("appearance.text_size"), Some(18));
         assert_eq!(settings.vault_text(), vault);
-        // A key the vault sets keeps the vault's value; the computer's own is written all the same.
+        // A change to a key the vault sets is written to the computer's file and holds
+        // until the settings are read again; then the vault's value returns.
         settings.set("appearance.theme", Value::String("system".into()));
-        assert_eq!(settings.string("appearance.theme").as_deref(), Some("dark"));
+        assert_eq!(settings.string("appearance.theme").as_deref(), Some("system"));
         assert_eq!(settings.computer().string("appearance.theme").as_deref(), Some("system"));
         assert_eq!(settings.vault_text(), vault);
+        let again = Settings::resolved(vault, settings.computer().text());
+        assert_eq!(again.string("appearance.theme").as_deref(), Some("dark"));
     }
 
     #[test]

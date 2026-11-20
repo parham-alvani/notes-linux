@@ -320,12 +320,19 @@ impl Git {
         (Self::ssh_command_for_key(Path::new(&path)) == command.trim()).then(|| PathBuf::from(path))
     }
 
+    /// A key as git finds it for this clone, its own config first, then
+    /// the person's and the system's.
+    pub fn effective(&self, key: &str) -> Option<String> {
+        self.ask(&["config", "--get", key]).filter(|value| !value.is_empty())
+    }
+
     /// A new key for this clone, `daftar_<vault>_ed25519` in [folder]
     /// (`~/.ssh`), with no passphrase: the file, and its public key to give
     /// the remote. Never over a file that is there.
     pub fn generate_key(&self, folder: &Path, host: &str) -> Result<(PathBuf, String), String> {
         let vault = self.root.file_name().map_or_else(|| "vault".into(), |name| name.to_string_lossy().into_owned());
-        let slug: String = vault.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect();
+        // Letters, digits, `-` and `.` stay; every other character is `_`.
+        let slug: String = vault.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect();
         let file = folder.join(format!("daftar_{slug}_ed25519"));
         let public = PathBuf::from(format!("{}.pub", file.display()));
         if file.exists() || public.exists() {
@@ -423,9 +430,9 @@ impl Git {
 
     /// Moves the clone to [address], as to a mirror when the first host
     /// cannot be reached: `remote.<name>.url`, or a new `origin` when the
-    /// clone has no remote, whose branch becomes the upstream at the next
-    /// pull. Nothing is fetched now. An empty address is refused, and the
-    /// old one stays.
+    /// clone has no remote, with the branch's upstream written then as
+    /// config (`branch.<b>.remote`, `branch.<b>.merge`). Nothing is fetched
+    /// now. An empty address is refused, and the old one stays.
     pub fn set_address(&self, address: &str) -> Result<(), GitFailure> {
         let address = address.trim();
         if address.is_empty() {
@@ -439,23 +446,13 @@ impl Git {
         if self.ask(&["config", "--get", &format!("remote.{remote}.url")]).is_some() {
             self.run(&["remote", "set-url", &remote, address]).map(|_| ())
         } else {
-            self.run(&["remote", "add", &remote, address]).map(|_| ())
-        }
-    }
-
-    /// A branch with no upstream takes the one of its name on `origin`,
-    /// once that is fetched: the clone whose address was just given.
-    fn adopt_upstream(&self) {
-        if self.ask(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).is_some() {
-            return;
-        }
-        let Some(branch) = self.ask(&["symbolic-ref", "--short", "-q", "HEAD"]) else { return };
-        let remote = self.remote();
-        if self.ask(&["config", "--get", &format!("remote.{remote}.url")]).is_none() || self.run(&["fetch", &remote]).is_err() {
-            return;
-        }
-        if self.ask(&["rev-parse", "--verify", "-q", &format!("refs/remotes/{remote}/{branch}")]).is_some() {
-            let _ = self.run(&["branch", &format!("--set-upstream-to={remote}/{branch}")]);
+            self.run(&["remote", "add", &remote, address])?;
+            // The branch's upstream, as config: the next pull needs no more.
+            if let Some(branch) = self.ask(&["symbolic-ref", "--short", "-q", "HEAD"]).filter(|branch| !branch.is_empty()) {
+                self.run(&["config", "--local", &format!("branch.{branch}.remote"), &remote])?;
+                self.run(&["config", "--local", &format!("branch.{branch}.merge"), &format!("refs/heads/{branch}")])?;
+            }
+            Ok(())
         }
     }
 
@@ -505,7 +502,6 @@ impl Git {
     /// a clone with commits or changes of its own in the way is
     /// `ReadOnlyDiverged`, and stays as it is.
     fn pull_only(&self) -> Result<Synced, SyncFailure> {
-        self.adopt_upstream();
         let before = self.run(&["rev-parse", "HEAD"])?;
         match self.run(&["pull", "--no-rebase", "--ff-only"]) {
             Ok(_) => Ok(Synced { pulled: self.run(&["rev-parse", "HEAD"])? != before, ..Synced::default() }),
@@ -528,7 +524,6 @@ impl Git {
     }
 
     fn pull_rebase(&self) -> Result<(), SyncFailure> {
-        self.adopt_upstream();
         match self.run(&["pull", "--rebase", "--autostash"]) {
             Ok(_) => Ok(()),
             Err(_) if self.rebase_in_progress()? => Err(SyncFailure::Stopped(Stopped { conflicts: self.conflicts()? })),
@@ -1291,7 +1286,7 @@ mod tests {
         fs::create_dir_all(&vault).unwrap();
         let keys = base.path().join("ssh");
         let Ok((file, public)) = Git::new(&vault).generate_key(&keys, "x-wing.local") else { return };
-        assert_eq!(file, keys.join("daftar_my_notes_ed25519"));
+        assert_eq!(file, keys.join("daftar_My_Notes_ed25519"));
         assert!(public.starts_with("ssh-ed25519 ") && public.ends_with(" daftar My Notes on x-wing"), "{public}");
         let before = fs::read(&file).unwrap();
         assert!(Git::new(&vault).generate_key(&keys, "x-wing.local").is_err());
@@ -1372,6 +1367,14 @@ mod tests {
         assert_eq!(subjects(&two), ["from one", "start"]);
         assert_eq!(read(&two, "a.md").unwrap(), "# A\nby hand\n");
         assert_eq!(two.changes().unwrap(), ["a.md"]);
+        // A read-only clone that is only ahead of its remote has nothing to do, and succeeds.
+        let (_ahead_base, _first, ahead) = machines();
+        fs::write(ahead.root.join("mine.md"), "# Mine\n").unwrap();
+        git(&ahead.root, &["add", "-A"]);
+        git(&ahead.root, &["commit", "-qm", "its own"]);
+        ahead.set_read_only(true).unwrap();
+        assert_eq!(ahead.sync("never").unwrap(), Synced::default());
+        assert_eq!(subjects(&ahead), ["its own", "start"]);
         // Again, with nothing new: up to date, and the pull alone is the same.
         assert_eq!(two.sync("never").unwrap(), Synced::default());
         two.pull().unwrap();
@@ -1466,10 +1469,11 @@ mod tests {
         fs::write(one.root.join("b.md"), "# B\n").unwrap();
         one.sync("later").unwrap();
         assert_eq!(alone.address(), None);
-        assert!(alone.ask(&["rev-parse", "--abbrev-ref", "@{upstream}"]).is_none());
         alone.set_address(base.path().join("remote.git").to_str().unwrap()).unwrap();
         assert_eq!(alone.local("remote.origin.url").as_deref(), base.path().join("remote.git").to_str());
-        // Nothing is fetched until the next sync.
+        // The upstream is written then, as config, and nothing is fetched until the next sync.
+        assert_eq!(alone.local("branch.main.remote").as_deref(), Some("origin"));
+        assert_eq!(alone.local("branch.main.merge").as_deref(), Some("refs/heads/main"));
         assert!(alone.ask(&["rev-parse", "--verify", "-q", "refs/remotes/origin/main"]).is_none());
         alone.set_read_only(true).unwrap();
         alone.pull().unwrap();

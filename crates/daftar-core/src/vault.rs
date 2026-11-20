@@ -963,6 +963,14 @@ mod tests {
         assert_eq!(sources("Docs/tables/orders.md"), ["Docs/metrics/revenue.md", "Other/x.md"]);
         assert_eq!(sources("Docs/metrics/my note.md"), [from]);
         assert!(sources("x.md").is_empty());
+        // `name/` is `name/index.md`, and a target without `.md` also tries with it.
+        assert_eq!(index.resolve("/", from).as_deref(), Some("Docs/index.md"));
+        assert_eq!(index.resolve("../", from).as_deref(), Some("Docs/index.md"));
+        assert_eq!(index.resolve("/tables/orders", from).as_deref(), Some("Docs/tables/orders.md"));
+        assert_eq!(index.resolve("./revenue", from).as_deref(), Some(from));
+        // A `./` or `../` path that names no file is not found by its name elsewhere.
+        assert_eq!(index.resolve("./orders.md", from), None);
+        assert_eq!(index.resolve("orders.md", from).as_deref(), Some("Docs/tables/orders.md"));
         // A wikilink is found by its name from anywhere, as before.
         assert_eq!(index.resolve("orders", "Other/x.md").as_deref(), Some("Docs/tables/orders.md"));
         assert_eq!(index.resolve("tables/orders", "x.md").as_deref(), Some("Docs/tables/orders.md"));

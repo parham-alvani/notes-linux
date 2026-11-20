@@ -40,14 +40,41 @@ A repository is text that other people and other computers can change. It must n
 | `vault`, `vault_settings` | never |
 | `editor.vim_mode`, `editor.neovide`, `editor.nvim`, `editor.nvim_config`, `terminal.shell` | never: they name or start a program |
 | `wakatime.*` | never: it sends the notes' paths to a service |
-| `okf.actor` | never: it says who the person is when they mark a concept as verified ([the Open Knowledge Format](open-knowledge-format.md)); the vault's own `[okf]` keys (`include`, `exclude`, `title`, `description`, `license`, `[okf.types]`) are the vault's, not app settings |
 
 A key the list refuses is ignored in `.daftar.toml`, and `daftar-cli doctor` warns of it by name (`vault-config-refused`), so a vault that tries is seen. A new setting is added to this table, with its line, in the same change that adds it to the template; a key not in the table is refused.
 
-- **What is refused, and named**: a key of the rows that say never (`wakatime.*` whole), `appearance.remote_images = true`, and a path that leaves the vault. A computer that declines the vault's settings still names them.
-- **What is only left alone**, with no warning: a key under an app's section that this app does not know (another app's own setting), as in `config.toml`, and every key that is the vault's own (the top of the file but `vault` and `vault_settings`, `[check]`, `[audit]`, `[reader]`, `[agents]`).
-- **The ranges**, outside which a number is as not there: `appearance.text_size` 10 to 28, `text_width` 0 to 200, `reading_line` 0 to 100, `git.sync_interval` 0 to 1440, `notifications.meeting_lead` 0 to 120, `terminal.font_size` 6 to 72. `appearance.theme` is `system`, `light` or `dark`, `fold_sections` is `vault`, `always` or `never`, and `notifications.digest_time` is `HH:MM`.
-- **The paths in `scratchpad.*` and `capture.*`** are every string there but `capture.heading`, which is a heading's text.
+- **What is refused, and named**: `vault` and `vault_settings` at the top, and a key under one of the app's own sections that is not on the list: the rows that say never, and another app's own setting too. The app's sections are `appearance`, `calendar`, `editor`, `git`, `notifications`, `terminal`, `scratchpad`, `capture`, `meaning`, `home`, `files`, `wakatime` and `export`. A computer that declines the vault's settings still names them.
+- **What is left alone**, with no warning: a key the app does not know under `notifications`, `scratchpad` or `capture` (the sections a vault may set whole), a key of any other section (`[check]`, `[audit]`, `[reader]`, `[agents]`, `[okf]`), and an unknown key at the top.
+- **A key on the list with a value it may not have is as not there**, and is not named: a wrong type, a number out of its range, `appearance.remote_images = true`, a path that leaves the vault.
+- **An empty path** (`home.image = ""`) is accepted and means none.
+- **`okf.actor`** is the computer's only, in `config.toml`. `[okf]` in `.daftar.toml` is the export's section ([the Open Knowledge Format](open-knowledge-format.md)), so an `actor` there is ignored, and is not listed as refused.
+
+What a value from the vault must be, the same in every app:
+
+| Key | Value |
+| --- | --- |
+| `appearance.theme` | `system`, `light` or `dark` |
+| `appearance.text_size` | 10 to 28 |
+| `appearance.font`, `appearance.code_font` | text of one line that is not blank |
+| `appearance.text_width` | 0 to 400 |
+| `appearance.reading_line` | 0 to 100 |
+| `appearance.fold_sections` | `vault`, `always` or `never` |
+| `appearance.persian_calendar` | a boolean |
+| `appearance.remote_images` | `false` |
+| `calendar.place` | a place the app knows, or empty for none |
+| `editor.live_preview`, `editor.format_on_save` | a boolean |
+| `git.sync_interval` | 0 to 10080 |
+| `git.pull_on_launch` | a boolean |
+| `git.name`, `git.email` | text of one line that is not blank |
+| `notifications.meetings`, `notifications.digest` | a boolean |
+| `notifications.meeting_lead` | 0 to 1440 |
+| `notifications.digest_time` | `HH:MM` |
+| `terminal.font_size` | 9 to 24 |
+| `home.image`, `export.logo`, `scratchpad.note` (and `scratchpad.folder` on Linux) | a path in the vault, or empty |
+| `export.footer`, `capture.heading`, `capture.hotkey` | text of one line |
+| `export.contents`, `export.landscape`, `files.show_hidden` | a boolean |
+| `capture.target` | `daily`, or a path in the vault |
+| `files.hidden` | a list of one-line texts |
 
 Whether a clone is read-only, its address and its key are never the vault's to say: they are one clone's, in its git config ([a read-only vault](read-only-vault.md)).
 
@@ -64,12 +91,13 @@ Each of the two is chosen on its own. On Android the app's own author setting is
 ## 4. How it is shown
 
 - **In Settings, a key the vault sets is shown with its value and "From the vault"**, and its control is off. Its tooltip names `.daftar.toml` and says how to decline (`vault_settings`).
+- **A change made outside Settings to a key the vault sets** (the zoom's text size, the export panel's choices) goes to `config.toml` and holds until the settings are read again; then the vault's value returns.
 - **Changing a setting in the app writes `config.toml`, never `.daftar.toml`.** The vault's file is changed as a note is: by hand or by an editor, then committed. So a read-only clone is never written, and two computers never commit each other's taste.
 - `daftar-cli config` (new) prints every key with its value and where it came from (`vault`, `computer`, `default`), `--json` one array of `{"key","value","from"}`; a refused key of `.daftar.toml` is listed as `refused`, in a row of its own after the others, with the value the vault wrote, beside the key's own row with the value in use. The plain lines are the key, a tab, the value as the file writes it, a tab, and where it came from. `git.name` and `git.email` are listed too, with no value (`null`) when the vault sets none.
 
 ## 5. Tests every app must have
 
-Ported by name (snake case in Rust, camelCase in Kotlin). `Settings.resolved(vault:computer:)` is one pure function over the two texts:
+Ported by name (snake case in Rust, camelCase in Kotlin). `Settings.resolved(vault:computer:root:)` is one pure function over the two texts and the vault's root, which is there for the link check of a path (with no root, a path is judged by its text alone):
 
 1. `theVaultsValueWins`: computer `text_size = 14`, vault `[appearance]\ntext_size = 16` gives 16; with no vault key, 14; with neither, the default.
 2. `aComputerCanDecline`: with `vault_settings = false` the computer's 14 is used; with `vault_settings = ["appearance.text_size"]` it is 14 and the vault's `theme` is still used; `[reader] folded = true` is read in both.

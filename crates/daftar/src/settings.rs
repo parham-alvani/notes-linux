@@ -136,9 +136,13 @@ impl AppSettings {
             Ok(text) => ConfigFile::new(text),
             Err(_) => self.resolved.computer().clone(),
         };
-        computer.set(key, value);
+        computer.set(key, value.clone());
         let text = computer.text().to_string();
         self.resolve(&text);
+        // A key the vault sets takes the change until the settings are read again.
+        self.resolved.set(key, value);
+        self.file = self.resolved.file().clone();
+        self.publish();
         let target = fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
         let temporary = target.with_extension("toml.daftar");
         fs::write(&temporary, text)?;
@@ -241,6 +245,9 @@ mod tests {
         settings.set("appearance.text_size", Value::Int(20)).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "[appearance]\ntheme = \"light\"\ntext_size = 20\nreading_line = 30\n");
         assert_eq!(fs::read_to_string(vault.join(".daftar.toml")).unwrap(), theirs);
+        // The change holds here until the settings are read again; then the vault's value returns.
+        assert_eq!((settings.reading_line(), settings.text_size()), (30, 20));
+        assert!(settings.reload());
         assert_eq!((settings.reading_line(), settings.text_size()), (30, 16));
         // The vault's file read again when it changed; with no vault, the computer's own.
         fs::write(vault.join(".daftar.toml"), "[appearance]\ntext_size = 12\n").unwrap();

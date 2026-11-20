@@ -21,9 +21,9 @@ A note is a concept when its front matter has a `type` that is not empty (§3.2)
 | `verified` | a list of `{by, at}`; one mapping is a list of one; an event without both keys is left out |
 
 - **Null, an empty text and an empty list are an absent key.** One item where a list is asked is a list of one, and a scalar `tags` is one tag, never split at commas.
-- **A time** is a date-time with an offset (`2026-06-30T14:00:00Z`, `…+02:00`) or a date alone (`2026-06-30`, the start of that day in UTC), quoted or as YAML's own. A date-time without an offset, or anything else, is malformed. A malformed `stale_after` is **stale**, never fresh, and is shown as malformed.
+- **A time** is a date-time with an offset (`2026-06-30T14:00:00Z`, `…+02:00`) or a date alone (`2026-06-30`, the start of that day in UTC), quoted or as YAML's own. A date-time without an offset, a day that does not exist (`2026-02-30`), or anything else, is malformed. A malformed `stale_after` is **stale**, never fresh, and is shown as malformed.
 - **An actor** is `human:<id>`, another `<scheme>:<id>` (`team:`, `process:`, any other) or `<producer>/<version>`. Only `human:` is a person.
-- **The trust tier** (§5.3) comes from the current events only: an event is current when its `at` is at or after `generated.at`, or when there is no `generated`. No current event is **unverified**; current events, none of a `human:`, is **machine-confirmed**; a current `human:` event is **human-reviewed**.
+- **The trust tier** (§5.3) comes from the current events only: an event is current when its `at` is at or after `generated.at`, or when there is no `generated`, or when `generated` has no `at`; no event is current when `generated.at` is malformed. No current event is **unverified**; current events, none of a `human:`, is **machine-confirmed**; a current `human:` event is **human-reviewed**.
 - A key OKF does not define is kept and shown as any property. Nothing is ever refused: a note that breaks a rule here is still read, opened and searched.
 
 `index.md` and `log.md` are never concepts, whatever their front matter (§3.1). In the app they are notes like any other.
@@ -32,8 +32,8 @@ A note is a concept when its front matter has a `type` that is not empty (§3.2)
 
 - **The inspector** (the properties form of [Properties](properties.md)) has a Concept row above the properties of a concept (on Linux the row is the inspector's own, above the form, since a front matter with `verified` events is shown there as YAML): its type, then chips for the trust tier ("Unverified", "Machine-confirmed", "Human-reviewed", with the last current verifier and day in the tooltip), the status when it is not `stable` ("Draft", "Deprecated", or the raw value), and "Stale since <day>" or "Stale: bad date". A note that is not a concept has no row.
 - **The reader** has one line above a deprecated or stale concept's text, and nothing above any other (the host's, not the page's: on Linux a banner over the web view, whose button opens the replacement; deprecated wins over stale, and a malformed date says "Stale: bad date. Check it again."): "Deprecated. Replaced by <link>." (the link from `superseded_by`, left out when it is absent or does not resolve) or "Stale since <day>: check it again."
-- **Quick open and search** show a deprecated concept dimmed, and quick open puts it after the others of the same rank (search keeps its own order).
-- **Mark as Verified** (the palette, and a button in the Concept row): adds `{ by: "human:<id>", at: "<now, UTC, to the second>" }` to `verified` by writing that one key again in the front matter, as a block list of `by` and `at` in double quotes, which keeps every other line byte for byte (the properties form of `PropertySheet` holds no list of mappings, so the write is the format's own). `<id>` is `okf.actor` in `config.toml` (the app's settings on Android), else the local part of the clone's `user.email`, else the command is off and says to set it. An event of that actor already there is replaced, not added twice. It is offered on a concept only, and never in a read-only vault.
+- **Quick open and search** show a deprecated concept dimmed. Quick open orders it after the others of the same score; full-text hits are only dimmed, in their own order.
+- **Mark as Verified** (the palette, and a button in the Concept row): adds `{ by: "human:<id>", at: "<now, UTC, to the second>" }` to `verified`. It writes only the lines of `verified`, as a block list with one event a line under `verified:`, as `  - { by: "human:parham", at: "2026-06-25T09:00:00Z" }`; the events already there are written again in that form, in their order, and every other line of the front matter stays byte for byte. It need not go through `PropertySheet`, which holds no list of mappings. `<id>` is `okf.actor` in `config.toml` (the app's settings on Android), else the local part of git's effective `user.email` (the clone's, else the person's global one), else the command is off and says to set it. An event of that actor already there is replaced, not added twice. It is offered on a concept only, and never in a read-only vault.
 
 ## 3. Links, as OKF reads them
 
@@ -43,6 +43,9 @@ OKF's links are Markdown links, `[text](target)`, not wikilinks. A vault may hol
 2. A target that starts with `/` resolves from the **bundle root**: the nearest folder at or above the note whose `index.md` has `okf_version` in its front matter, else the vault's root.
 3. Any other target resolves from the note's folder.
 
+- A `/` path never climbs above its bundle root. A relative path may leave the bundle, but never the vault.
+- A target `name/` resolves to `name/index.md`, and a target without `.md` also tries with `.md`.
+- A target that is a plain name (no `/`, `./` or `../`) and is no file from the note's folder still resolves as a wikilink does, so the links a vault has keep working. A `/`, `./` or `../` path does not fall back: when it names no file, it is broken.
 - The target is percent-decoded (`my%20note.md`), and a `#fragment` names a heading as a wikilink's does.
 - A target that resolves outside the vault is never opened or read from the disk; it is shown as a broken link.
 - A resolved Markdown link is a link like a wikilink: it counts in backlinks, the graph, `check`'s dangling links and a move's relinking, which rewrites it in the form it had (a `/` path stays a `/` path, a relative one stays relative), percent-encoded.

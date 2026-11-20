@@ -140,10 +140,12 @@ impl Concept {
     pub fn current(&self) -> Vec<&Event> {
         let since = match &self.generated {
             None => None,
-            // Generated at a time nobody can read: no event is known to be after it.
-            Some(generated) => match generated.at.as_ref().and_then(Time::instant) {
-                Some(at) => Some(at),
-                None => return Vec::new(),
+            Some(generated) => match &generated.at {
+                // Nothing says when: every event counts.
+                None => None,
+                Some(Time::At(at)) => Some(*at),
+                // Generated at a time nobody can read: no event is known to be after it.
+                Some(Time::Malformed(_)) => return Vec::new(),
             },
         };
         self.verified.iter().filter(|event| event.at.instant().is_some_and(|at| since.is_none_or(|since| at >= since))).collect()
@@ -343,7 +345,7 @@ impl Okf {
     }
 
     /// The person who verifies: `okf.actor` of the settings, else the local
-    /// part of the clone's `user.email`.
+    /// part of git's effective `user.email` (the clone's, else the person's).
     pub fn actor(setting: Option<&str>, email: Option<&str>) -> Result<String, OkfFailure> {
         let id = setting
             .map(str::trim)
@@ -388,10 +390,10 @@ impl Okf {
         events.retain(|event| !event.iter().any(|(key, value)| key == "by" && value == actor));
         events.push(vec![("by".into(), actor.to_string()), ("at".into(), Self::written(now))]);
         let mut lines = vec!["verified:".to_string()];
+        // A block list, one event a line; the events already there are written again in that form.
         for event in &events {
-            for (at, (key, value)) in event.iter().enumerate() {
-                lines.push(format!("{}{key}: {}", if at == 0 { "  - " } else { "    " }, quoted(value)));
-            }
+            let entries: Vec<String> = event.iter().map(|(key, value)| format!("{key}: {}", quoted(value))).collect();
+            lines.push(format!("  - {{ {} }}", entries.join(", ")));
         }
         Ok(front.with_key(note, "verified", &lines))
     }
@@ -637,6 +639,10 @@ mod tests {
         let concept = Okf::concept(&format!("type: Metric\n{generated}{list}")).unwrap();
         assert_eq!(concept.last_verified().unwrap().by, "process:nightly");
         assert_eq!(concept.generated.as_ref().unwrap().by.as_deref(), Some("claude-code/2.1"));
+        // An event is not current when `generated.at` is no time, and is when `generated` has no `at`.
+        assert_eq!(tier(&format!("{human}generated: {{ by: x/1, at: soon }}\n")), Tier::Unverified);
+        assert_eq!(tier(&format!("{human}generated: {{ by: x/1, at: 2026-02-30 }}\n")), Tier::Unverified);
+        assert_eq!(tier(&format!("{human}generated: {{ by: x/1 }}\n")), Tier::HumanReviewed);
         // Only `human:` is a person.
         assert!(Okf::is_human("human:parham") && !Okf::is_human("team:x") && !Okf::is_human("claude-code/2.1") && !Okf::is_human("human:"));
     }
@@ -652,7 +658,8 @@ mod tests {
         let day = at("2026-06-30T00:00:00Z");
         assert_eq!(read("stale_after: 2026-06-30\n"), Time::At(day));
         assert_eq!(read("stale_after: \"2026-06-30\"\n"), Time::At(day));
-        for wrong in ["2026-06-30T14:00:00", "30/06/2026", "soon"] {
+        // A day that does not exist is malformed too.
+        for wrong in ["2026-06-30T14:00:00", "30/06/2026", "soon", "2026-02-30", "2026-02-30T10:00:00Z"] {
             assert_eq!(Okf::time(wrong), None, "{wrong}");
             assert_eq!(read(&format!("stale_after: \"{wrong}\"\n")), Time::Malformed(wrong.into()));
         }
@@ -743,7 +750,7 @@ mod tests {
         let marked = Okf::mark_verified("Revenue.md", note, "human:parham", now).unwrap();
         assert_eq!(
             marked,
-            "---\n# Kept as it is.\ntype:   Metric\ntags: [a,  b]\nverified:\n  - by: \"process:nightly\"\n    at: \"2026-06-25T03:00:00Z\"\n  - by: \"human:parham\"\n    at: \"2026-06-26T08:30:15Z\"\nowner: \"x\"\n---\n\n# Revenue\n\nText.\n"
+            "---\n# Kept as it is.\ntype:   Metric\ntags: [a,  b]\nverified:\n  - { by: \"process:nightly\", at: \"2026-06-25T03:00:00Z\" }\n  - { by: \"human:parham\", at: \"2026-06-26T08:30:15Z\" }\nowner: \"x\"\n---\n\n# Revenue\n\nText.\n"
         );
         let concept = Okf::concept_of("Revenue.md", &marked).unwrap();
         assert_eq!((concept.verified.len(), concept.tier()), (2, Tier::HumanReviewed));
@@ -755,7 +762,7 @@ mod tests {
         assert_eq!(again.replace("2026-07-01T00:00:00Z", "2026-06-26T08:30:15Z"), marked);
         // A concept with no event yet gets the key after the others.
         let first = Okf::mark_verified("N.md", "---\ntype: Guide\n---\nText\n", "human:parham", at("2026-07-01T00:00:00Z")).unwrap();
-        assert_eq!(first, "---\ntype: Guide\nverified:\n  - by: \"human:parham\"\n    at: \"2026-07-01T00:00:00Z\"\n---\nText\n");
+        assert_eq!(first, "---\ntype: Guide\nverified:\n  - { by: \"human:parham\", at: \"2026-07-01T00:00:00Z\" }\n---\nText\n");
         // A note with no `type` is refused, and so is an index.
         assert_eq!(Okf::mark_verified("N.md", "---\ntitle: N\n---\n", "human:parham", now), Err(OkfFailure::NotAConcept));
         assert_eq!(Okf::mark_verified("N.md", "# N\n", "human:parham", now), Err(OkfFailure::NotAConcept));

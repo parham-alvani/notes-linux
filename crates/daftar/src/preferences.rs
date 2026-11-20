@@ -656,9 +656,10 @@ fn vault_git_group(root: &Path, hooks: &Rc<Hooks>) -> Option<adw::PreferencesGro
     key.add_suffix(&choose);
     key.add_suffix(&generate);
     key.add_suffix(&clear);
-    // A command the app did not write is shown as text, and not changed.
+    // A command the app did not write is shown as text, and not changed:
+    // Choose, Generate and Clear are off for it.
     let show = {
-        let (git, key, clear) = (git.clone(), key.clone(), clear.clone());
+        let (git, key, clear, choose, generate) = (git.clone(), key.clone(), clear.clone(), choose.clone(), generate.clone());
         Rc::new(move || {
             let command = git.local("core.sshCommand");
             let text = match &command {
@@ -666,7 +667,10 @@ fn vault_git_group(root: &Path, hooks: &Rc<Hooks>) -> Option<adw::PreferencesGro
                 Some(command) => Git::ssh_key(command).map_or_else(|| command.clone(), |file| file.to_string_lossy().into_owned()),
             };
             key.set_subtitle(&gtk::glib::markup_escape_text(&text));
-            clear.set_sensitive(command.is_some());
+            let ours = command.as_deref().is_none_or(|command| Git::ssh_key(command).is_some());
+            clear.set_sensitive(command.is_some() && ours);
+            choose.set_sensitive(ours);
+            generate.set_sensitive(ours);
         })
     };
     show();

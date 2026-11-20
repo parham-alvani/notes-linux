@@ -1442,7 +1442,7 @@ impl Window {
     }
 
     /// Mark as Verified: the concept on screen was read and holds, by the
-    /// person `okf.actor` names, else the clone's `user.email`.
+    /// person `okf.actor` names, else git's `user.email` for this clone.
     fn mark_verified(&self) {
         let Some(store) = self.store.borrow().clone() else { return };
         let tab = self.tab();
@@ -1451,7 +1451,8 @@ impl Window {
             tab.editor.save();
         }
         let setting = self.settings.borrow().file.string("okf.actor");
-        let email = daftar_core::Git::new(&store.root).local("user.email");
+        // Git's own answer: the clone's email, else the person's.
+        let email = daftar_core::Git::new(&store.root).effective("user.email");
         let marked = daftar_core::Okf::actor(setting.as_deref(), email.as_deref())
             .map_err(|refused| refused.to_string())
             .and_then(|actor| store.mark_verified(&path, &actor).map(|()| actor).map_err(|refused| refused.to_string()));

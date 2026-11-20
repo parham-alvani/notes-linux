@@ -330,7 +330,7 @@ cli = ""
 [okf]
 # Who you are when you mark a concept as verified (a note whose front
 # matter has a `type`, as the Open Knowledge Format has it): the id of
-# `human:<id>`. Empty is the local part of the vault's git user.email.
+# `human:<id>`. Empty is the local part of git's user.email for the vault.
 actor = ""
 
 [export]
