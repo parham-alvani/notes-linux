@@ -28,7 +28,14 @@ pub struct Hooks {
     pub notice: Box<dyn Fn(&str)>,
     /// The vault was made read-only, or not any more.
     pub read_only: Box<dyn Fn()>,
+    /// Switch Vault: the change to the vault at a folder, in the running app.
+    pub switch_vault: Box<dyn Fn(PathBuf)>,
+    /// Forget Vault, after a question: the folder as the list writes it, and its name.
+    pub forget_vault: Forget,
 }
+
+/// Forget Vault: the folder as the list writes it, and the vault's name.
+pub type Forget = Box<dyn Fn(&str, &str)>;
 
 /// What a setting the vault holds says in place of its control.
 const FROM_VAULT: &str = "From the vault";
@@ -221,6 +228,8 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     from_vault(&settings, "git.pull_on_launch", &pull);
     from_vault(&settings, "git.sync_interval", &interval);
     page.add(&git);
+    // Settings › Vault: the vaults this computer knows, above the Git group of the one in use.
+    page.add(&vaults_group(&settings, &dialog, &hooks));
     if let Some(group) = root.as_deref().and_then(|root| vault_git_group(root, &hooks)) {
         page.add(&group);
     }
@@ -569,6 +578,47 @@ fn home_group(
         row.set_sensitive(false);
         row.set_tooltip_text(Some(FROM_VAULT_TIP));
         row.set_subtitle(&gtk::glib::markup_escape_text(&format!("{} · {FROM_VAULT}", row.subtitle().unwrap_or_default())));
+    }
+    group
+}
+
+/// Settings › Vault: every vault of the list with Switch and Forget. The
+/// vault in use cannot be forgotten, and a missing one is not opened.
+fn vaults_group(settings: &Rc<RefCell<AppSettings>>, dialog: &adw::PreferencesDialog, hooks: &Rc<Hooks>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Vault")
+        .description("The vaults this computer knows. Switch changes to one at once, with no restart; Open Vault… (Ctrl+Shift+O) adds one. Forget takes a vault out of this list and touches no file.")
+        .build();
+    for entry in settings.borrow().vaults(&gtk::glib::home_dir()).entries() {
+        let state = if entry.is_missing() {
+            " · missing"
+        } else if entry.in_use {
+            " · in use"
+        } else {
+            ""
+        };
+        let row = adw::ActionRow::builder().title(&entry.name).subtitle(format!("{}{state}", entry.text)).use_markup(false).build();
+        let switch =
+            gtk::Button::builder().label("Switch").valign(gtk::Align::Center).sensitive(!entry.in_use && !entry.is_missing()).build();
+        let forget = gtk::Button::builder().label("Forget").valign(gtk::Align::Center).sensitive(!entry.in_use).build();
+        {
+            let (hooks, dialog, path) = (hooks.clone(), dialog.clone(), entry.path.clone());
+            switch.connect_clicked(move |_| {
+                // The page is the old vault's: it closes, and the vault changes.
+                dialog.close();
+                (hooks.switch_vault)(path.clone());
+            });
+        }
+        {
+            let (hooks, dialog, folder, name) = (hooks.clone(), dialog.clone(), entry.text.clone(), entry.name);
+            forget.connect_clicked(move |_| {
+                dialog.close();
+                (hooks.forget_vault)(&folder, &name);
+            });
+        }
+        row.add_suffix(&switch);
+        row.add_suffix(&forget);
+        group.add(&row);
     }
     group
 }

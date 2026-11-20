@@ -297,6 +297,13 @@ impl GitSync {
     /// otherwise a pull when [pull] says so, then the automatic syncs.
     pub fn attach(self: &Rc<Self>, root: PathBuf, pull: bool, interval: u32) {
         self.stop_timers();
+        // Nothing of the vault before: its conflicts, its last failure, its read-only menu.
+        if self.root.borrow().as_ref() != Some(&root) {
+            self.set_conflicts(false, Vec::new());
+            self.failed(None);
+            self.set_read_only(false);
+            self.label.set_label("");
+        }
         *self.root.borrow_mut() = Some(root.clone());
         self.button.set_visible(false);
         self.interval.set(interval);

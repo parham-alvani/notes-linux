@@ -163,7 +163,12 @@ impl Reader {
 
     pub fn set_store(&self, store: Rc<VaultStore>) {
         VAULT_ROOT.with(|root| *root.borrow_mut() = Some(store.root.clone()));
-        self.state.borrow_mut().store = Some(store);
+        let mut state = self.state.borrow_mut();
+        // Another vault's notes were told nothing yet, whatever their names.
+        if state.store.as_ref().is_some_and(|old| old.root != store.root) {
+            state.told_read_only.clear();
+        }
+        state.store = Some(store);
     }
 
     /// A link followed: the path, the heading it names, and where it asked to open.

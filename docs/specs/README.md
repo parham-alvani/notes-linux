@@ -27,4 +27,4 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [A read-only vault, and the clone's own git identity](read-only-vault.md) | Linux 0.28.0, macOS 0.25.0, Android 0.65.0 (its own key, so not the ssh command rule; the address for GitHub hosts only) |
 | [The app's settings from the vault](vault-config.md) | Linux 0.28.0, macOS 0.25.0, Android 0.65.0 (the keys it has a setting for) |
 | [The Open Knowledge Format: concepts in the vault, and the vault as a bundle](open-knowledge-format.md) | Linux 0.28.0 (`daftar-cli` with the audit, the MCP tools and `okf export`), macOS 0.25.0 and Android 0.65.0 (sections 1 to 3) |
-| [Several vaults on the desktop: a list, and a change without a restart](several-vaults.md) | not built yet (Android has several vaults already) |
+| [Several vaults on the desktop: a list, and a change without a restart](several-vaults.md) | Linux and `daftar-cli` (not released yet); Android has several vaults already |

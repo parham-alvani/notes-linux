@@ -143,12 +143,54 @@ impl AppSettings {
         self.resolved.set(key, value);
         self.file = self.resolved.file().clone();
         self.publish();
+        self.write_computer(&text)
+    }
+
+    /// The computer's file written whole, through a temporary file; a
+    /// linked file is written where it points, and stays a link.
+    fn write_computer(&self, text: &str) -> io::Result<()> {
         let target = fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
         let temporary = target.with_extension("toml.daftar");
         fs::write(&temporary, text)?;
         fs::rename(&temporary, &target).inspect_err(|_| {
             let _ = fs::remove_file(&temporary);
         })
+    }
+
+    /// The computer's file as it is on disk now.
+    fn computer_now(&self) -> String {
+        fs::read_to_string(&self.path).unwrap_or_else(|_| self.resolved.computer().text().to_string())
+    }
+
+    /// The vaults this computer knows (`docs/specs/several-vaults.md`),
+    /// for a person whose home folder is [home].
+    pub fn vaults(&self, home: &Path) -> daftar_core::Vaults {
+        daftar_core::Vaults::new(&self.computer_now(), home)
+    }
+
+    /// The vault at [root] was opened: it is the vault in use, and it is
+    /// in the list, at the end, once. Nothing is written when the file
+    /// says so already.
+    pub fn record_vault(&mut self, root: &Path, home: &Path) -> io::Result<()> {
+        let before = self.computer_now();
+        let mut vaults = daftar_core::Vaults::new(&before, home);
+        vaults.open(&root.to_string_lossy());
+        if vaults.text() == before {
+            return Ok(());
+        }
+        let text = vaults.text().to_string();
+        self.resolve(&text);
+        self.write_computer(&text)
+    }
+
+    /// Forget Vault: [folder] is taken out of the list; no file of it is
+    /// touched. The vault in use cannot be forgotten.
+    pub fn forget_vault(&mut self, folder: &str, home: &Path) -> Result<(), String> {
+        let mut vaults = daftar_core::Vaults::new(&self.computer_now(), home);
+        vaults.forget(folder).map_err(|refused| refused.to_string())?;
+        let text = vaults.text().to_string();
+        self.resolve(&text);
+        self.write_computer(&text).map_err(|e| format!("the settings were not saved: {e}"))
     }
 
     /// The vault's folder, with `~` for the home folder.

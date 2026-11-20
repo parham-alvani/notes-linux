@@ -109,6 +109,12 @@ impl Window {
             self.toasts.add_toast(crate::toast("The other note changed on disk; the split stays so the text is not lost."));
             return;
         }
+        self.unsplit(keep, &other);
+    }
+
+    /// [other], the pane beside [keep], put away: its editor let its note go already.
+    pub(super) fn unsplit(&self, keep: &Rc<Tab>, other: &Rc<Tab>) {
+        let other = other.clone();
         crate::read_aloud::left(&other.reader.view, None);
         self.tabs.borrow_mut().retain(|tab| !Rc::ptr_eq(tab, &other));
         // Hidden and kept for the next split, not taken out: a web view

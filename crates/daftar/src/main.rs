@@ -35,6 +35,7 @@ mod task_edit;
 mod terminal;
 mod timeline_view;
 mod today;
+mod vault_change;
 mod vault_checks;
 mod vault_dialogs;
 mod vim_floats;

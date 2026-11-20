@@ -372,6 +372,12 @@ impl Editor {
 
     /// Writes the buffer when it changed, unless the file changed under it.
     /// In Neovim mode, Neovim writes it, and this waits for it a moment.
+    /// [text] typed at the end of the note, for a test with no keyboard.
+    #[cfg(test)]
+    pub(crate) fn type_at_end(&self, text: &str) {
+        self.buffer.insert(&mut self.buffer.end_iter(), text);
+    }
+
     pub fn save(&self) -> Saved {
         self.cancel_pending();
         if let Some(vim) = self.vim.borrow().as_ref() {
@@ -497,7 +503,7 @@ impl Editor {
 
     // The buffer
 
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         self.buffer.text(&self.buffer.start_iter(), &self.buffer.end_iter(), true).to_string()
     }
 

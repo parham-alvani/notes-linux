@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use serde_json::json;
 
 use daftar_core::{SearchIndex, Value, Vault};
 
@@ -38,6 +37,7 @@ mod problems;
 mod split;
 mod tab;
 mod vault_tools;
+mod vaults;
 
 pub(crate) use tab::{Group, Tab};
 
@@ -426,6 +426,7 @@ impl Window {
                     }
                     this.git.detach();
                     this.notifier.clear();
+                    vaults::unregister(&this);
                     return glib::Propagation::Proceed;
                 }
                 this.ask_close_unsaved(unsaved);
@@ -434,11 +435,12 @@ impl Window {
         }
         this.add_actions();
         this.follow_config();
+        vaults::register(&this);
         let first = this.new_tab();
         window.present();
 
         match this.settings.borrow().vault() {
-            Some(root) => this.load(root, open),
+            Some(root) => this.load(root, open, false),
             None => first.stack.set_visible_child_name("choose"),
         }
     }
@@ -802,15 +804,15 @@ impl Window {
         let this = self.clone();
         dialog.select_folder(Some(&self.window), gio::Cancellable::NONE, move |result| {
             let Some(path) = result.ok().and_then(|folder| folder.path()) else { return };
-            if let Err(error) = this.settings.borrow_mut().set("vault", Value::String(path.to_string_lossy().into_owned())) {
-                this.toasts.add_toast(crate::toast(&format!("The settings were not saved: {error}")));
-            }
-            this.load(path, None);
+            // The same path as Switch Vault: the vault is written once it is the one open.
+            this.switch_vault(path);
         });
     }
 
     /// Indexes the vault at [root] away from the window, then shows it.
-    fn load(&self, root: PathBuf, open: Option<String>) {
+    /// With [change], it is a change of vault in the running app: the
+    /// vault in use is written, and the tabs the vault had are opened again.
+    fn load(&self, root: PathBuf, open: Option<String>, change: bool) {
         let tabs = self.tabs.borrow().clone();
         if !root.is_dir() {
             for tab in &tabs {
@@ -841,16 +843,16 @@ impl Window {
                 return;
             }
             let folder = root;
-            let store = Rc::new(VaultStore::new(folder.clone(), index, search));
-            // What the vault's own `.daftar.toml` sets is read before the vault is shown.
-            if this.settings.borrow_mut().set_vault(Some(&folder)) {
-                apply_theme(&this.settings.borrow().theme());
-            }
+            // Everything is made again for this folder, and nothing of the vault before
+            // is in it: the settings its `.daftar.toml` sets, the hidden files, the store.
+            let opened = {
+                let home = glib::home_dir();
+                let mut settings = this.settings.borrow_mut();
+                crate::vault_change::open(&mut settings, &folder, index, search, change.then_some(home.as_path()))
+            };
+            let store = opened.store.clone();
+            apply_theme(&this.settings.borrow().theme());
             this.follow_vault_settings(&folder);
-            {
-                let (names, show) = this.hidden_settings();
-                store.set_hidden(&names, show);
-            }
             let watcher = {
                 let this = this.clone();
                 FileWatcher::new(&folder, move |changed| this.files_changed(changed))
@@ -874,7 +876,7 @@ impl Window {
                 )
             };
             this.git.attach(folder.clone(), pull, interval);
-            this.set_read_only(daftar_core::Git::read_only(&folder));
+            this.set_read_only(opened.read_only);
             this.terminal.set_folder(folder.clone());
             this.checks.opened(&folder);
             *this.store.borrow_mut() = Some(store.clone());
@@ -891,8 +893,14 @@ impl Window {
                 tab.editor.set_store(store.clone());
                 tab.back.borrow_mut().clear();
                 tab.forward.borrow_mut().clear();
+                tab.pending.borrow_mut().take();
+                tab.replaced_by.borrow_mut().take();
+                tab.concept_line.set_revealed(false);
+                // The voice read a note of the vault before.
+                crate::read_aloud::left(&tab.reader.view, None);
                 this.show_home(&tab);
             }
+            this.refresh_inspector();
             // A path in the vault, or a name as a link names it: `Inbox`.
             let open = open.and_then(|p| {
                 let index = store.index();
@@ -901,7 +909,7 @@ impl Window {
             match open {
                 Some(path) => this.open(&path, None),
                 // The tabs the last window had, when this is the only one.
-                None if this.window.application().is_some_and(|app| app.windows().len() == 1) => this.restore_tabs(&store),
+                None if change || this.window.application().is_some_and(|app| app.windows().len() == 1) => this.restore_tabs(&store),
                 None => {}
             }
         });
@@ -1006,7 +1014,7 @@ impl Window {
             return true;
         }
         let path = tab.editor.path();
-        if tab.editor.close().kept() {
+        if !crate::vault_change::lets_go(&tab.editor) {
             return false;
         }
         if self.is_chosen(tab) {
@@ -1670,7 +1678,9 @@ impl Window {
             command("Bigger Text", "View", "win.bigger-text", "Ctrl+="),
             command("Smaller Text", "View", "win.smaller-text", "Ctrl+-"),
             command("Actual Size", "View", "win.actual-size", "Ctrl+0"),
+            command("Switch Vault…", "File", "win.switch-vault", ""),
             command("Open Vault…", "File", "win.open-vault", "Ctrl+Shift+O"),
+            command("Forget Vault…", "File", "win.forget-vault", ""),
         ];
         commands.extend(self.vault_tool_commands());
         if self.git.button.is_visible() {
@@ -1751,6 +1761,14 @@ impl Window {
                 let this = self.clone();
                 move || this.refresh_read_only()
             }),
+            switch_vault: Box::new({
+                let this = self.clone();
+                move |root| this.switch_vault(root)
+            }),
+            forget_vault: Box::new({
+                let this = self.clone();
+                move |folder, name| this.confirm_forget_vault(folder, name)
+            }),
         };
         let root = self.store.borrow().as_ref().map(|store| store.root.clone());
         crate::preferences::present(&self.window, self.settings.clone(), root, Rc::new(hooks));
@@ -1786,23 +1804,13 @@ impl Window {
         let splits: Vec<Option<String>> = tabs.iter().map(|panes| panes.get(1).map(note)).collect();
         let focused: Vec<usize> = tabs.iter().map(|panes| panes.iter().position(|tab| tab.group.is_focused(tab)).unwrap_or(0)).collect();
         let at = tabs.iter().position(|panes| Rc::ptr_eq(&panes[0].group, &chosen.group)).unwrap_or(0);
-        let file = crate::places::state_file(&store.root, "tabs");
-        if let Some(folder) = file.parent() {
-            let _ = std::fs::create_dir_all(folder);
-        }
-        let _ = std::fs::write(&file, json!({ "tabs": paths, "splits": splits, "focused": focused, "chosen": at }).to_string());
+        crate::vault_change::Tabs { notes: paths, splits, focused, chosen: at }.save(&crate::vault_change::Tabs::file(&store.root));
     }
 
     /// The tabs [save_tabs] kept, each on its note while it is still there.
     fn restore_tabs(&self, store: &Rc<VaultStore>) {
-        let Ok(text) = std::fs::read_to_string(crate::places::state_file(&store.root, "tabs")) else { return };
-        let Ok(saved) = serde_json::from_str::<serde_json::Value>(&text) else { return };
-        let paths: Vec<String> = saved
-            .get("tabs")
-            .and_then(|t| t.as_array())
-            .map_or_default(|t| t.iter().filter_map(|p| p.as_str().map(String::from)).collect());
-        let chosen = saved.get("chosen").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
-        let at_index = |key: &str, at: usize| saved.get(key).and_then(|list| list.get(at)).cloned();
+        let Some(saved) = crate::vault_change::Tabs::read(&crate::vault_change::Tabs::file(&store.root)) else { return };
+        let (paths, chosen) = (saved.notes.clone(), saved.chosen);
         // The chosen tab is drawn now; the others when they are first chosen.
         let show = |tab: &Rc<Tab>, path: &str, now: bool| {
             if now {
@@ -1818,14 +1826,14 @@ impl Window {
             if store.index().files.contains(path) {
                 show(&tab, path, at == chosen);
             }
-            let Some(right) = at_index("splits", at).and_then(|split| split.as_str().map(String::from)) else { continue };
+            let Some(right) = saved.splits.get(at).cloned().flatten() else { continue };
             let other = self.split_pane(&tab);
             if store.index().files.contains(&right) {
                 show(&other, &right, at == chosen);
             } else {
                 self.show_home(&other);
             }
-            let focused = at_index("focused", at).and_then(|f| f.as_u64()).unwrap_or(0);
+            let focused = saved.focused.get(at).copied().unwrap_or(0);
             self.focus_pane(if focused == 1 { &other } else { &tab }, false);
         }
         let page = self.tabs_in_order().get(chosen).and_then(|panes| panes[0].group.page.borrow().clone());
@@ -1852,6 +1860,12 @@ impl Window {
             let this = self.clone();
             find.connect_activate(move |_, _| this.tab().reader.find(action));
             self.window.add_action(&find);
+        }
+        for (name, run) in [("switch-vault", Window::ask_vault as fn(&Window)), ("forget-vault", Window::ask_forget_vault)] {
+            let action = gio::SimpleAction::new(name, None);
+            let this = self.clone();
+            action.connect_activate(move |_, _| run(&this));
+            self.window.add_action(&action);
         }
         let open_vault = gio::SimpleAction::new("open-vault", None);
         let this = self.clone();
