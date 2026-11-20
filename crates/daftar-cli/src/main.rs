@@ -29,6 +29,7 @@ mod mcp;
 mod meaning;
 mod memory;
 mod mentions;
+mod okf;
 mod report;
 mod review;
 mod similar;
@@ -682,6 +683,15 @@ enum Command {
         /// notes, the daily notes); `orphan_skip` in `.daftar.toml` adds to it.
         #[arg(long = "orphan-skip", requires = "orphans")]
         orphan_skip: Vec<String>,
+        /// The Open Knowledge Format's warnings on the notes with a `type`
+        /// (concepts): a stale one (okf-stale), a time that is none
+        /// (okf-time), a status that is none of draft, stable and
+        /// deprecated (okf-status), an event with no actor (okf-event), and
+        /// a link to a deprecated concept that names its replacement
+        /// (okf-superseded, which --fix rewrites). `okf = true` in
+        /// `.daftar.toml` does the same.
+        #[arg(long)]
+        okf: bool,
         /// A section of the vault's `.daftar.toml` to add to its `[check]`,
         /// as `audit`. The file's options are read first and the flags add
         /// to them.
@@ -825,6 +835,13 @@ enum Command {
         #[arg(long)]
         read_only: bool,
     },
+    /// The vault as a bundle of the Open Knowledge Format (OKF 0.3):
+    /// `export` writes one from the vault, and `check` says whether a
+    /// folder is one.
+    Okf {
+        #[command(subcommand)]
+        action: OkfAction,
+    },
     /// Every setting with its value and where it came from, a line each
     /// (`key`, a tab, the value as the file writes it, a tab, `vault`,
     /// `computer` or `default`): the vault's `.daftar.toml` may set the
@@ -859,6 +876,42 @@ enum Command {
         #[arg(long)]
         trash: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum OkfAction {
+    /// Writes an OKF 0.3 bundle from the vault into a folder outside it:
+    /// each note in scope at its own path with a `type` (its own, else
+    /// `[okf.types]` by its folder, else `Note`), its body as CommonMark
+    /// with `/` links, the pictures it shows, an `index.md` in every folder
+    /// and a `log.md` from git. `[okf]` in the vault's `.daftar.toml` says
+    /// what goes in (`include`, `exclude`, `title`, `description`,
+    /// `license`). Hidden notes, the week notes, the scratchpad and the
+    /// templates never do. The folder must be empty or an earlier export,
+    /// whose files this run does not write are removed. Nothing is written
+    /// in the vault.
+    Export {
+        /// The folder the bundle is written in.
+        #[arg(short, long)]
+        output: PathBuf,
+        /// A folder to export, with all under it, beside `include` of `[okf]`.
+        #[arg(long)]
+        include: Vec<String>,
+        /// A folder or a note never exported, beside `exclude` of `[okf]`.
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// How many days back `log.md` goes.
+        #[arg(long, default_value_t = 90)]
+        log_days: i64,
+        /// Lists what it would write and remove, and writes nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Whether a folder is a conformant OKF bundle: every front matter is
+    /// a YAML mapping, and each `index.md` and `log.md` has its shape.
+    /// Then, as warnings, what the audit says of its concepts (okf-stale,
+    /// okf-time, okf-status, okf-event).
+    Check { folder: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -1529,10 +1582,12 @@ fn run(cli: Cli) -> Result<(), String> {
             quiet_days,
             orphans,
             orphan_skip,
+            okf,
             profile,
             watch,
         } => {
             let vault = check::VaultOptions::read(&root, profile.as_deref())?;
+            let okf = okf || vault.okf;
             let memory = memory || vault.memory;
             let event_property = check::joined(vault.event_properties, event_property);
             let prep_note = check::joined(vault.prep_notes, prep_note);
@@ -1567,6 +1622,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     quiet_days,
                 }),
                 orphans,
+                okf,
             };
             if watch {
                 return watching::run(&root, |_| check::pass(&root, |path| hidden.contains(path), &options));
@@ -1694,6 +1750,38 @@ fn run(cli: Cli) -> Result<(), String> {
             ics::put(&ics::calendar(&events, chrono::Utc::now()), output.as_deref())?;
         }
         Command::Mcp { read_only } => mcp::run(root, cli.hidden, read_only)?,
+        Command::Okf { action: OkfAction::Export { output, include, exclude, log_days, dry_run } } => {
+            let mut scope = okf::Scope::read(&root);
+            scope.include = check::joined(scope.include, include);
+            scope.exclude = check::joined(scope.exclude, exclude);
+            let index = Vault::index(&root, None);
+            // The hidden notes are never exported, whatever `--hidden` lists.
+            let hidden = ExcludedFiles::from_config(&root, &config(&root), false);
+            let done = okf::export(&root, &index, &hidden, &scope, &okf::Options { output: output.clone(), log_days, dry_run })?;
+            for path in &done.written {
+                out!("{}\t{path}", if dry_run { "would write" } else { "wrote" });
+            }
+            for path in &done.removed {
+                out!("{}\t{path}", if dry_run { "would remove" } else { "removed" });
+            }
+            eprintln!(
+                "daftar-cli: {} written, {} removed, {} unchanged in {}",
+                done.written.len(),
+                done.removed.len(),
+                done.unchanged,
+                output.display()
+            );
+        }
+        Command::Okf { action: OkfAction::Check { folder } } => {
+            let found = okf::check(&folder)?;
+            for line in found.errors.iter().chain(&found.warnings) {
+                out!("{line}");
+            }
+            eprintln!("daftar-cli: {} errors, {} warnings in {} files", found.errors.len(), found.warnings.len(), found.files);
+            if !found.errors.is_empty() {
+                return Err(format!("{} is not a conformant OKF {} bundle", folder.display(), daftar_core::Okf::VERSION));
+            }
+        }
         Command::Config { json } => {
             let entries = daftar_core::Settings::read(&root).entries();
             if json {

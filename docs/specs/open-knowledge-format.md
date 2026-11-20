@@ -33,7 +33,7 @@ A note is a concept when its front matter has a `type` that is not empty (§3.2)
 - **The inspector** (the properties form of [Properties](properties.md)) has a Concept row above the properties of a concept: its type, then chips for the trust tier ("Unverified", "Machine-confirmed", "Human-reviewed", with the last current verifier and day in the tooltip), the status when it is not `stable` ("Draft", "Deprecated", or the raw value), and "Stale since <day>" or "Stale: bad date". A note that is not a concept has no row.
 - **The reader** has one line above a deprecated or stale concept's text, and nothing above any other: "Deprecated. Replaced by <link>." (the link from `superseded_by`, left out when it is absent or does not resolve) or "Stale since <day>: check it again."
 - **Quick open and search** show a deprecated concept dimmed, after the others of the same rank.
-- **Mark as Verified** (the palette, and a button in the Concept row): adds `{ by: "human:<id>", at: "<now, UTC, to the second>" }` to `verified` through the properties' write (`PropertySheet`), which keeps every other line byte for byte. `<id>` is `okf.actor` in `config.toml` (the app's settings on Android), else the local part of the clone's `user.email`, else the command is off and says to set it. An event of that actor already there is replaced, not added twice. It is offered on a concept only, and never in a read-only vault.
+- **Mark as Verified** (the palette, and a button in the Concept row): adds `{ by: "human:<id>", at: "<now, UTC, to the second>" }` to `verified` by writing that one key again in the front matter, as a block list of `by` and `at` in double quotes, which keeps every other line byte for byte (the properties form of `PropertySheet` holds no list of mappings, so the write is the format's own). `<id>` is `okf.actor` in `config.toml` (the app's settings on Android), else the local part of the clone's `user.email`, else the command is off and says to set it. An event of that actor already there is replaced, not added twice. It is offered on a concept only, and never in a read-only vault.
 
 ## 3. Links, as OKF reads them
 
@@ -54,19 +54,19 @@ OKF's links are Markdown links, `[text](target)`, not wikilinks. A vault may hol
 
 | Rule | When |
 | --- | --- |
-| `okf-stale` | a concept is stale; the message has the day |
-| `okf-time` | a time key (`stale_after`, `generated.at`, `verified[].at`) is malformed |
+| `okf-stale` | a concept is stale by its `stale_after`; the message has the day |
+| `okf-time` | a time key (`stale_after`, `generated.at`, `verified[].at`) is malformed; a malformed `stale_after` is said here once, with that it counts as stale, and not as `okf-stale` too |
 | `okf-status` | `status` is none of the three |
 | `okf-event` | a `verified` event, or `generated`, lacks `by` (or an event `at`) |
-| `okf-superseded` | a link or wikilink goes to a deprecated concept that has a `superseded_by`; the message names the replacement, and `--fix` writes it |
+| `okf-superseded` | a link or wikilink goes to a deprecated concept that has a `superseded_by`; the message names the replacement, and `--fix` writes it in a wikilink, which shows what it showed (`[[Old]]` is `[[New\|Old]]`); a Markdown link is warned of and left |
 
 **The MCP server**: `note_info` and `note_context` say `concept: <type>; <tier>; <status>; stale since …` for a concept. A new reading tool, `concepts`, lists them (`type`, `status`, `tier`, `stale`, `folder` as filters; each line the path, the type and the description), so an agent sees what there is before it opens a note, as an `index.md` would show it.
 
-**An agent's write is marked.** When an MCP tool changes the text of a concept (`append_to_note`, `replace_in_note`, `replace_section`; not a task tick, a property or a move), the server sets `generated: { by: "<client name>/<client version>", at: "<now>" }` in the same write, from the `clientInfo` of `initialize` (lower case, spaces as `-`; no client info is `daftar-mcp/<version>`). The events in `verified` stay as history, and by the rule of section 1 the note is no longer human-reviewed until the person marks it again. A note that is not a concept gets no front matter.
+**An agent's write is marked.** When an MCP tool changes the text of a concept (`append_to_note`, `replace_in_note`, `replace_section`; not a task tick, a property or a move), the server sets `generated: { by: "<client name>/<client version>", at: "<now>" }` in the same write (for `append_to_note`, in a write of its own right after), from the `clientInfo` of `initialize` (lower case, spaces as `-`; no client info is `daftar-mcp/<version>`). The events in `verified` stay as history, and by the rule of section 1 the note is no longer human-reviewed until the person marks it again. A note that is not a concept gets no front matter.
 
 ## 5. The vault as a bundle: `daftar-cli okf export`
 
-`daftar-cli okf export --output <folder>` writes an OKF 0.3 bundle from the vault, and `daftar-cli okf check <folder>` says whether a folder is one (§11.1: every front matter parses as a mapping, `index.md` and `log.md` have their shape; then the warnings of section 4). The vault's `.daftar.toml` says what goes in:
+`daftar-cli okf export --output <folder>` writes an OKF 0.3 bundle from the vault, and `daftar-cli okf check <folder>` says whether a folder is one (§11.1: every front matter parses as a mapping, `index.md` and `log.md` have their shape; then the warnings of section 4). Its errors are `okf-front-matter` (not closed, or no mapping), `okf-reserved` (a front matter in `log.md` or in an `index.md` that is not the root's), `okf-index` (a line that is no heading and no `* [Title](url)` entry) and `okf-log` (a `##` heading that is no `YYYY-MM-DD`), each as `path:line`, `error`, the code and a sentence, with tabs between; it exits 1 on an error and 0 on warnings alone. The vault's `.daftar.toml` says what goes in:
 
 ```toml
 [okf]
@@ -87,15 +87,15 @@ license = ""
 
 `--include` and `--exclude` on the command line add to these. What is written:
 
-- **Notes.** Each note in scope, at its own path. Left out always: hidden notes (`files.hidden`: `CLAUDE.md`, `AGENTS.md`, …), dot folders, the week notes of `Calendar/`, the scratchpad, and the templates. A note named `index.md` or `log.md` is written as `index-note.md` or `log-note.md`, and links to it follow.
+- **Notes.** Each note in scope, at its own path. Left out always: hidden notes (`files.hidden`: `CLAUDE.md`, `AGENTS.md`, …), dot folders, the week notes of `Calendar/`, the scratchpad (`scratchpad.note` and the notes under `scratchpad.folder`), and the templates. A note named `index.md` or `log.md` is written as `index-note.md` or `log-note.md`, and links to it follow.
 - **Front matter.** What the note has, byte for byte. A note with no `type` gets one: `[okf.types]` by its folder, else `Note`. A note with no front matter gets a block with `type` alone. No `title`, `description`, trust or time is ever made up.
 - **The body**, turned into what §4.2 allows (CommonMark, GFM tables, footnotes):
-    - `[[Note]]`, `[[Note|text]]`, `[[Note#Heading]]`: `[text](/path/to/Note.md#heading)`, a `/` path from the bundle's root, percent-encoded; the text is the alias, else the note's name (with ` > Heading`). A link to a note that is not exported, or that resolves to none, becomes its text alone.
-    - `![[picture.png]]` and `![](…)`: `![](/uploads/picture.png)`, and the file is copied as an asset. `![[Note]]` becomes a link to the note.
+    - `[[Note]]`, `[[Note|text]]`, `[[Note#Heading]]`: `[text](/path/to/Note.md#heading)`, a `/` path from the bundle's root, percent-encoded; the text is the alias, else the note's name (with ` > Heading`), and the fragment is the heading in lower case with `-` for its spaces. A link to a note that is not exported, or that resolves to none, becomes its text alone. A Markdown link to a note is written as a `/` path by the same rule.
+    - `![[picture.png]]` and `![](…)`: `![](/uploads/picture.png)`, and the file is copied as an asset; so is any file that is no note which a note links to (a PDF), and no other file of the vault. `![[Note]]` becomes a link to the note.
     - `> [!type] Title`: a quote whose first line is `> **Title**` (the type's name, capitalised, with no title); the body stays.
     - `==text==`, with or without a colour's emoji: `**text**`. `%%comments%%` are removed. A block id (` ^id`) is removed. Math, tasks, tags and code stay as they are.
-- **`index.md`** in every folder written, with no front matter but the root's: a `# Notes` section, `* [Title](file.md) - description` for each concept by name (the `description` of its front matter; none is no ` - …`), then `# Folders`, `* [Name](name/)`. The folder's own note (`Acme/Acme.md`) is first in Notes. The root's has `okf_version: "0.3"`, `title` (else the vault's folder name), `description` and `license` when given, and `x-daftar-export: true`.
-- **`log.md`** at the root, from git: a `## YYYY-MM-DD` heading for each day with changes, newest first, `--log-days` back (90), and under it `* **Creation**: [Title](path)` or `* **Update**: [Title](path)` for each exported note the day's commits added or changed, by path. No repository is no `log.md`.
+- **`index.md`** in every folder that has an exported note in it or under it (a folder of assets alone has none), with no front matter but the root's, and a section with nothing in it left out: a `# Notes` section, `* [Title](file.md) - description` for each concept by name (the `description` of its front matter; none is no ` - …`), then `# Folders`, `* [Name](name/)`. The folder's own note (`Acme/Acme.md`) is first in Notes. The root's has `okf_version: "0.3"`, `title` (else the vault's folder name), `description` and `license` when given, and `x-daftar-export: true`.
+- **`log.md`** at the root, from git: under `# Update Log`, a `## YYYY-MM-DD` heading for each day with changes, newest first, `--log-days` back (90), and under it `* **Creation**: [Title](path)` or `* **Update**: [Title](path)` for each exported note the day's commits added or changed, by path, each link a `/` path. No repository is no `log.md`.
 - **The output folder** must not be in the vault. It must be empty, or a bundle this command wrote (its root `index.md` has `x-daftar-export: true`), else the command refuses. In a bundle it wrote, a file that this run does not write is removed (a `.git` folder and other dot paths are left alone), and the root `index.md`'s own front matter is kept, with only `okf_version` set again. A file whose text did not change is not written again, so a git repository in the output has small commits.
 - It writes nothing in the vault, so it runs in a read-only clone too. `--dry-run` lists what it would write and remove.
 

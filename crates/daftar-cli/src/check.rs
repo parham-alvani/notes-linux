@@ -23,7 +23,7 @@ use std::sync::LazyLock;
 use chrono::NaiveDate;
 use daftar_core::vault::LOGO_NAMES;
 use daftar_core::web_fetch::Answer;
-use daftar_core::{Day, ParsedTask, Recurrence, TaskReason, TaskStatuses, TaskType, Vault, VaultEdits, VaultIndex};
+use daftar_core::{Day, Okf, ParsedTask, Recurrence, TaskReason, TaskStatuses, TaskType, Vault, VaultEdits, VaultIndex};
 use percent_encoding::percent_decode_str;
 use rayon::prelude::*;
 use regex::Regex;
@@ -58,6 +58,8 @@ pub struct VaultOptions {
     pub orphans: bool,
     /// Folders whose notes are not orphans for that: the week notes, the daily notes.
     pub orphan_skip: Vec<String>,
+    /// The Open Knowledge Format's warnings on concepts (`okf-…`).
+    pub okf: bool,
 }
 
 impl VaultOptions {
@@ -81,6 +83,9 @@ impl VaultOptions {
             options.orphan_skip.extend(list("orphan_skip"));
             if let Some(orphans) = file.bool(&format!("{section}.orphans")) {
                 options.orphans = orphans;
+            }
+            if let Some(okf) = file.bool(&format!("{section}.okf")) {
+                options.okf = okf;
             }
             if let Some(memory) = file.bool(&format!("{section}.memory")) {
                 options.memory = memory;
@@ -146,6 +151,10 @@ pub struct Options {
     pub memory: Option<crate::memory::Rules>,
     /// Warns of orphan notes, but in these folders.
     pub orphans: Option<Vec<String>>,
+    /// The Open Knowledge Format's warnings (`docs/specs/open-knowledge-format.md`):
+    /// a stale concept, a time that is none, a status that is none of the
+    /// three, an event with no actor, a link to a concept that was replaced.
+    pub okf: bool,
 }
 
 pub struct Outcome {
@@ -614,8 +623,23 @@ pub fn run_on(index: &VaultIndex, root: &Path, hidden: impl Fn(&str) -> bool, op
     paths.sort();
     let statuses = TaskStatuses::load(root);
     let today = Day::today().to_string();
+    let replaced = if options.okf { superseded(index, root) } else { HashMap::new() };
     for path in &paths {
         let note = &index.notes[*path];
+        if options.okf {
+            for (line, kind, what) in okf_problems(index, root, path, &replaced) {
+                if kind == "okf-superseded" && options.fix {
+                    if let Some((old, new)) = what.split_once('\t') {
+                        fixes.insert(((*path).clone(), line - 1, kind, old.to_string(), new.to_string()));
+                    }
+                } else {
+                    let what = what
+                        .split_once('\t')
+                        .map_or_else(|| what.clone(), |(old, new)| format!("{old} is deprecated: it was replaced by {new}"));
+                    found.insert(((*path).clone(), line, false, kind, what));
+                }
+            }
+        }
         for task in &note.parsed.tasks {
             for (kind, what) in task_problems(task, &statuses, &today) {
                 found.insert(((*path).clone(), task.line + 1, false, kind, what));
@@ -982,7 +1006,57 @@ pub fn run_on(index: &VaultIndex, root: &Path, hidden: impl Fn(&str) -> bool, op
 /// Whether `check --fix` mends a finding: an ambiguous link, and with
 /// `--urls --archive` a dead address that has a copy.
 fn fixable(kind: &str, detail: &str) -> bool {
-    kind == "ambiguous-link" || (kind == "dead-url" && detail.contains("; archived at "))
+    kind == "ambiguous-link" || kind == "okf-superseded" || (kind == "dead-url" && detail.contains("; archived at "))
+}
+
+/// The deprecated concepts of the vault that say what replaced them, each
+/// with the note its `superseded_by` resolves to.
+fn superseded(index: &VaultIndex, root: &Path) -> HashMap<String, String> {
+    index
+        .notes
+        .values()
+        .filter(|note| note.parsed.properties.iter().any(|(key, _)| key == "superseded_by"))
+        .filter_map(|note| {
+            let concept = Okf::concept_of(&note.path, &fs::read_to_string(root.join(&note.path)).ok()?)?;
+            let new = index.resolve(concept.superseded_by.as_deref().filter(|_| concept.is_deprecated())?, &note.path)?;
+            (new != note.path).then(|| (note.path.clone(), new))
+        })
+        .collect()
+}
+
+/// The Open Knowledge Format's warnings for the note at [path], each a
+/// line from 1, a rule and what it says. For `okf-superseded` that is the
+/// link's target as written, a tab, and the replacement as a link names it.
+fn okf_problems(index: &VaultIndex, root: &Path, path: &str, replaced: &HashMap<String, String>) -> Vec<(usize, &'static str, String)> {
+    let mut found = Vec::new();
+    let note = &index.notes[path];
+    for link in &note.parsed.links {
+        let Some(new) = index.resolve(&link.target, path).and_then(|to| replaced.get(&to)) else { continue };
+        let name = Vault::title(new);
+        let name = if index.resolve(&name, path).as_ref() == Some(new) { name } else { new.strip_suffix(".md").unwrap_or(new).to_string() };
+        found.push((link.line + 1, "okf-superseded", format!("{}\t{name}", link.target)));
+    }
+    if !note.parsed.properties.iter().any(|(key, _)| key == "type") {
+        return found;
+    }
+    let Some(concept) = fs::read_to_string(root.join(path)).ok().and_then(|text| Okf::concept_of(path, &text)) else { return found };
+    if let Some(daftar_core::okf::Stale::Since(at)) = concept.stale(chrono::Utc::now()) {
+        found.push((1, "okf-stale", format!("the concept is stale since {}: check it again", at.format("%Y-%m-%d"))));
+    }
+    for (key, raw) in concept.malformed_times() {
+        let stale = if key == "stale_after" { ", so the concept counts as stale" } else { "" };
+        found.push((1, "okf-time", format!("{key} is not a time (a date, or a date and time with an offset): {raw}{stale}")));
+    }
+    if let daftar_core::okf::Status::Other(raw) = &concept.status {
+        found.push((1, "okf-status", format!("status is none of draft, stable and deprecated: {raw}")));
+    }
+    if concept.incomplete > 0 {
+        found.push((1, "okf-event", format!("{} verified events lack by or at, and are left out", concept.incomplete)));
+    }
+    if concept.generated.as_ref().is_some_and(|generated| generated.by.is_none()) {
+        found.push((1, "okf-event", "generated lacks by".to_string()));
+    }
+    found
 }
 
 /// Each of [fixes], `(path, line, kind, old, new)`, made in its note
@@ -1062,6 +1136,50 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn the_audit_warns_of_stale_and_superseded() {
+        let dir = vault(&[
+            ("Stale.md", "---\ntype: Metric\nstale_after: 2020-01-01\n---\n# Stale\n"),
+            ("Fresh.md", "---\ntype: Metric\nstale_after: 2999-01-01\nstatus: draft\n---\n# Fresh\n"),
+            (
+                "Archived.md",
+                "---\ntype: Metric\nstatus: archived\nstale_after: soon\nverified:\n  - by: \"human:x\"\ngenerated: { at: 2026-01-01 }\n---\n",
+            ),
+            ("Old.md", "---\ntype: Guide\nstatus: deprecated\nsuperseded_by: /New.md\n---\n# Old\n"),
+            ("New.md", "---\ntype: Guide\n---\n# New\n"),
+            ("Reader.md", "# Reader\n\nSee [[Old]] and [[Old|the guide]], and [md](Old.md).\nAnd [[Fresh]].\n"),
+            ("Plain.md", "---\nstatus: archived\nstale_after: 2020-01-01\n---\nNot a concept.\n"),
+        ]);
+        let with = Options { okf: true, ..options() };
+        let okf = |options: &Options| -> Vec<String> {
+            findings(dir.path(), options).into_iter().filter(|line| line.contains("\tokf-")).collect()
+        };
+        assert_eq!(
+            okf(&with),
+            [
+                "Archived.md:1\twarning\tokf-event\t1 verified events lack by or at, and are left out",
+                "Archived.md:1\twarning\tokf-event\tgenerated lacks by",
+                "Archived.md:1\twarning\tokf-status\tstatus is none of draft, stable and deprecated: archived",
+                "Archived.md:1\twarning\tokf-time\tstale_after is not a time (a date, or a date and time with an offset): soon, so the concept counts as stale",
+                "Reader.md:3\twarning\tokf-superseded\tOld is deprecated: it was replaced by New",
+                "Reader.md:3\twarning\tokf-superseded\tOld.md is deprecated: it was replaced by New",
+                "Stale.md:1\twarning\tokf-stale\tthe concept is stale since 2020-01-01: check it again",
+            ]
+        );
+        // Without `okf = true`, none.
+        assert!(okf(&options()).is_empty());
+        // The vault's own file turns it on.
+        fs::write(dir.path().join(".daftar.toml"), "[check]\nokf = true\n").unwrap();
+        assert!(VaultOptions::read(dir.path(), None).unwrap().okf);
+        // --fix writes the replacement, and the link shows what it showed.
+        let fixed = findings(dir.path(), &Options { fix: true, ..with });
+        assert!(fixed.iter().any(|line| line.contains("fixed\tokf-superseded")), "{fixed:?}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("Reader.md")).unwrap(),
+            "# Reader\n\nSee [[New|Old]] and [[New|the guide]], and [md](Old.md).\nAnd [[Fresh]].\n"
+        );
+    }
+
     fn findings(dir: &Path, options: &Options) -> Vec<String> {
         let mut lines = Vec::new();
         run(dir, |_| false, options, |l| lines.push(l));
@@ -1085,6 +1203,7 @@ mod tests {
             dry_run: false,
             memory: None,
             orphans: None,
+            okf: false,
         }
     }
 

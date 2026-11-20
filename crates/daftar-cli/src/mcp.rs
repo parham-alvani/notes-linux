@@ -50,6 +50,9 @@ struct Server {
     /// The vault is not open to agents here: every request is refused, no
     /// tool is listed and no note is read.
     closed: bool,
+    /// The client's name and version, from `initialize`: the actor of its
+    /// writes to a concept (`generated.by`).
+    client: Option<(String, String)>,
     search: Option<(SearchIndex, VaultIndex)>,
     /// The drill's state file, in place of Daftar's: for the tests.
     drill_state: Option<PathBuf>,
@@ -61,8 +64,16 @@ pub fn run(root: PathBuf, show_hidden: bool, read_only: bool) -> Result<(), Stri
     TaskStatuses::set_current(TaskStatuses::load(&root));
     let meaning = crate::meaning::Kept::new(&root);
     let door = Door::of(&root, read_only);
-    let mut server =
-        Server { root, show_hidden, read_only: door != Door::Open, closed: door == Door::Closed, search: None, drill_state: None, meaning };
+    let mut server = Server {
+        root,
+        show_hidden,
+        read_only: door != Door::Open,
+        closed: door == Door::Closed,
+        client: None,
+        search: None,
+        drill_state: None,
+        meaning,
+    };
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -108,6 +119,13 @@ impl Door {
 }
 
 impl Server {
+    /// The actor of this client's writes: `<name>/<version>` from
+    /// `initialize`, else `daftar-mcp/<version>`.
+    fn producer(&self) -> String {
+        let client = self.client.as_ref().map(|(name, version)| (name.as_str(), version.as_str()));
+        daftar_core::Okf::producer(client, env!("CARGO_PKG_VERSION"))
+    }
+
     /// The answer to one message, or none for a notification.
     fn handle(&mut self, line: &str) -> Option<Value> {
         let message: Value = match serde_json::from_str(line) {
@@ -122,6 +140,8 @@ impl Server {
         let params = message.get("params").cloned().unwrap_or(Value::Null);
         let result = match method {
             "initialize" => {
+                let info = |key: &str| params["clientInfo"][key].as_str().unwrap_or_default().to_string();
+                self.client = Some((info("name"), info("version"))).filter(|(name, _)| !name.trim().is_empty());
                 let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL);
                 let version = if KNOWN.contains(&asked) { asked } else { PROTOCOL };
                 json!({
@@ -170,7 +190,12 @@ impl Server {
                 meaning.related(&index, &hidden, &path, args.count("limit", 10)).iter().map(crate::meaning::line).collect()
             }
             "read_note" => return read_note(root, &index, args.text("note")?, args.optional("heading")),
-            "note_info" => note_info(&index, &hidden, args.text("note")?)?,
+            "note_info" => {
+                let mut lines = note_info(&index, &hidden, args.text("note")?)?;
+                lines.extend(concept_line(root, &crate::note_path(&index, args.text("note")?)?));
+                lines
+            }
+            "concepts" => concepts(root, &index, &hidden, args),
             "list_folder" => list_folder(&index, &hidden, args.optional("folder").unwrap_or_default())?,
             "tags" => tags(&index, &hidden, args.optional("tag")),
             "tasks" => tasks(&index, &hidden, args)?,
@@ -233,6 +258,7 @@ impl Server {
                         quiet_days: args.0.get("quiet_days").and_then(Value::as_i64).or(vault.quiet_days),
                     }),
                     orphans: vault.orphans.then(|| vault.orphan_skip.clone()),
+                    okf: vault.okf,
                 };
                 let mut found = Vec::new();
                 let outcome = check::run(root, |path| hidden.contains(path), &options, |line| found.push(line));
@@ -248,7 +274,12 @@ impl Server {
                 let note = args.text("note")?;
                 let target = crate::note_path(&index, note).unwrap_or_else(|_| note.to_string());
                 let heading = args.optional("heading").unwrap_or_default();
-                vec![format!("{}\t{line}", QuickCapture::capture(root, &target, heading, &line, Day::today(), Clock::now())?)]
+                let path = QuickCapture::capture(root, &target, heading, &line, Day::today(), Clock::now())?;
+                // An agent's write to a concept is marked, right after it.
+                let by = self.producer();
+                let marked = VaultEdits::apply(&path, root, |text| Ok(generated(&path, text, &by)));
+                marked.map_err(|e| format!("{path}: added, but generated was not set: {e}"))?;
+                vec![format!("{path}\t{line}")]
             }
             "create_note" => vec![create_note(root, args.text("path")?, args.text("text")?)?],
             "note_context" => return note_context(root, &index, &hidden, args.text("note")?),
@@ -256,11 +287,11 @@ impl Server {
             "set_property" => vec![set_property(root, &index, args)?],
             "replace_in_note" => {
                 let new = args.0.get("new").and_then(Value::as_str).ok_or("new is needed (empty to delete)")?;
-                vec![replace_in_note(root, &index, args.text("note")?, args.text("old")?, new)?]
+                vec![replace_in_note(root, &index, args.text("note")?, args.text("old")?, new, &self.producer())?]
             }
             "replace_section" => {
                 let text = args.0.get("text").and_then(Value::as_str).ok_or("text is needed (empty to clear the section)")?;
-                vec![replace_section(root, &index, args.text("note")?, args.text("heading")?, text)?]
+                vec![replace_section(root, &index, args.text("note")?, args.text("heading")?, text, &self.producer())?]
             }
             "commit" => {
                 commit(root, args.text("message")?, &args.list("paths"), args.0.get("push").and_then(Value::as_bool).is_none_or(|p| p))?
@@ -466,6 +497,7 @@ pub(crate) fn vault_brief(
             quiet_days: vault.quiet_days,
         }),
         orphans: vault.orphans.then(|| vault.orphan_skip.clone()),
+        okf: vault.okf,
     };
     let mut found = Vec::new();
     let outcome = check::run(root, |path| hidden.contains(path), &options, |line| found.push(line));
@@ -699,6 +731,7 @@ fn note_context(root: &Path, index: &VaultIndex, hidden: &ExcludedFiles, note: &
     let path = crate::note_path(index, note)?;
     let mut out = vec![text, "--- what the index knows".to_string()];
     out.extend(note_info(index, hidden, note)?);
+    out.extend(concept_line(root, &path));
     let mut tasks = Vec::new();
     let mut lines = Vec::new();
     let backlinks: Vec<_> = index.backlinks(&path).iter().filter(|b| !hidden.contains(&b.source) && b.source != path).collect();
@@ -811,10 +844,10 @@ pub(crate) fn property(root: &Path, index: &VaultIndex, note: &str, key: &str, v
 }
 
 /// Puts [new] in place of [old], which must be in the note exactly once.
-fn replace_in_note(root: &Path, index: &VaultIndex, note: &str, old: &str, new: &str) -> Result<String, String> {
+fn replace_in_note(root: &Path, index: &VaultIndex, note: &str, old: &str, new: &str, by: &str) -> Result<String, String> {
     let path = crate::note_path(index, note)?;
     let mut line = 0;
-    VaultEdits::apply(&path, root, |text| {
+    apply_marked(&path, root, by, |text| {
         let found = text.matches(old).count();
         if found != 1 {
             return Err(daftar_core::Failure::Unwritable(if found == 0 {
@@ -833,11 +866,11 @@ fn replace_in_note(root: &Path, index: &VaultIndex, note: &str, old: &str, new: 
 
 /// Puts [body] in place of a heading's own text: from the line after the
 /// heading to the next heading of any level, so the headings under it stay.
-fn replace_section(root: &Path, index: &VaultIndex, note: &str, heading: &str, body: &str) -> Result<String, String> {
+fn replace_section(root: &Path, index: &VaultIndex, note: &str, heading: &str, body: &str, by: &str) -> Result<String, String> {
     let path = crate::note_path(index, note)?;
     let wanted = heading.trim_start_matches('#').trim().to_string();
     let mut place = (0, 0);
-    VaultEdits::apply(&path, root, |text| {
+    apply_marked(&path, root, by, |text| {
         let headings = Sections::headings(text);
         let matching: Vec<usize> = headings.iter().enumerate().filter(|(_, h)| h.text == wanted).map(|(i, _)| i).collect();
         let at = match matching.as_slice() {
@@ -904,6 +937,61 @@ fn commit(root: &Path, message: &str, paths: &[String], push: bool) -> Result<Ve
         out.push(if pushed { "pulled and pushed".into() } else { "pulled; nothing to push".into() });
     }
     Ok(out)
+}
+
+/// `concept: <type>; <tier>; <status>; stale since …` for a note that is a
+/// concept of the Open Knowledge Format (its front matter has a `type`).
+fn concept_line(root: &Path, path: &str) -> Option<String> {
+    let concept = daftar_core::Okf::concept_of(path, &fs::read_to_string(root.join(path)).ok()?)?;
+    Some(concept.summary(chrono::Utc::now()))
+}
+
+/// [text] with `generated` set to [by] and now, when the note at [path] is
+/// a concept; else as it is: a note that is none gets no front matter.
+fn generated(path: &str, text: &str, by: &str) -> String {
+    daftar_core::Okf::mark_generated(path, text, by, chrono::Utc::now()).unwrap_or_else(|| text.to_string())
+}
+
+/// An agent's change to a note's text: [edit] through `VaultEdits`, and in
+/// the same write `generated: { by, at }` when the note is a concept and
+/// its text changed. The events in `verified` stay as history.
+fn apply_marked(
+    path: &str,
+    root: &Path,
+    by: &str,
+    edit: impl FnOnce(&str) -> Result<String, daftar_core::Failure>,
+) -> Result<(), daftar_core::Failure> {
+    VaultEdits::apply(path, root, |text| {
+        let changed = edit(text)?;
+        Ok(if changed == text { changed } else { generated(path, &changed, by) })
+    })
+}
+
+/// The concepts of the vault, as an `index.md` would show them: each a
+/// path, its type and its description, narrowed by `type`, `status`,
+/// `tier`, `stale` and `folder`.
+fn concepts(root: &Path, index: &VaultIndex, hidden: &ExcludedFiles, args: &Arguments) -> Vec<String> {
+    let now = chrono::Utc::now();
+    let wanted = |key: &str| args.optional(key).map(|text| text.trim().to_lowercase()).filter(|text| !text.is_empty());
+    let (kind, status, tier) = (wanted("type"), wanted("status"), wanted("tier"));
+    let folder = wanted("folder").map(|folder| format!("{}/", folder.trim_matches('/')));
+    let stale = args.0.get("stale").and_then(Value::as_bool);
+    let mut lines: Vec<String> = index
+        .notes
+        .values()
+        .filter(|note| !hidden.contains(&note.path) && note.parsed.properties.iter().any(|(key, _)| key == "type"))
+        .filter(|note| folder.as_ref().is_none_or(|folder| note.path.to_lowercase().starts_with(folder)))
+        .filter_map(|note| Some((note, daftar_core::Okf::concept_of(&note.path, &fs::read_to_string(root.join(&note.path)).ok()?)?)))
+        .filter(|(_, concept)| {
+            kind.as_ref().is_none_or(|kind| concept.kind.to_lowercase() == *kind)
+                && status.as_ref().is_none_or(|status| concept.status.name().to_lowercase() == *status)
+                && tier.as_ref().is_none_or(|tier| concept.tier().name() == tier)
+                && stale.is_none_or(|stale| concept.stale(now).is_some() == stale)
+        })
+        .map(|(note, concept)| format!("{}\t{}\t{}", note.path, concept.kind, concept.description.unwrap_or_default()))
+        .collect();
+    lines.sort();
+    lines
 }
 
 /// Makes a note at [path] with [text]; never over a file that is there,
@@ -1076,6 +1164,19 @@ fn tools(read_only: bool) -> Vec<Value> {
             "list_folder",
             "The folders (ending in /) and files right in a folder of the vault; the top of the vault with none.",
             json!({ "folder": string("A folder's vault path, as `Companies`") }),
+            &[],
+            false,
+        ),
+        tool(
+            "concepts",
+            "The concepts of the vault (Open Knowledge Format: the notes whose front matter has a `type`), a line each: the path, the type and the description. Read it before opening notes, as an index. `note_info` says a concept's trust tier (unverified, machine-confirmed, human-reviewed), status and whether it is stale.",
+            json!({
+                "type": string("Only this type, as `Metric`"),
+                "status": string("Only this status: draft, stable, deprecated, or another as written"),
+                "tier": string("Only this trust tier: unverified, machine-confirmed or human-reviewed"),
+                "stale": boolean("true for the stale ones only, false for the fresh ones"),
+                "folder": string("Only under this folder"),
+            }),
             &[],
             false,
         ),
@@ -1347,6 +1448,7 @@ mod tests {
             show_hidden: false,
             read_only,
             closed: false,
+            client: None,
             search: None,
             drill_state: Some(root.join(".drill-state.json")),
             meaning,
@@ -1444,6 +1546,63 @@ mod tests {
     }
 
     #[test]
+    fn an_agents_write_is_marked_as_generated() {
+        let root = vault();
+        let reviewed = "---\ntype: Guide\ndescription: How basil grows.\nverified:\n  - by: \"human:parham\"\n    at: \"2026-06-25T09:00:00Z\"\n---\n# Basil\n\nNeeds sun.\n\n## Care\n\n- [ ] Water it\n";
+        fs::write(root.path().join("Garden/Basil.md"), reviewed).unwrap();
+        fs::write(root.path().join("Garden/Old.md"), "---\ntype: Guide\nstatus: deprecated\nstale_after: 2020-01-01\n---\nOld.\n").unwrap();
+        let mut server = server(root.path(), false);
+        let hello = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"Claude Code","version":"2.1.0"}}}"#;
+        server.handle(hello).unwrap();
+        let read = |path: &str| fs::read_to_string(root.path().join(path)).unwrap();
+        let concept = |path: &str| daftar_core::Okf::concept_of(path, &read(path)).unwrap();
+        assert_eq!(concept("Garden/Basil.md").tier(), daftar_core::okf::Tier::HumanReviewed);
+        let (text, _) = call(&mut server, "note_info", json!({ "note": "Basil" }));
+        assert!(text.ends_with("concept: Guide; human-reviewed; stable"), "{text}");
+        // A task tick on a concept changes no front matter.
+        let (text, error) = call(&mut server, "toggle_task", json!({ "note": "Basil", "line": 14, "text": "Water it" }));
+        assert!(!error, "{text}");
+        assert!(read("Garden/Basil.md").starts_with(&reviewed[..reviewed.find("# Basil").unwrap()]));
+        assert!(!read("Garden/Basil.md").contains("generated"));
+        // A change to its text is the agent's: generated is set, and verified stays as history.
+        let (text, error) =
+            call(&mut server, "replace_in_note", json!({ "note": "Basil", "old": "Needs sun.", "new": "Needs sun and water." }));
+        assert!(!error, "{text}");
+        let after = concept("Garden/Basil.md");
+        assert_eq!(after.generated.as_ref().unwrap().by.as_deref(), Some("claude-code/2.1.0"));
+        assert_eq!((after.tier(), after.verified.len()), (daftar_core::okf::Tier::Unverified, 1));
+        assert!(read("Garden/Basil.md").contains("Needs sun and water.") && read("Garden/Basil.md").contains("by: \"human:parham\""));
+        let (text, _) = call(&mut server, "note_context", json!({ "note": "Basil" }));
+        assert!(text.contains("concept: Guide; unverified; stable"), "{text}");
+        // The same on a note that is not a concept adds no front matter.
+        let (text, error) = call(
+            &mut server,
+            "replace_in_note",
+            json!({ "note": "Seeds", "old": read("Seeds.md").lines().next().unwrap(), "new": "# Seeds, changed" }),
+        );
+        assert!(!error, "{text}");
+        assert!(read("Seeds.md").starts_with("# Seeds, changed") && !read("Seeds.md").contains("generated"));
+        // The other writes to a concept's text are marked too.
+        fs::write(root.path().join("Garden/Basil.md"), reviewed).unwrap();
+        let (text, error) = call(&mut server, "replace_section", json!({ "note": "Basil", "heading": "Care", "text": "Every day." }));
+        assert!(!error, "{text}");
+        assert_eq!(concept("Garden/Basil.md").tier(), daftar_core::okf::Tier::Unverified);
+        fs::write(root.path().join("Garden/Basil.md"), reviewed).unwrap();
+        let (text, error) = call(&mut server, "append_to_note", json!({ "note": "Garden/Basil.md", "text": "A line." }));
+        assert!(!error, "{text}");
+        assert_eq!(concept("Garden/Basil.md").generated.unwrap().by.as_deref(), Some("claude-code/2.1.0"));
+        // The concepts, as an index would list them, and narrowed.
+        let (text, _) = call(&mut server, "concepts", json!({}));
+        assert_eq!(text, "Garden/Basil.md\tGuide\tHow basil grows.\nGarden/Old.md\tGuide\t");
+        let (text, _) = call(&mut server, "concepts", json!({ "status": "deprecated", "stale": true, "folder": "Garden" }));
+        assert_eq!(text, "Garden/Old.md\tGuide\t");
+        let (text, _) = call(&mut server, "concepts", json!({ "tier": "human-reviewed" }));
+        assert_eq!(text, "(nothing)");
+        // With no client info, the server names itself.
+        assert_eq!(self::server(root.path(), false).producer(), format!("daftar-mcp/{}", env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
     fn a_read_only_server_has_no_writing_tool() {
         let root = vault();
         let mut server = server(root.path(), true);
@@ -1508,6 +1667,7 @@ mod tests {
             show_hidden: false,
             read_only: true,
             closed: false,
+            client: None,
             search: None,
             drill_state: Some(root.join(".drill-state.json")),
             meaning,

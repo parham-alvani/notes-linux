@@ -444,6 +444,7 @@ impl Server {
                 quiet_days: vault.quiet_days,
             }),
             orphans: vault.orphans.then(|| vault.orphan_skip.clone()),
+            okf: vault.okf,
         };
         let mut lines = Vec::new();
         check::run_on(&self.index, &self.root, |p| self.hidden.contains(p), &options, |line| lines.push(line));
