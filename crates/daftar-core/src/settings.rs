@@ -107,7 +107,7 @@ const ALLOWED: &[(&str, Rule)] = &[
 ];
 
 /// The keys at the top of `config.toml`, never the vault's to say.
-const TOP: &[&str] = &["vault", "vault_settings"];
+const TOP: &[&str] = &["vault", "vaults", "vault_settings"];
 
 /// The sections of the app's own settings. A key in one of them that is
 /// not on the list is refused, by name: it names or starts a program
@@ -433,6 +433,17 @@ mod tests {
         let other = Settings::resolved("[appearance]\ndock_badge = true\n\n[meaning]\nmodel = \"x\"\n", computer);
         assert_eq!(other.refused(), ["appearance.dock_badge", "meaning.model"]);
         assert_eq!(other.file().text(), computer);
+    }
+
+    #[test]
+    fn the_vault_cannot_name_vaults() {
+        let computer = "vault = \"~/org\"\nvaults = [\"~/org\"]\n";
+        let settings = Settings::resolved("vaults = [\"/tmp/x\"]\nvault = \"/tmp/x\"\n", computer);
+        assert_eq!(settings.file().text(), computer);
+        assert_eq!(settings.file().strings("vaults").unwrap(), ["~/org"]);
+        assert_eq!(settings.refused(), ["vaults", "vault"]);
+        let listed: Vec<Entry> = settings.entries().into_iter().filter(|e| e.from == Origin::Refused).collect();
+        assert_eq!(listed[0], Entry { key: "vaults".into(), value: Some(Value::Strings(vec!["/tmp/x".into()])), from: Origin::Refused });
     }
 
     #[test]

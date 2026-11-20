@@ -58,7 +58,8 @@ use daftar_core::{
 #[command(name = "daftar-cli", version, about = "Daftar on the command line: an Obsidian vault in a Git repository")]
 struct Cli {
     /// The vault's folder; else the vault the current folder is in, else
-    /// `vault` in ~/.config/daftar/config.toml.
+    /// `vault` in ~/.config/daftar/config.toml. A folder, or the name of a
+    /// vault of the list (`daftar-cli vaults`) when exactly one has it.
     #[arg(long, global = true, env = "DAFTAR_VAULT")]
     vault: Option<PathBuf>,
     /// Lists the hidden files too: Obsidian's excluded files and `files.hidden`
@@ -842,6 +843,15 @@ enum Command {
         #[command(subcommand)]
         action: OkfAction,
     },
+    /// The vaults this computer knows (`vaults` in the config file), a line
+    /// each: the name, the folder, and `in use`, `missing` or nothing.
+    /// `--vault` takes the name of one when exactly one has it. The app
+    /// changes the vault in use; this command never does.
+    Vaults {
+        /// One JSON array of `{"name", "path", "in_use", "missing"}`.
+        #[arg(long)]
+        json: bool,
+    },
     /// Every setting with its value and where it came from, a line each
     /// (`key`, a tab, the value as the file writes it, a tab, `vault`,
     /// `computer` or `default`): the vault's `.daftar.toml` may set the
@@ -995,6 +1005,13 @@ fn run(cli: Cli) -> Result<(), String> {
         return completer
             .write_registration("COMPLETE", &name, &name, &name, &mut std::io::stdout())
             .or_else(|e| if e.kind() == std::io::ErrorKind::BrokenPipe { Ok(()) } else { Err(e.to_string()) });
+    }
+    // The list of vaults is the computer's: it needs no vault to be there.
+    if let Command::Vaults { json } = &command {
+        for line in vault_lines(&daftar_core::Vaults::read(), *json) {
+            out!("{line}");
+        }
+        return Ok(());
     }
     let root = vault(cli.vault)?;
     // A read-only clone pulls and never writes (docs/specs/read-only-vault.md).
@@ -1782,6 +1799,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{} is not a conformant OKF {} bundle", folder.display(), daftar_core::Okf::VERSION));
             }
         }
+        Command::Vaults { .. } => unreachable!("answered before the vault is read"),
         Command::Config { json } => {
             let entries = daftar_core::Settings::read(&root).entries();
             if json {
@@ -1965,7 +1983,9 @@ fn repository(root: &std::path::Path) -> Result<Git, String> {
 /// folder up with `.obsidian`, as git finds its repository), else the app's.
 fn vault(given: Option<PathBuf>) -> Result<PathBuf, String> {
     let root = match given {
-        Some(root) => root,
+        // A folder, as before, or the name of a vault of the list.
+        Some(root) if root.is_dir() => root,
+        Some(root) => named_vault(root, &daftar_core::Vaults::read())?,
         None => {
             if let Some(root) = std::env::current_dir().ok().as_deref().and_then(vault_around) {
                 root
@@ -1981,6 +2001,49 @@ fn vault(given: Option<PathBuf>) -> Result<PathBuf, String> {
         return Err(format!("{} is not a folder", root.display()));
     }
     Ok(root)
+}
+
+/// What `--vault` names: a folder, or the name of a vault of the list
+/// ([known], `vaults` in the config file) when exactly one has it.
+fn named_vault(given: PathBuf, known: &daftar_core::Vaults) -> Result<PathBuf, String> {
+    if given.is_dir() {
+        return Ok(given);
+    }
+    let name = given.to_string_lossy();
+    if name.contains(['/', '\\']) || name.starts_with('~') {
+        return Ok(given);
+    }
+    match known.named(&name) {
+        Ok(entry) => Ok(entry.path),
+        Err(daftar_core::VaultsFailure::Unknown(_)) => Ok(given),
+        Err(refused) => Err(refused.to_string()),
+    }
+}
+
+/// The vaults this computer knows, as `vaults` prints them: the name, the
+/// folder, and `in use`, `missing` or nothing.
+fn vault_lines(known: &daftar_core::Vaults, json: bool) -> Vec<String> {
+    let entries = known.entries();
+    if json {
+        let rows: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| serde_json::json!({ "name": e.name, "path": e.path.to_string_lossy(), "in_use": e.in_use, "missing": e.is_missing() }))
+            .collect();
+        return vec![serde_json::Value::Array(rows).to_string()];
+    }
+    entries
+        .iter()
+        .map(|e| {
+            let state = if e.is_missing() {
+                "missing"
+            } else if e.in_use {
+                "in use"
+            } else {
+                ""
+            };
+            format!("{}\t{}\t{state}", e.name, e.path.display())
+        })
+        .collect()
 }
 
 /// The vault [folder] is in: itself or the nearest folder up with `.obsidian`.
@@ -2163,6 +2226,36 @@ mod tests {
         assert!(read_only_lines(root).is_empty());
         assert_eq!(run_in(root, &["toggle", "Tasks", "5"]), Ok(()));
         assert!(fs::read_to_string(root.join("Tasks.md")).unwrap().contains("- [x] One #old ✅"));
+    }
+
+    #[test]
+    fn two_vaults_of_one_name_show_their_parents() {
+        let home = tempfile::tempdir().unwrap();
+        for folder in ["org", "work/org", "notes"] {
+            fs::create_dir_all(home.path().join(folder)).unwrap();
+        }
+        let config = "vault = \"~/org\"\nvaults = [\"~/org\", \"~/work/org\", \"~/notes\", \"~/away\"]\n";
+        let known = daftar_core::Vaults::new(config, home.path());
+        let at = |folder: &str| home.path().join(folder).display().to_string();
+        assert_eq!(
+            vault_lines(&known, false),
+            [
+                format!("org — ~\t{}\tin use", at("org")),
+                format!("org — ~/work\t{}\t", at("work/org")),
+                format!("notes\t{}\t", at("notes")),
+                format!("away\t{}\tmissing", at("away")),
+            ]
+        );
+        let json: serde_json::Value = serde_json::from_str(&vault_lines(&known, true)[0]).unwrap();
+        assert_eq!(json[0], serde_json::json!({ "name": "org — ~", "path": at("org"), "in_use": true, "missing": false }));
+        assert_eq!(json[3]["missing"], true);
+        // `--vault org` is refused as ambiguous and names both; `--vault notes` opens the one.
+        let refused = named_vault(PathBuf::from("org"), &known).unwrap_err();
+        assert!(refused.contains("org — ~, org — ~/work"), "{refused}");
+        assert_eq!(named_vault(PathBuf::from("notes"), &known), Ok(home.path().join("notes")));
+        // A folder is a folder, as before, whatever the list says.
+        assert_eq!(named_vault(home.path().join("work/org"), &known), Ok(home.path().join("work/org")));
+        assert_eq!(named_vault(PathBuf::from("nowhere"), &known), Ok(PathBuf::from("nowhere")));
     }
 
     #[test]

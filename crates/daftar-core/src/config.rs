@@ -206,6 +206,9 @@ impl ConfigFile {
 
 # The folder of the Obsidian vault.
 vault = ""
+# Every vault this computer knows, the one in use among them: Switch
+# Vault changes between them, and opening a vault adds it.
+vaults = []
 # The vault's own .daftar.toml may hold the settings below, for every
 # computer that opens it (never a program to run, a path outside the
 # vault or what leaves the computer): true follows it, false reads no
