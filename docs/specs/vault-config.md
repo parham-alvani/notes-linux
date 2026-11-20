@@ -132,7 +132,11 @@ text_size = 16
 
 **What stays as it was.** The vault's own sections (`[check]`, `[audit]`, `[reader]`, `[agents]`, `[okf]`) are not app settings and are edited as text. `vault`, `vaults` and `vault_settings` are the device's only. A change never makes a commit by itself: the sync does, with its usual message; on the desktop the write counts as an edit, so the sync that follows an edit takes it when automatic sync is on. Two devices that change one key between syncs meet as a conflict in `.daftar.toml`, which the conflict sheet resolves as any file.
 
-**On the phone.** Daftar for Android writes the same file from its Settings, through its ordinary vault write, so the change is committed and pushed by the phone's sync. A setting whose unit differs there (the text size is a scale of 14, the sync interval is in hours) is written in the spec's unit when it can be said exactly, and in `[android]` when it cannot.
+**On the phone.** Daftar for Android writes the same file from its Settings, through its ordinary vault write. That write commits and pushes at once, as a task tick does there, so on the phone a change of a setting is one commit (`chore(settings): set <key>`); "a change never makes a commit by itself" holds on the desktop only. A control that moves through values (the pinch in a note, a row of sizes) writes once, two seconds after it stops, and the screen follows from memory meanwhile: one gesture is one commit. A setting whose unit differs there is written in the spec's unit when it can be said exactly (text size at 100% and 150%), and in `[android]` when it cannot.
+
+**A setting that means another thing on another platform is never shared.** The phone's background refresh is `android.git.sync_interval`, in hours: the shared `git.sync_interval` is the desktop's timer of commit, pull and push, and a phone that wrote it would turn automatic sync on for every computer. The phone neither reads nor writes the shared key. The rule for a new setting: when a value chosen on one device would change what another kind of device does, and not only how it looks, the key goes in the platform's table.
+
+**A list the person wrote is not replaced by a switch.** The phone's switch for the agents' files writes the shared `files.hidden` only when that list is the app's own four names or empty; over any other list it writes `android.files.hidden` and leaves the shared line byte for byte.
 
 ## 6. Tests every app must have
 
