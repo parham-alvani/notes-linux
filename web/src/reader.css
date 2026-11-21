@@ -18,7 +18,7 @@
   color-scheme: light dark;
   --font-text: -apple-system, BlinkMacSystemFont, "Persian Fallback", "Geeza Pro", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
-  --text-size: 14px;
+  --text-size: 16px;
   /* SF Pro's alternates, as the Cupertino theme turns them on. */
   --font-features: "ss01" 1, "ss07" 1, "cv07" 1;
 
@@ -134,6 +134,62 @@
   }
 }
 
+/* naz, soft: naz's hues with the colour strength capped (OKLCH chroma 0.095,
+   red 0.14) and a text a little less bright, for long sessions. The host
+   sets `data-palette="soft"` from `appearance.dark_palette`. Generated from
+   the naz block above: change naz, then make these again (docs/specs/look.md). */
+@media screen and (prefers-color-scheme: dark) {
+  :root[data-palette="soft"] {
+    --background: #2f2f2d;
+    --panel: #383835;
+    --text: #e2e2dd;
+    --text-muted: #a8a8a0;
+    --text-faint: #707080;
+    --rule-color: #474744;
+    --accent: #e9b87d;
+    --h1-color: #f9da9a;
+    --h2-color: #e3e499;
+    --h3-color: #7dd5f4;
+    --h4-color: #cae8c2;
+    --h5-color: #d68ead;
+    --h6-color: #e2ace1;
+    --strong-color: #f3b586;
+    --em-color: #abf1c3;
+    --strike-color: #e2e2dd;
+    --code-inline: #f1da92;
+    --code-background: #272725;
+    --link-color: #87e4fc;
+    --link-external-color: #87e4fc;
+    --quote-color: #e9b87d;
+    --list-marker: #e9b87d;
+    --done-color: #707080;
+    --table-header-color: #e9b87d;
+    --table-hairline: #474744;
+    --highlight-bg: #e8e297;
+    --highlight-fg: #2f2f2d;
+    --img-border: #474744;
+    --red: #e1717e;
+    --orange: #e9b87d;
+    --yellow: #e8e297;
+    --vivid-yellow: #efdf95;
+    --spring-green: #a3ecbf;
+    --chartreuse: #c6ecab;
+    --lime-green: #abf1c3;
+    --blue: #76ccec;
+    --aqua: #87e4fc;
+    --purple: #e2ace1;
+    --pink: #d68ead;
+    --grey: #a8a8a0;
+    --warm-grey: #b09070;
+    --code-text: #e2e2dd;
+    --code-keyword: #87e4fc;
+    --code-string: #c6ecab;
+    --code-literal: #e2ace1;
+    --code-comment: #a8a8a0;
+    --code-key: #e9b87d;
+  }
+}
+
 html {
   background: var(--background);
 }
@@ -144,7 +200,7 @@ body {
   color: var(--text);
   font-family: var(--font-text);
   font-size: var(--text-size);
-  line-height: 1.6;
+  line-height: 1.65;
   font-feature-settings: var(--font-features);
   -webkit-font-smoothing: antialiased;
 }
@@ -153,7 +209,7 @@ body {
    the whole window). A narrow pane -- a split, a small window -- has small
    margins, as the editor has (`NoteTextView.sideMargin`, 720 points). */
 #note {
-  max-width: var(--text-width, 46em);
+  max-width: var(--text-width, 35em);
   margin: 0 auto;
   padding: 1.5em 2.5em 6em;
   overflow-wrap: break-word;
@@ -167,32 +223,28 @@ body {
 }
 
 .inline-title {
-  font-size: 2em;
-  font-weight: 700;
+  font-size: 1.9em;
+  font-weight: 750;
+  letter-spacing: -0.02em;
   line-height: 1.2;
   margin: 0.2em 0 0.6em;
   color: var(--h1-color);
   border: none !important;
 }
 
-/* Cupertino's headings: light at the top, medium below. */
-h1, h2, h3, h4, h5, h6 { line-height: 1.3; margin: 1.6em 0 0.5em; }
-h1 { font-size: 1.75em; font-weight: 400; color: var(--h1-color); }
-h2 { font-size: 1.5em; font-weight: 400; color: var(--h2-color); }
-h3 { font-size: 1.25em; font-weight: 400; color: var(--h3-color); }
-h4 { font-size: 1em; font-weight: 500; color: var(--h4-color); }
-h5 { font-size: 1em; font-weight: 500; color: var(--h5-color); }
-h6 { font-size: 0.875em; font-weight: 500; color: var(--h6-color); }
-strong { font-weight: 700; }
-h1, h2 {
-  padding-bottom: 0.2em;
-  border-bottom: 1px solid color-mix(in oklch, currentColor 35%, transparent);
-}
+/* Headings: the level is the size and the colour, with one weight. No rules or bars under them. */
+h1, h2, h3, h4, h5, h6 { line-height: 1.3; margin: 1.6em 0 0.5em; font-weight: 650; }
+h1 { font-size: 1.6em; letter-spacing: -0.015em; color: var(--h1-color); }
+h2 { font-size: 1.35em; letter-spacing: -0.01em; color: var(--h2-color); }
+h3 { font-size: 1.12em; color: var(--h3-color); }
+h4 { font-size: 1em; color: var(--h4-color); }
+h5 { font-size: 1em; font-weight: 600; color: var(--h5-color); }
+h6 { font-size: 0.875em; font-weight: 600; color: var(--h6-color); }
+strong { font-weight: 650; }
 
 p, ul, ol, table, pre, blockquote, .callout { margin: 0 0 1em; }
 strong { color: var(--strong-color); }
-em { color: var(--em-color); }
-mark { background: var(--highlight-bg); color: var(--highlight-fg); border-radius: 3px; padding: 0 2px; }
+mark { background: color-mix(in oklch, var(--highlight-bg) 32%, transparent); color: inherit; border-radius: 3px; padding: 0.05em 0.15em; }
 hr { border: none; border-top: 1px solid var(--rule-color); margin: 2em 0; }
 del { color: var(--strike-color); }
 
@@ -448,42 +500,17 @@ pre code { color: var(--code-text); }
 
 ::selection { background: color-mix(in oklch, var(--accent) 32%, transparent); }
 
-/* The reading progress, a thin rainbow at the top of the window. */
+
+/* The reading progress: a thin line in the accent at the top of the window. */
 #progress {
-  position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 50;
+  position: fixed; inset: 0 0 auto 0; height: 2px; z-index: 50;
   transform-origin: left; transform: scaleX(0);
-  background: linear-gradient(90deg, var(--accent), var(--pink), var(--purple), var(--aqua));
+  background: var(--accent);
   transition: transform 0.08s linear;
 }
 
-/* The title runs from the heading colour into pink. */
-.inline-title {
-  width: fit-content;
-  background: linear-gradient(100deg, var(--h1-color) 10%, var(--pink) 60%, var(--purple));
-  -webkit-background-clip: text; background-clip: text;
-  color: transparent;
-  padding-bottom: 0.05em;
-}
-h1, h2 { border-bottom: 2px solid; border-image: linear-gradient(90deg, currentColor, color-mix(in oklch, currentColor 10%, transparent) 70%, transparent) 1; }
-/* A right-to-left title stands at the right, and a heading's rule fades from the right. */
-.inline-title[dir="rtl"] { margin-left: auto; }
-h1[dir="rtl"], h2[dir="rtl"] { border-image: linear-gradient(270deg, currentColor, color-mix(in oklch, currentColor 10%, transparent) 70%, transparent) 1; }
-h3 { border-inline-start: 3px solid var(--h3-color); padding-inline-start: 0.5em; }
-h4, h5, h6 { letter-spacing: 0.01em; }
 
-/* Highlights like a marker pen. */
-mark {
-  color: var(--highlight-fg);
-  background: linear-gradient(100deg, color-mix(in oklch, var(--highlight-bg) 75%, transparent), var(--highlight-bg) 8%, var(--highlight-bg) 92%, color-mix(in oklch, var(--highlight-bg) 70%, transparent));
-  padding: 0 0.15em;
-  border-radius: 0.2em;
-}
-
-/* Bold, italic and the rest inside a highlight take its text colour: their
-   own colours do not read on the marker. They keep their weight and slant. */
-mark strong, mark em, mark b, mark i, mark del, mark s, mark a:not(.tag) { color: inherit; }
-mark a.internal-link:not(.attachment) { text-decoration-color: currentColor; }
-mark code { color: inherit; background: color-mix(in oklch, var(--background) 25%, transparent); border-color: transparent; }
+/* A highlight is a tint under the text, which keeps its own colours. */
 
 /* Obsidian's six highlight colours (==🔴 text== and so on), in the
    callouts' colours, as the vault's snippet maps them. */
@@ -511,24 +538,21 @@ a.tag {
   --tag-color: var(--accent);
   color: var(--tag-color);
   background: color-mix(in oklch, var(--tag-color) 14%, transparent);
-  border: 1px solid color-mix(in oklch, var(--tag-color) 30%, transparent);
-  padding: 0.02em 0.55em;
+  border-radius: 6px;
+  padding: 0.05em 0.5em;
   font-weight: 500;
   transition: background 0.12s;
 }
 a.tag:hover { text-decoration: none; background: color-mix(in oklch, var(--tag-color) 26%, transparent); }
 
-code { border: 1px solid color-mix(in oklch, var(--code-inline) 22%, transparent); }
-pre code { border: none; }
+code { border-radius: 5px; }
 
-/* Code blocks: a header with the language in its colour, and a copy button. */
+/* Code blocks: a header with the language, and a copy button. */
 .code-block {
   --lang-color: var(--accent);
   margin: 0 0 1em;
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--code-background);
-  border: 1px solid color-mix(in oklch, var(--lang-color) 22%, transparent);
-  box-shadow: inset 3px 0 0 var(--lang-color);
   overflow: hidden;
 }
 .code-block > pre { margin: 0; border-radius: 0; background: none; padding-top: 0.5em; }
@@ -539,8 +563,6 @@ pre code { border: none; }
 .code-lang {
   font-family: var(--font-mono); font-size: 0.72em; font-weight: 600; text-transform: lowercase;
   color: var(--lang-color);
-  background: color-mix(in oklch, var(--lang-color) 14%, transparent);
-  border-radius: 1em; padding: 0.1em 0.65em;
 }
 .code-copy {
   display: inline-flex; align-items: center; gap: 0.35em;
@@ -554,49 +576,37 @@ pre code { border: none; }
 .code-copy.is-done { color: var(--spring-green); }
 .code-copy.is-done .icon { -webkit-mask-image: var(--icon-copied); }
 
-/* Quotes get a tint and a bar that fades. */
-blockquote {
-  color: var(--text);
-  background: linear-gradient(90deg, color-mix(in oklch, var(--quote-color) 10%, transparent), transparent 85%);
-  border-inline-start: 3px solid var(--quote-color);
-  border-radius: 0 8px 8px 0;
-}
-[dir="rtl"] blockquote, blockquote[dir="rtl"] { border-radius: 8px 0 0 8px; background: linear-gradient(270deg, color-mix(in oklch, var(--quote-color) 10%, transparent), transparent 85%); }
+/* Quotes: a bar in the accent, nothing behind the text. */
+blockquote { color: var(--text); border-inline-start: 3px solid var(--quote-color); border-radius: 0; padding: 0.1em 1em; }
 
-/* Lists: each level of bullets has its own colour. */
+/* Lists: one marker colour at every level. */
 li::marker { font-weight: 600; }
-ul ul > li::marker, ol ul > li::marker { color: var(--aqua); }
-ul ul ul > li::marker { color: var(--pink); }
-ul ul ul ul > li::marker { color: var(--chartreuse); }
-ol > li::marker { color: var(--accent); }
 
-hr {
-  height: 2px; border: none; border-radius: 2px; opacity: 0.8;
-  background: linear-gradient(90deg, transparent, var(--accent), var(--pink), var(--aqua), transparent);
-}
+hr { height: 1px; border: none; background: var(--rule-color); }
 
 /* Tables: rounded, the header tinted, a row lit under the pointer. */
-table:not(.properties) { border-collapse: separate; border-spacing: 0; border: 1px solid var(--table-hairline); border-radius: 10px; width: fit-content; max-width: 100%; }
+table:not(.properties) { border-collapse: separate; border-spacing: 0; border: 1px solid var(--table-hairline); border-radius: 12px; width: fit-content; max-width: 100%; }
 table:not(.properties) th, table:not(.properties) td { border: none; border-bottom: 1px solid var(--table-hairline); }
 table:not(.properties) th + th, table:not(.properties) td + td { border-inline-start: 1px solid var(--table-hairline); }
 table:not(.properties) tbody tr:last-child td { border-bottom: none; }
-table:not(.properties) thead th { background: color-mix(in oklch, var(--table-header-color) 12%, transparent); }
+table:not(.properties) thead th { background: var(--panel); font-weight: 600; }
+table:not(.properties) thead th:first-child { border-start-start-radius: 11px; }
+table:not(.properties) thead th:last-child { border-start-end-radius: 11px; }
 table:not(.properties) tbody tr:hover { background: color-mix(in oklch, var(--accent) 7%, transparent); }
 
 /* Properties as a card. */
 table.properties {
   display: table; border-collapse: separate;
-  background: color-mix(in oklch, var(--panel) 70%, transparent);
-  border: 1px solid var(--table-hairline); border-radius: 10px; padding: 0.4em 0.8em;
+  background: var(--panel);
+  border-radius: 10px; padding: 0.4em 0.8em;
 }
 table.properties th { color: var(--accent); font-weight: 600; font-size: 0.92em; }
 table.properties td { color: var(--text); }
 
-/* Callouts: the kind's icon, a stronger bar, a soft gradient. */
+/* Callouts: the kind's icon, a tint and a hairline in the kind's colour. */
 .callout {
-  border-inline-start: 4px solid var(--callout-color);
-  background: linear-gradient(135deg, color-mix(in oklch, var(--callout-color) 15%, transparent), color-mix(in oklch, var(--callout-color) 5%, transparent));
-  box-shadow: 0 1px 0 color-mix(in oklch, var(--callout-color) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--callout-color) 26%, transparent);
+  border-radius: 12px;
 }
 .callout-title { align-items: center; }
 .callout-icon {
@@ -607,23 +617,22 @@ table.properties td { color: var(--text); }
 }
 
 .embed {
-  border-inline-start: 3px solid;
-  border-image: linear-gradient(180deg, var(--accent), var(--pink)) 1;
+  border-inline-start: 3px solid var(--accent);
   background: color-mix(in oklch, var(--panel) 45%, transparent);
   padding: 0.6em 1em;
 }
 .embed-title { color: var(--accent); font-weight: 600; }
 
-/* Pictures float a little, and lift under the pointer. */
-#note img { box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18); transition: transform 0.15s, box-shadow 0.15s; }
-#note img:hover { transform: translateY(-1px); box-shadow: 0 8px 26px rgba(0, 0, 0, 0.26); }
+/* Pictures have a small shadow, a little more under the pointer. */
+#note img { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12); transition: box-shadow 0.15s; }
+#note img:hover { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2); }
 
 /* Video, sound and PDF. */
 video.media { display: block; max-width: 100%; border-radius: 10px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22); margin: 0 0 1em; background: #000; }
 .media-audio {
   display: flex; align-items: center; gap: 0.8em; flex-wrap: wrap;
   padding: 0.6em 0.9em; margin: 0 0 1em; border-radius: 10px;
-  background: linear-gradient(90deg, color-mix(in oklch, var(--purple) 16%, transparent), color-mix(in oklch, var(--aqua) 10%, transparent));
+  background: var(--panel);
 }
 .media-audio audio { flex: 1; min-width: 14em; }
 .media-name { color: var(--purple); font-weight: 600; }
@@ -665,16 +674,13 @@ iframe.media-pdf { width: 100%; height: 75vh; border: 1px solid var(--table-hair
 ::highlight(find) { background-color: color-mix(in oklch, var(--vivid-yellow) 38%, transparent); color: inherit; }
 ::highlight(find-current) { background-color: var(--accent); color: var(--background); }
 
-/* Task queries: the groups as coloured headings, each date a chip, the
-   note a pill. */
+/* Task queries: the groups as bands, each date a chip, the note a pill. */
 .query-group {
   display: flex; align-items: center; gap: 0.5em;
   padding: 0.2em 0.6em; border-radius: 6px;
-  background: linear-gradient(90deg, color-mix(in oklch, var(--accent) 16%, transparent), transparent 80%);
-  border-inline-start: 3px solid var(--accent);
+  background: var(--panel);
 }
-.query-group.level-1 { background: linear-gradient(90deg, color-mix(in oklch, var(--h3-color) 12%, transparent), transparent 70%); border-color: var(--h3-color); }
-.query-group.level-2 { background: none; border-color: var(--text-faint); }
+.query-group.level-2 { background: none; }
 .query-dates { display: inline-flex; gap: 0.3em; flex-wrap: wrap; vertical-align: 0.05em; }
 .query-date { --date-color: var(--text-muted); color: var(--date-color); background: color-mix(in oklch, var(--date-color) 14%, transparent); border-radius: 1em; padding: 0 0.5em; font-size: 0.92em; }
 /* A date reads left to right in a Persian line too: `2026-10-30`, never `30-10-2026`. */
@@ -690,18 +696,17 @@ a.query-source {
 }
 .query-count { color: var(--accent); font-weight: 500; }
 
-/* Bases: the active view in a gradient, groups as coloured bands, numbers
-   and checks in their colours. */
+/* Bases: the active view in the accent, groups as bands, numbers and checks
+   in their colours. */
 .base-tab.is-active {
   color: var(--background); border-color: transparent;
-  background: linear-gradient(100deg, var(--accent), var(--pink));
+  background: var(--accent);
   font-weight: 600;
 }
 .base-table thead th { color: var(--accent); background: color-mix(in oklch, var(--accent) 10%, var(--background)); }
 .base-table tr.base-group th {
   color: var(--accent);
-  background: linear-gradient(90deg, color-mix(in oklch, var(--accent) 22%, var(--background)), color-mix(in oklch, var(--panel) 60%, var(--background)));
-  border-inline-start: 3px solid var(--accent);
+  background: var(--panel);
 }
 .base-group-count { color: var(--accent); background: color-mix(in oklch, var(--accent) 18%, transparent); border-radius: 1em; padding: 0 0.5em; }
 .base-table td.numeric { color: var(--aqua); font-weight: 500; }
@@ -739,8 +744,8 @@ li.task-list-item.is-checked .query-date { text-decoration: none; opacity: 0.75;
   position: sticky; top: 0; z-index: 1;
   display: flex; align-items: baseline; gap: 0.5em; flex-wrap: wrap;
   margin: 0 -1em 0.6em; padding: 0.6em 1em 0.5em;
-  background: linear-gradient(100deg, color-mix(in oklch, var(--accent) 18%, var(--background)), color-mix(in oklch, var(--pink) 10%, var(--background)));
-  border-bottom: 1px solid color-mix(in oklch, var(--accent) 25%, transparent);
+  background: var(--panel);
+  border-bottom: 1px solid var(--table-hairline);
 }
 .preview-title { font-weight: 700; color: var(--accent); }
 .preview-anchor { color: var(--h3-color); font-weight: 600; }
@@ -759,26 +764,24 @@ body { position: relative; }
   position: absolute;
   pointer-events: none;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 80%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 2.5px 0 0 color-mix(in srgb, var(--accent) 65%, transparent);
   opacity: 0;
   transition: top 0.14s ease-out, height 0.14s ease-out, opacity 0.2s;
 }
 #reading-cursor.is-on { opacity: 1; }
 /* A Persian block has its bar on its right, where its lines start. */
-#reading-cursor.is-rtl { box-shadow: inset -3px 0 0 color-mix(in srgb, var(--accent) 80%, transparent); }
+#reading-cursor.is-rtl { box-shadow: inset -2.5px 0 0 color-mix(in srgb, var(--accent) 65%, transparent); }
 /* The line being read in a block of many lines: a band, as strong as
    `appearance.reading_line` sets it. */
 #reading-line {
   position: absolute;
   pointer-events: none;
-  border-radius: 4px;
+  border-radius: 5px;
   background: color-mix(in srgb, var(--accent) var(--reading-line, 18%), transparent);
-  box-shadow: inset 3px 0 0 var(--accent);
   opacity: 0;
   transition: top 0.1s ease-out, height 0.1s ease-out, opacity 0.2s;
 }
-#reading-line.is-rtl { box-shadow: inset -3px 0 0 var(--accent); }
 #reading-line.is-on { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   #reading-cursor, #reading-line { transition: none; }

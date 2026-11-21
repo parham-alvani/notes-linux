@@ -28,3 +28,4 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [The app's settings from the vault](vault-config.md) | Linux 0.28.0, macOS 0.25.0, Android 0.65.0 (the keys it has a setting for); a setting changed in the app goes to the vault, with a table for each platform, since Linux 0.29.0, macOS 0.26.0 and Android 0.66.0 |
 | [The Open Knowledge Format: concepts in the vault, and the vault as a bundle](open-knowledge-format.md) | Linux 0.28.0 (`daftar-cli` with the audit, the MCP tools and `okf export`), macOS 0.25.0 and Android 0.65.0 (sections 1 to 3) |
 | [Several vaults on the desktop: a list, and a change without a restart](several-vaults.md) | Linux 0.29.0 (with `daftar-cli vaults`), macOS 0.26.0; Android has several vaults already |
+| [The look of a note: reader, editor and cursors](look.md) | not released yet (macOS and Linux first; the spec has a table of what is done) |
