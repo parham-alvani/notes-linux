@@ -243,7 +243,9 @@ fn block(id: &str, lines: &[&str]) -> Option<(usize, usize)> {
         if mark.is_some() || trimmed == "$$" {
             // To its closing line, or to the end when it never closes.
             let closes = |other: &str| match &mark {
-                Some(mark) => BLOCK_FENCE.captures(other).is_some_and(|caps| caps[1].chars().next() == mark.chars().next() && caps[1].len() >= mark.len()),
+                Some(mark) => BLOCK_FENCE
+                    .captures(other)
+                    .is_some_and(|caps| caps[1].chars().next() == mark.chars().next() && caps[1].len() >= mark.len()),
                 None => trim(other) == "$$",
             };
             let close = (index + 1..lines.len()).find(|&at| closes(lines[at])).unwrap_or(lines.len());
