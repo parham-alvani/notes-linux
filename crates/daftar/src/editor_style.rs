@@ -635,6 +635,11 @@ impl Styler {
         let (mut spans, next) = MarkdownHighlighter::spans_of_lines(&lines, range.start, state);
         for span in &mut spans {
             span.range = span.range.start - base..span.range.end - base;
+            // The element a mark belongs to, in the same characters: the
+            // cursor is compared with it there.
+            if let Some(owner) = &mut span.owner {
+                *owner = owner.start.saturating_sub(base)..owner.end.saturating_sub(base);
+            }
         }
         for (tag, _) in self.tags.borrow().values() {
             self.buffer.remove_tag(tag, &from, &to);
