@@ -551,7 +551,16 @@ impl Reader {
     /// What the page tells the app.
     fn message(&self, body: &Value) {
         let text = |key: &str| body.get(key).and_then(Value::as_str).unwrap_or("").to_string();
-        match body.get("kind").and_then(Value::as_str).unwrap_or("") {
+        let kind = body.get("kind").and_then(Value::as_str).unwrap_or("");
+        // The page still has the note that leaves until it has drawn the one
+        // the app took: a line, a link or a fold of it is not one of the note
+        // shown now, and a click on its task would tick that line of the
+        // wrong file. So it is dropped, however late it comes.
+        let shown = self.shown();
+        if !hears(kind, body.get("note").and_then(Value::as_str), shown.as_ref().map(|shown| shown.path.as_str())) {
+            return;
+        }
+        match kind {
             "ready" => {
                 self.state.borrow_mut().ready = true;
                 // The first note, asked for before the page was there: at
@@ -903,6 +912,22 @@ fn bytes(header: &str, size: usize) -> Option<(usize, usize)> {
     (start <= end && start < size).then_some((start, end))
 }
 
+/// Whether the app hears a message of [kind] that the page posted with
+/// [note], the path of the note it has drawn, while the app shows [shown].
+///
+/// The app takes the next note before the page draws it, and the page may
+/// be busy and not even have heard: until then its task boxes, links, folds
+/// and reading cursor are those of the note that leaves, and a task's box
+/// names its line with no path. So only what the page says of the note
+/// shown now is heard. `ready` is the page itself, not a note, and is
+/// always heard. A message with no `note` is dropped too: the page is built
+/// into the binary and its `post` names the note every time, so nothing
+/// that is ours comes without one, and what cannot say which note it is
+/// about must not write to one.
+fn hears(kind: &str, note: Option<&str>, shown: Option<&str>) -> bool {
+    kind == "ready" || note.is_some_and(|note| shown == Some(note))
+}
+
 /// What a link's card shows of the note at [path]: its title and its first
 /// lines (`LinkPreview::excerpt`), or those of the section or the block
 /// [anchor] names, with the links those lines need. Null for a file that is
@@ -1059,9 +1084,17 @@ mod tests {
     /// A reader in a window on a vault of one note, with [toml] as the
     /// vault's `.daftar.toml` and [config] as the person's settings.
     fn reader_on(toml: &str, config: &str) -> (Reader, Rc<VaultStore>, gtk::Window, tempfile::TempDir) {
-        let root = tempfile::tempdir().unwrap();
         let note = "# Trip\n\nThe plan of the week.\n\n## Flights\n\nWe fly on Monday morning from Barcelona and come back on Friday night.\n\n### Seats\n\nTwo by the window.\n\n## Hotel\n\nOne room.\n\n## Empty\n";
-        std::fs::write(root.path().join("Trip.md"), note).unwrap();
+        reader_of(&[("Trip.md", note)], toml, config)
+    }
+
+    /// A reader in a window on a vault of [notes], each a path and its text,
+    /// showing the first of them.
+    fn reader_of(notes: &[(&str, &str)], toml: &str, config: &str) -> (Reader, Rc<VaultStore>, gtk::Window, tempfile::TempDir) {
+        let root = tempfile::tempdir().unwrap();
+        for (path, text) in notes {
+            std::fs::write(root.path().join(path), text).unwrap();
+        }
         std::fs::write(root.path().join(".daftar.toml"), toml).unwrap();
         let index = Vault::index(root.path(), None);
         let store = Rc::new(VaultStore::new(root.path().to_path_buf(), index, std::sync::Arc::new(daftar_core::SearchIndex::new())));
@@ -1070,7 +1103,7 @@ mod tests {
         reader.set_store(store.clone());
         let window = gtk::Window::builder().default_width(800).default_height(600).child(&reader.page).build();
         window.present();
-        reader.show(Request { path: "Trip.md".into(), heading: None, line: None }, false);
+        reader.show(Request { path: notes[0].0.into(), heading: None, line: None }, false);
         (reader, store, window, root)
     }
 
@@ -1137,7 +1170,44 @@ mod tests {
             window.destroy();
 
             the_page_asks_for_a_links_first_lines_and_the_editors_picture_leaves(context);
+            a_click_the_page_made_before_it_heard_of_the_next_note_ticks_nothing(context);
         });
+    }
+
+    /// The app has taken the next note and the page has not heard of it yet:
+    /// a click on the box of the note that leaves ticks nothing, in either
+    /// file. A part of the test above, which is the one test with a display.
+    fn a_click_the_page_made_before_it_heard_of_the_next_note_ticks_nothing(context: &glib::MainContext) {
+        use crate::vault_checks::tests::wait;
+        let (reader, _store, window, root) = reader_of(&[("One.md", "- [ ] one\n"), ("Two.md", "- [ ] two\n")], "", "");
+        let file = |name: &str| std::fs::read_to_string(root.path().join(name)).unwrap();
+        let on_page = |reader: &Reader| {
+            page(
+                context,
+                reader,
+                "document.querySelector('#note input[type=checkbox]') ? (document.querySelector('#note .inline-title')?.textContent ?? '') : ''",
+            )
+        };
+        assert!(wait(context, || on_page(&reader) == "One"), "the first note is drawn");
+
+        // The page runs its scripts in the order they were sent: the click is
+        // made on `One`, and only then does the page hear of `Two`, which the
+        // app shows already. No gate in the page can know of it.
+        const CLICK: &str = "window.clicked = document.querySelector('#note .inline-title')?.textContent; document.querySelector('#note input[type=checkbox]').click(); ''";
+        reader.view.evaluate_javascript(CLICK, None, None, gio::Cancellable::NONE, |_| {});
+        reader.show(Request { path: "Two.md".into(), heading: None, line: None }, false);
+        assert!(wait(context, || on_page(&reader) == "Two"), "the next note is drawn");
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        wait(context, || std::time::Instant::now() > until);
+        assert_eq!(page(context, &reader, "window.clicked"), "One");
+        assert_eq!(file("One.md"), "- [ ] one\n");
+        assert_eq!(file("Two.md"), "- [ ] two\n");
+
+        // A click on the note the app shows is heard, and ticks its own file.
+        page(context, &reader, "document.querySelector('#note input[type=checkbox]').click(); ''");
+        assert!(wait(context, || file("Two.md").starts_with("- [x] two")), "the note on screen is ticked");
+        assert_eq!(file("One.md"), "- [ ] one\n");
+        window.destroy();
     }
 
     /// The link's card and the soft change, in the real page
@@ -1228,6 +1298,32 @@ mod tests {
         assert_eq!(preview(&store, "a.png", ""), Value::Null);
         assert_eq!(preview(&store, "Missing.md", ""), Value::Null);
         assert_eq!(preview(&store, "../Plan.md", ""), Value::Null);
+    }
+
+    #[test]
+    fn the_app_hears_only_what_the_page_says_of_the_note_it_shows() {
+        // Of the note on screen: heard, whatever it is.
+        for kind in ["toggleTask", "editTask", "open", "folds", "cursor", "edit", "section", "tag", "copy", "external", "detected"] {
+            assert!(hears(kind, Some("Notes/One.md"), Some("Notes/One.md")), "{kind} of the note shown");
+            // Of the note that left, which the page still has: dropped.
+            assert!(!hears(kind, Some("Notes/One.md"), Some("Notes/Two.md")), "{kind} of another note");
+            // An old page, which names no note: it cannot say which file its line is in.
+            assert!(!hears(kind, None, Some("Notes/One.md")), "{kind} of no note");
+            // Nothing is shown: there is no note to change.
+            assert!(!hears(kind, Some("Notes/One.md"), None), "{kind} with no note shown");
+            assert!(!hears(kind, None, None), "{kind} of no note with no note shown");
+        }
+        // A page that has drawn nothing names the empty path, which is no note.
+        assert!(!hears("toggleTask", Some(""), Some("Notes/One.md")));
+        assert!(!hears("toggleTask", Some(""), None));
+        // The path as it is written, not a name alike.
+        assert!(!hears("toggleTask", Some("One.md"), Some("Notes/One.md")));
+        assert!(!hears("toggleTask", Some("notes/one.md"), Some("Notes/One.md")));
+        // `ready` is the page's own, and the first note waits for it.
+        assert!(hears("ready", Some(""), Some("Notes/Two.md")));
+        assert!(hears("ready", Some("Notes/One.md"), Some("Notes/Two.md")));
+        assert!(hears("ready", None, Some("Notes/Two.md")));
+        assert!(hears("ready", None, None));
     }
 
     #[test]
