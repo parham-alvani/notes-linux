@@ -53,6 +53,11 @@ pub struct Span {
     pub kind: Kind,
     /// Characters, from the start of the text.
     pub range: Range<usize>,
+    /// For a mark that opens or closes one element (`**`, `==`, a backtick,
+    /// `[[`): the whole element, marks and all. Live preview shows such a
+    /// mark only while the cursor is in its element. None for a mark of a
+    /// line (a heading's `#`, a quote's `>`).
+    pub owner: Option<Range<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,52 +275,61 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
     }
     let l = Line { text: line, start };
     let whole = l.at(0..line.len());
-    let mut push = |kind: Kind, range: Range<usize>| out.push(Span { kind, range });
+    let mut push_span = |kind: Kind, range: Range<usize>, owner: Option<Range<usize>>| out.push(Span { kind, range, owner });
+    /// A span, or a mark with the element it belongs to.
+    macro_rules! push {
+        ($kind:expr, $range:expr) => {
+            push_span($kind, $range, None)
+        };
+        ($kind:expr, $range:expr, $owner:expr) => {
+            push_span($kind, $range, Some($owner))
+        };
+    }
     match before {
-        BlockState::FrontMatter => return push(Kind::FrontMatter, whole),
-        BlockState::Fence(_) => return push(if *after == BlockState::Normal { Kind::Fence } else { Kind::CodeBlock }, whole),
-        BlockState::Comment => return push(Kind::Comment, whole),
-        BlockState::Math => return push(Kind::Math, whole),
+        BlockState::FrontMatter => return push!(Kind::FrontMatter, whole),
+        BlockState::Fence(_) => return push!(if *after == BlockState::Normal { Kind::Fence } else { Kind::CodeBlock }, whole),
+        BlockState::Comment => return push!(Kind::Comment, whole),
+        BlockState::Math => return push!(Kind::Math, whole),
         BlockState::Normal => {}
     }
     match after {
-        BlockState::FrontMatter => return push(Kind::FrontMatter, whole),
-        BlockState::Fence(_) => return push(Kind::Fence, whole),
+        BlockState::FrontMatter => return push!(Kind::FrontMatter, whole),
+        BlockState::Fence(_) => return push!(Kind::Fence, whole),
         _ => {}
     }
     if *after == BlockState::Math || line.trim_matches([' ', '\t']).starts_with("$$") {
-        return push(Kind::Math, whole);
+        return push!(Kind::Math, whole);
     }
     if *after == BlockState::Comment {
         // A comment opens on this line and runs past it: from its `%%` on.
         let open = line.rfind("%%").unwrap_or(0);
-        push(Kind::Comment, l.at(open..line.len()));
+        push!(Kind::Comment, l.at(open..line.len()));
     }
 
     // Block-level: headings, quotes, lists, tasks, rules.
     if let Ok(Some(caps)) = HEADING.captures(line) {
         let marks = caps.get(1).unwrap();
-        push(Kind::Heading(marks.as_str().len() as u8), whole.clone());
-        push(Kind::Markup, l.at(marks.range()));
+        push!(Kind::Heading(marks.as_str().len() as u8), whole.clone());
+        push!(Kind::Markup, l.at(marks.range()));
     }
     if RULE.is_match(line).unwrap_or(false) {
-        return push(Kind::Rule, whole);
+        return push!(Kind::Rule, whole);
     }
     let mut body = 0;
     if let Ok(Some(found)) = QUOTE.find(line) {
-        push(Kind::Quote, whole);
-        push(Kind::Markup, l.at(found.range()));
+        push!(Kind::Quote, whole);
+        push!(Kind::Markup, l.at(found.range()));
         body = found.end();
         if let Ok(Some(callout)) = CALLOUT.captures(&line[body..]) {
-            push(Kind::CalloutTitle, l.at(body..line.len()));
+            push!(Kind::CalloutTitle, l.at(body..line.len()));
             let marks = callout.get(1).unwrap();
-            push(Kind::Markup, l.at(body + marks.start()..body + marks.end()));
+            push!(Kind::Markup, l.at(body + marks.start()..body + marks.end()));
         }
     }
     let rest = &line[body..];
     if let Ok(Some(caps)) = TASK.captures(rest) {
         let shift = |r: Range<usize>| body + r.start..body + r.end;
-        push(Kind::ListMarker, l.at(shift(caps.get(1).unwrap().range())));
+        push!(Kind::ListMarker, l.at(shift(caps.get(1).unwrap().range())));
         // By the type the vault's Tasks plugin settings give the status.
         let symbol = caps.get(3).unwrap().as_str().chars().next().unwrap_or(' ');
         let kind = match (symbol, TaskStatuses::current().kind(symbol)) {
@@ -324,18 +338,18 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
             (_, TaskType::Cancelled | TaskType::NonTask) => Kind::TaskCancelled,
             _ => Kind::TaskOther,
         };
-        push(kind, l.at(shift(caps.get(2).unwrap().range())));
+        push!(kind, l.at(shift(caps.get(2).unwrap().range())));
         let end = body + caps.get(0).unwrap().end();
         if matches!(kind, Kind::TaskDone | Kind::TaskCancelled) && end < line.len() {
-            push(kind, l.at(end..line.len()));
+            push!(kind, l.at(end..line.len()));
         }
-        each(&TASK_METADATA, line, |m| push(Kind::Metadata, l.at(m.get(0).unwrap().range())));
+        each(&TASK_METADATA, line, |m| push!(Kind::Metadata, l.at(m.get(0).unwrap().range())));
         if let Some(reason) = TaskReason::range(&line[end..]) {
-            push(Kind::Metadata, l.at(end + reason.start..end + reason.end));
+            push!(Kind::Metadata, l.at(end + reason.start..end + reason.end));
         }
     } else if let Ok(Some(caps)) = LIST.captures(rest) {
         let marker = caps.get(1).unwrap();
-        push(Kind::ListMarker, l.at(body + marker.start()..body + marker.end()));
+        push!(Kind::ListMarker, l.at(body + marker.start()..body + marker.end()));
     }
 
     // Inline: code first, so that markup inside code is code. Ranges are in
@@ -344,9 +358,9 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
     each(&INLINE_CODE, line, |m| {
         let all = m.get(0).unwrap().range();
         let ticks = m.get(1).unwrap().as_str().len();
-        push(Kind::Code, l.at(all.clone()));
-        push(Kind::Markup, l.at(all.start..all.start + ticks));
-        push(Kind::Markup, l.at(all.end - ticks..all.end));
+        push!(Kind::Code, l.at(all.clone()));
+        push!(Kind::Markup, l.at(all.start..all.start + ticks), l.at(all.clone()));
+        push!(Kind::Markup, l.at(all.end - ticks..all.end), l.at(all.clone()));
         code.push(all);
     });
     let free = |r: &Range<usize>| !code.iter().any(|c| overlaps(c, r));
@@ -354,7 +368,7 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
     each(&COMMENT, line, |m| {
         let r = m.get(0).unwrap().range();
         if free(&r) {
-            push(Kind::Comment, l.at(r));
+            push!(Kind::Comment, l.at(r));
         }
     });
     each(&WIKILINK, line, |m| {
@@ -363,26 +377,26 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
             return;
         }
         let bang = m.get(1).unwrap().as_str().len();
-        push(if bang > 0 { Kind::Embed } else { Kind::Link }, l.at(all.clone()));
-        push(Kind::Markup, l.at(all.start..all.start + bang + 2));
-        push(Kind::Markup, l.at(all.end - 2..all.end));
+        push!(if bang > 0 { Kind::Embed } else { Kind::Link }, l.at(all.clone()));
+        push!(Kind::Markup, l.at(all.start..all.start + bang + 2), l.at(all.clone()));
+        push!(Kind::Markup, l.at(all.end - 2..all.end), l.at(all.clone()));
         // `[[target|label]]`: the target is markup too; the label is what reads.
         let inner = m.get(2).unwrap();
         if let Some(bar) = inner.as_str().find('|') {
-            push(Kind::Markup, l.at(inner.start()..inner.start() + bar + 1));
+            push!(Kind::Markup, l.at(inner.start()..inner.start() + bar + 1), l.at(all));
         }
     });
     each(&MARKDOWN_LINK, line, |m| {
         if free(&m.get(0).unwrap().range()) {
-            push(Kind::Link, l.at(m.get(1).unwrap().range()));
-            push(Kind::Url, l.at(m.get(2).unwrap().range()));
+            push!(Kind::Link, l.at(m.get(1).unwrap().range()));
+            push!(Kind::Url, l.at(m.get(2).unwrap().range()));
         }
     });
     for pattern in [&AUTOLINK, &BARE_URL] {
         each(pattern, line, |m| {
             let r = m.get(0).unwrap().range();
             if free(&r) {
-                push(Kind::Url, l.at(r));
+                push!(Kind::Url, l.at(r));
             }
         });
     }
@@ -394,11 +408,11 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
         if !free(&all) {
             return;
         }
-        push(Kind::Bold, l.at(all.clone()));
-        push(Kind::Italic, l.at(all.clone()));
+        push!(Kind::Bold, l.at(all.clone()));
+        push!(Kind::Italic, l.at(all.clone()));
         let (open, close) = (all.start..all.start + 3, all.end - 3..all.end);
-        push(Kind::Markup, l.at(open.clone()));
-        push(Kind::Markup, l.at(close.clone()));
+        push!(Kind::Markup, l.at(open.clone()), l.at(all.clone()));
+        push!(Kind::Markup, l.at(close.clone()), l.at(all));
         triples.extend([open, close]);
     });
     for (pattern, kind, width) in
@@ -414,24 +428,24 @@ fn style(line: &str, start: usize, before: &BlockState, after: &BlockState, out:
             if matches!(kind, Kind::Bold | Kind::Italic) && [&open, &close].iter().any(|end| triples.iter().any(|t| overlaps(t, end))) {
                 return;
             }
-            push(kind, l.at(all));
-            push(Kind::Markup, l.at(open));
-            push(Kind::Markup, l.at(close));
+            push!(kind, l.at(all.clone()));
+            push!(Kind::Markup, l.at(open), l.at(all.clone()));
+            push!(Kind::Markup, l.at(close), l.at(all));
         });
     }
     each(&INLINE_MATH, line, |m| {
         let r = m.get(0).unwrap().range();
         if free(&r) {
-            push(Kind::Math, l.at(r));
+            push!(Kind::Math, l.at(r));
         }
     });
     each(&TAG, line, |m| {
         let r = m.get(1).unwrap().range();
         if free(&r) {
-            push(Kind::Tag, l.at(r));
+            push!(Kind::Tag, l.at(r));
         }
     });
-    each(&BLOCK_ID, line, |m| push(Kind::BlockId, l.at(m.get(1).unwrap().range())));
+    each(&BLOCK_ID, line, |m| push!(Kind::BlockId, l.at(m.get(1).unwrap().range())));
 }
 
 #[cfg(test)]
@@ -537,5 +551,24 @@ mod tests {
         let found = kinds("> [!warning] Careful\n> body");
         assert_eq!(get(&found, Kind::CalloutTitle), Some(vec!["[!warning] Careful"]));
         assert_eq!(found[&Kind::Quote].len(), 2);
+    }
+
+    /// A mark that opens or closes one element names it; a line's mark names none.
+    #[test]
+    fn a_mark_names_its_element() {
+        let text = "## Head **bold** and `code` [[Note|label]]";
+        let spans = MarkdownHighlighter::spans(text);
+        let owner = |mark: &str, nth: usize| {
+            spans
+                .iter()
+                .filter(|s| s.kind == Kind::Markup && text.chars().skip(s.range.start).take(s.range.len()).collect::<String>() == mark)
+                .nth(nth)
+                .map(|s| s.owner.clone().map(|o| text.chars().skip(o.start).take(o.len()).collect::<String>()))
+        };
+        assert_eq!(owner("##", 0), Some(None));
+        assert_eq!(owner("**", 0), Some(Some("**bold**".into())));
+        assert_eq!(owner("**", 1), Some(Some("**bold**".into())));
+        assert_eq!(owner("`", 1), Some(Some("`code`".into())));
+        assert_eq!(owner("Note|", 0), Some(Some("[[Note|label]]".into())));
     }
 }

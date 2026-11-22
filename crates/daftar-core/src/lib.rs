@@ -58,6 +58,7 @@ pub mod semantic;
 #[cfg(feature = "semantic")]
 pub mod semantic_model;
 pub mod settings;
+pub mod soft_palette;
 pub mod string_width;
 pub mod tag_rename;
 pub mod tag_tree;
