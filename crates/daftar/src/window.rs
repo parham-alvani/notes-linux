@@ -1552,6 +1552,8 @@ impl Window {
         let tabs = self.tabs.borrow().clone();
         for tab in &tabs {
             tab.reader.reload();
+            // The editor has the reader's size and measure.
+            tab.editor.settings_changed();
         }
     }
 

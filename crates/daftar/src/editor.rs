@@ -30,8 +30,8 @@ use gtk::{gdk, glib};
 use sourceview5::prelude::*;
 
 use daftar_core::{
-    BufferMirror, Candidate, Day, EditorCommands, Fuzzy, HtmlMarkdown, MarkdownTable, QuickSwitcher, Return, Sections, Snippet, TaskSorter,
-    Vault, VaultMoves,
+    BufferMirror, Candidate, Day, EditorCommands, Fuzzy, HtmlMarkdown, LivePreview, MarkdownTable, QuickSwitcher, Return, Sections,
+    Snippet, TaskSorter, Vault, VaultMoves,
 };
 
 #[path = "editor_media.rs"]
@@ -184,12 +184,12 @@ impl Editor {
             .right_margin(32)
             .css_classes(["daftar-editor"])
             .build();
-        // A clamp that scrolls its child, so the view can keep the cursor in sight.
-        let clamp = adw::ClampScrollable::builder().maximum_size(860).tightening_threshold(860).child(&view).build();
+        // The view is as wide as the pane, so the margin's marks stay at the
+        // pane's edge; the line's width is the view's own margins (`measure`).
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
-            .child(&clamp)
+            .child(&view)
             .css_classes(["daftar-page"])
             .build();
         let mode_label = gtk::Label::builder().use_markup(true).visible(false).build();
@@ -282,6 +282,7 @@ impl Editor {
         editor.connect_clicks();
         editor.connect_drop();
         editor.styler.attach(editor.view.upcast_ref());
+        editor.connect_measure();
         editor.connect_pictures();
         let this = Rc::downgrade(&editor);
         editor.glide.connect_wheel_stopped(move |top| {
@@ -598,6 +599,50 @@ impl Editor {
         let gap = (size as f64 * 0.65).round() as i32;
         self.view.set_pixels_below_lines(gap);
         self.view.set_pixels_inside_wrap(gap / 2);
+        drop(settings);
+        self.measure();
+    }
+
+    /// The settings changed (the text size, the measure, a font, live
+    /// preview): the note open follows them now, not at the next one.
+    pub fn settings_changed(&self) {
+        if self.open.borrow().is_some() {
+            self.apply_fonts();
+        }
+    }
+
+    /// The editor's line is the reader's measure (`appearance.text_width` em
+    /// of the text size) in the middle of the pane: the view's margins are
+    /// the room at each side. Worked out
+    /// when the pane's width, the text size or the setting changes, never on
+    /// a key, and never while the view lays itself out.
+    fn measure(&self) {
+        let (size, width) = {
+            let settings = self.settings.borrow();
+            (settings.text_size() as f64, settings.text_width() as f64)
+        };
+        // The pane without the margin's marks: the room for text.
+        let pane = self.view.hadjustment().map_or(0.0, |h| h.page_size());
+        let room = if pane > 1.0 { LivePreview::measure(pane, size, width).room.floor() as i32 } else { 32 };
+        if self.view.left_margin() != room {
+            self.view.set_left_margin(room);
+            self.view.set_right_margin(room);
+        }
+    }
+
+    /// The measure follows the pane's width.
+    fn connect_measure(self: &Rc<Self>) {
+        if let Some(h) = self.view.hadjustment() {
+            let this = Rc::downgrade(self);
+            h.connect_page_size_notify(move |_| {
+                let this = this.clone();
+                glib::idle_add_local_once(move || {
+                    if let Some(this) = this.upgrade() {
+                        this.measure();
+                    }
+                });
+            });
+        }
     }
 
     fn connect_buffer(self: &Rc<Self>) {
@@ -1594,7 +1639,8 @@ impl Editor {
         let scale = f64::from(gtk::pango::SCALE);
         let line = f64::from(metrics.ascent() + metrics.descent()) / scale + f64::from(self.view.pixels_below_lines());
         let width = f64::from(metrics.approximate_char_width()) / scale;
-        let (height, across) = (f64::from(self.view.height()), f64::from(self.view.width()) - 64.0);
+        let (height, across) =
+            (f64::from(self.view.height()), f64::from(self.view.width() - self.view.left_margin() - self.view.right_margin()));
         if height < 1.0 || line < 1.0 || width < 1.0 {
             return (40, 100);
         }
