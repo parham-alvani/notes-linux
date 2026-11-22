@@ -365,6 +365,7 @@ impl Editor {
         let Ok(text) = fs::read_to_string(&file) else { return false };
         self.cancel_pending();
         self.stop_completion();
+        self.slash_typed.set(None);
         self.close_card();
         self.auto_closed.set(None);
         self.apply_fonts();
@@ -2671,6 +2672,270 @@ mod tests {
             editor.hover_link(Some((f64::from(x) + 1.0, f64::from(y))), false);
             spin(450);
             assert!(!editor.card.is_open(), "`appearance.link_preview = false`");
+            editor.discard();
+            window.destroy();
+        });
+    }
+
+    /// The keys and the clicks of the drawn parts keep the person's text
+    /// (docs/specs/look.md, part 2): a `|` line in a code block is no
+    /// table, a click on a box is `TaskLine::toggled` and one step to undo
+    /// in a Persian line, a repeating task and a callout, a Persian table
+    /// is only formatted, and a read-only vault's text never changes.
+    /// Needs a display: `xvfb-run -a cargo test -p daftar -- --ignored
+    /// the_keys_and_the_clicks_keep_the_text`, alone.
+    #[test]
+    #[ignore = "needs a display"]
+    fn the_keys_and_the_clicks_keep_the_text() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            crate::style::install();
+            let vault = tempfile::tempdir().unwrap();
+            let text = "---\n| k | v |\n---\n\n```sh\n| a | b |\ncat x\n```\n\n- [ ] سلام دنیا 📅 2026-11-20\n- [ ] Water 🔁 every week 📅 2026-11-20\n\n> [!tip] T\n> - [ ] in callout\n\n| نام | B |\n| --- | --- |\n| یک | 2 |\n\n- [x] one ✅ 2001-01-01\n- [ ] ab [[Some Person]] and more\n\nend\n";
+            fs::write(vault.path().join("Note.md"), text).unwrap();
+            let index = Vault::index(vault.path(), None);
+            let store = Rc::new(VaultStore::new(vault.path().to_path_buf(), index, std::sync::Arc::new(daftar_core::SearchIndex::new())));
+            let settings = Rc::new(RefCell::new(AppSettings::of(vault.path().join("config.toml"), daftar_core::ConfigFile::TEMPLATE)));
+            let editor = Editor::new(settings.clone(), |_| {}, |_| {});
+            editor.set_store(store);
+            let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
+            window.present();
+            assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            let at = |needle: &str| {
+                let text = editor.text();
+                text[..text.find(needle).unwrap_or_else(|| panic!("{needle:?} is in {text:?}"))].chars().count()
+            };
+            let tagged = |name: &str, at: usize| {
+                editor.iter(at).tags().iter().any(|tag| tag.name().is_some_and(|n| n.starts_with(&format!("daftar:{name}"))))
+            };
+            let none = gdk::ModifierType::empty();
+            let key = |key: gdk::Key, state: gdk::ModifierType| editor.key(key, 0, state) == glib::Propagation::Stop;
+            let today = Day::today().to_string();
+            let spin = |ms: u64| {
+                let start = std::time::Instant::now();
+                while start.elapsed() < Duration::from_millis(ms) {
+                    while context.iteration(false) {}
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            };
+
+            // A `|` line in a code block and in the front matter is no table:
+            // Return and Shift+Return are the view's own keys, Tab indents as
+            // in any text, and no line is formatted.
+            assert!(wait(context, || tagged("box", at("- [ ] Water"))), "the note is styled");
+            for needle in ["| a | b |", "| k | v |"] {
+                editor.buffer.place_cursor(&editor.iter(at(needle) + 4));
+                assert!(!key(gdk::Key::Return, none), "{needle}");
+                assert!(!key(gdk::Key::Return, gdk::ModifierType::SHIFT_MASK), "{needle}");
+                assert_eq!(editor.text(), text, "{needle}");
+            }
+            editor.buffer.place_cursor(&editor.iter(at("| a | b |") + 4));
+            assert!(key(gdk::Key::Tab, none));
+            assert_eq!(editor.text(), text.replace("| a | b |", "| a     | b |"), "Tab is four spaces in code, not a table's move");
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text);
+            assert!(!editor.styler.in_grid(at("| a | b |")), "and it is no grid");
+
+            // A click on the box of a Persian line: where the box is drawn
+            // is where the click lands, and the line is the toggle's.
+            let persian = at("- [ ] سلام");
+            let hit = |offset: usize| {
+                let place = editor.view.iter_location(&editor.iter(offset + 2));
+                editor.draw.box_at(editor.view.upcast_ref(), place.x() + place.width() / 2, place.y() + place.height() / 2)
+            };
+            assert!(wait(context, || hit(persian) == Some(persian as i32)), "the Persian line's box takes the click: {:?}", hit(persian));
+            editor.buffer.place_cursor(&editor.iter(at("دنیا") + 2));
+            let caret = editor.cursor();
+            editor.click_box(persian);
+            assert_eq!(editor.text(), text.replace("- [ ] سلام دنیا 📅 2026-11-20", &format!("- [x] سلام دنیا 📅 2026-11-20 ✅ {today}")));
+            assert_eq!(editor.cursor(), caret, "the caret stays in its word");
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text, "one undo");
+
+            // A repeating task leaves its next occurrence on the line above,
+            // the caret stays on the task's own text, and one undo takes both lines back.
+            let water = "- [ ] Water 🔁 every week 📅 2026-11-20";
+            let toggled = daftar_core::TaskLine::toggled(water, &today).unwrap();
+            assert_eq!(toggled.len(), 2, "{toggled:?}");
+            editor.buffer.place_cursor(&editor.iter(at("Water") + 3));
+            editor.click_box(at(water));
+            assert_eq!(editor.text(), text.replace(water, &toggled.join("\n")));
+            let done = at(&toggled[1]);
+            assert_eq!(editor.cursor(), done + 6 + 3, "on the done line's `Water`");
+            assert_eq!(editor.text().chars().skip(editor.cursor() - 3).take(5).collect::<String>(), "Water");
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text, "one undo takes both lines back");
+            editor.buffer.redo();
+            assert_eq!(editor.text(), text.replace(water, &toggled.join("\n")));
+            editor.buffer.undo();
+
+            // A click on a box above the caret moves the caret's line and
+            // sets no mark: the line under it, with a link across where
+            // its start was, is styled where it is now, and its marks stay
+            // hidden. The same when the click adds a line above.
+            let link = "[[Some Person]]";
+            editor.buffer.place_cursor(&editor.iter(at(link) + 24));
+            assert!(wait(context, || tagged("hidden", at(link)) && tagged("box", at("- [x] one"))));
+            editor.click_box(at("- [x] one"));
+            spin(100);
+            assert_eq!(editor.text(), text.replace("- [x] one ✅ 2001-01-01", "- [ ] one"));
+            assert_eq!(editor.cursor(), at(link) + 24, "the caret stays on its text");
+            assert!(tagged("hidden", at(link)) && tagged("hidden", at(link) + 14) && tagged("box", at("- [ ] ab")));
+            editor.click_box(at(water));
+            spin(100);
+            assert_eq!(editor.cursor(), at(link) + 24);
+            assert!(tagged("hidden", at(link)) && tagged("box", at("- [ ] ab")), "styled where it is after a line came above");
+            editor.buffer.place_cursor(&editor.iter(at(link) + 4));
+            assert!(wait(context, || !tagged("hidden", at(link))), "the marks show with the caret in the link");
+            editor.buffer.place_cursor(&editor.iter(at(link) + 24));
+            assert!(wait(context, || tagged("hidden", at(link))));
+            editor.buffer.undo();
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text);
+            spin(100);
+
+            // A task in a callout is drawn and can be clicked.
+            let quoted = at("> - [ ] in callout");
+            assert!(wait(context, || tagged("box", quoted + 2)), "a box in a callout");
+            editor.click_box(quoted + 2);
+            assert_eq!(editor.text(), text.replace("> - [ ] in callout", &format!("> - [x] in callout ✅ {today}")));
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text);
+
+            // A Persian table: Return on its last row formats it and adds a
+            // row, with every cell's text kept, as one step to undo; Left
+            // and Right are the view's own in a right-to-left row.
+            let row = at("| یک |");
+            editor.buffer.place_cursor(&editor.iter(row + 3));
+            assert!(wait(context, || editor.styler.in_grid(row)));
+            assert!(!key(gdk::Key::Right, none) && !key(gdk::Key::Left, none));
+            assert!(key(gdk::Key::Return, none));
+            let rows: Vec<String> = ["| نام | B |", "| --- | --- |", "| یک | 2 |", "|  |  |"].map(String::from).to_vec();
+            let formatted = MarkdownTable::format(&rows).join("\n");
+            assert_eq!(editor.text(), text.replace("| نام | B |\n| --- | --- |\n| یک | 2 |", &formatted));
+            for cell in ["نام", "یک", "B", "2"] {
+                assert!(formatted.contains(cell), "{cell}");
+            }
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text, "one undo takes the row and the formatting back");
+
+            // With `editor.live_preview = false` nothing is drawn, and the keys still work.
+            settings.borrow_mut().file.set("editor.live_preview", daftar_core::Value::Bool(false));
+            editor.settings_changed();
+            assert!(wait(context, || !tagged("box", at("- [ ] Water")) && !editor.styler.in_grid(row)), "raw with live preview off");
+            assert_eq!(hit(persian), None, "no box to click");
+            assert!(!tagged("panel", at("> [!tip]")) && !tagged("chip", at("📅 2026-11-20") + 3));
+            editor.buffer.place_cursor(&editor.iter(row + 3));
+            assert!(key(gdk::Key::Tab, none), "Tab still goes to the next cell");
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text);
+            settings.borrow_mut().file.set("editor.live_preview", daftar_core::Value::Bool(true));
+            editor.settings_changed();
+            assert!(wait(context, || tagged("box", at("- [ ] Water"))));
+
+            // A read-only vault: everything is drawn, a click on a box
+            // changes nothing, and a `/` is only a `/`.
+            let git = |arguments: &[&str]| {
+                assert!(std::process::Command::new("git").args(arguments).current_dir(vault.path()).output().unwrap().status.success());
+            };
+            git(&["init", "-q"]);
+            git(&["config", "daftar.readonly", "true"]);
+            assert!(daftar_core::VaultEdits::writable(vault.path()).is_err());
+            editor.click_box(at(water));
+            editor.click_box(persian);
+            assert_eq!(editor.text(), text, "a read-only vault's text is not changed by a click");
+            assert!(tagged("box", at("- [ ] Water")), "and the box is still drawn");
+            editor.discard();
+            window.destroy();
+        });
+    }
+
+    /// Neovim mode (docs/specs/look.md, part 2): the parts are drawn and
+    /// focus mode follows Neovim's cursor, a click on a box is sent to
+    /// Neovim as a change of its lines (one `u`), the table's keys and the
+    /// slash bar are not there, and Neovim's keys change no text by
+    /// themselves. Needs a display and `nvim`: `xvfb-run -a cargo test -p
+    /// daftar -- --ignored in_neovim_mode`, alone.
+    #[test]
+    #[ignore = "needs a display and nvim"]
+    fn in_neovim_mode_the_parts_are_drawn_and_a_click_is_a_change_of_lines() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            crate::style::install();
+            let vault = tempfile::tempdir().unwrap();
+            let text =
+                "# T\n\n- [ ] Buy 📅 2001-01-01\n- [ ] Water 🔁 every week 📅 2001-01-01\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nend\n";
+            fs::write(vault.path().join("Note.md"), text).unwrap();
+            let config = daftar_core::ConfigFile::TEMPLATE
+                .replace("vim_mode = false", "vim_mode = true")
+                .replace("nvim_config = \"user\"", "nvim_config = \"clean\"")
+                .replace("focus = false", "focus = true");
+            let settings = Rc::new(RefCell::new(AppSettings::of(vault.path().join("config.toml"), &config)));
+            assert!(settings.borrow().focus());
+            let editor = Editor::new(settings, |_| {}, |_| {});
+            let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
+            window.present();
+            assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            assert!(wait(context, || editor.vim.borrow().as_ref().is_some_and(|vim| vim.mirror.is_some())), "Neovim started");
+            let at = |needle: &str| {
+                let text = editor.text();
+                text[..text.find(needle).unwrap_or_else(|| panic!("{needle:?} is in {text:?}"))].chars().count()
+            };
+            let tagged = |name: &str, at: usize| {
+                editor.iter(at).tags().iter().any(|tag| tag.name().is_some_and(|n| n.starts_with(&format!("daftar:{name}"))))
+            };
+            let input = |keys: &str| editor.vim.borrow().as_ref().unwrap().session.input(keys);
+            let none = gdk::ModifierType::empty();
+            let spin = |ms: u64| {
+                let start = std::time::Instant::now();
+                while start.elapsed() < Duration::from_millis(ms) {
+                    while context.iteration(false) {}
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            };
+            let on_disk = || fs::read_to_string(vault.path().join("Note.md")).unwrap();
+            let today = Day::today().to_string();
+
+            // The box, the chip and the grid are drawn, and focus mode has
+            // the paragraph of Neovim's cursor.
+            assert!(wait(context, || tagged("box", 5) && tagged("chip", at("📅 2001") + 3) && editor.styler.in_grid(at("| 1 |"))));
+            input("6G");
+            assert!(wait(context, || editor.focus.bright_lines() == Some((5, 7))), "{:?}", editor.focus.bright_lines());
+
+            // Return and Tab on a table's row are Neovim's keys: in normal
+            // mode they move its cursor and no line is formatted.
+            assert_eq!(editor.key(gdk::Key::Return, 0, none), glib::Propagation::Stop);
+            assert_eq!(editor.key(gdk::Key::Tab, 0, none), glib::Propagation::Stop);
+            spin(300);
+            assert_eq!(editor.text(), text);
+
+            // A click on a box is a change of that line in Neovim, which
+            // writes the file; one `u` takes it back.
+            editor.click_box(5);
+            let done = text.replace("- [ ] Buy 📅 2001-01-01", &format!("- [x] Buy 📅 2001-01-01 ✅ {today}"));
+            assert!(wait(context, || editor.text() == done), "{}", editor.text());
+            assert!(wait(context, || on_disk() == done), "Neovim wrote the file");
+            input("u");
+            assert!(wait(context, || editor.text() == text), "one u takes the click back");
+            // A repeating task: two lines for one, and one `u`.
+            let water = "- [ ] Water 🔁 every week 📅 2001-01-01";
+            let toggled = daftar_core::TaskLine::toggled(water, &today).unwrap();
+            editor.click_box(at(water));
+            assert!(wait(context, || editor.text() == text.replace(water, &toggled.join("\n"))), "{}", editor.text());
+            input("u");
+            assert!(wait(context, || editor.text() == text), "one u takes both lines back");
+
+            // A `/` typed in insert mode is only a `/`: no slash bar.
+            input("Go/");
+            assert!(wait(context, || editor.text().ends_with("\n/\n")));
+            spin(300);
+            assert!(!editor.slash.is_open() && editor.completing.get() == Completing::Nothing);
+            input("<Esc>u");
+            assert!(wait(context, || editor.text() == text));
             editor.discard();
             window.destroy();
         });
