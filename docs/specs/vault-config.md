@@ -25,10 +25,10 @@ A repository is text that other people and other computers can change. It must n
 
 | Keys | From the vault |
 | --- | --- |
-| `appearance.theme`, `text_size`, `font`, `code_font`, `text_width`, `reading_line`, `fold_sections`, `persian_calendar` | yes |
+| `appearance.theme`, `dark_palette`, `text_size`, `font`, `code_font`, `text_width`, `reading_line`, `fold_sections`, `persian_calendar`, `link_preview`, `section_bar` | yes |
 | `appearance.remote_images` | only `false`: a vault can stop pictures from the web, never turn them on |
 | `calendar.place` | yes |
-| `editor.live_preview`, `editor.format_on_save` | yes |
+| `editor.live_preview`, `editor.format_bar`, `editor.format_on_save`, `editor.slash_menu`, `editor.focus` | yes |
 | `git.sync_interval`, `git.pull_on_launch` | yes |
 | `git.name`, `git.email` (new, vault only) | the author of commits made in a clone that has no `user.name` or `user.email` of its own (section 3) |
 | `notifications.*` | yes |
@@ -54,15 +54,16 @@ What a value from the vault must be, the same in every app:
 | Key | Value |
 | --- | --- |
 | `appearance.theme` | `system`, `light` or `dark` |
+| `appearance.dark_palette` | `naz` or `naz-soft` |
 | `appearance.text_size` | 10 to 28 |
 | `appearance.font`, `appearance.code_font` | text of one line that is not blank |
 | `appearance.text_width` | 0 to 400 |
 | `appearance.reading_line` | 0 to 100 |
 | `appearance.fold_sections` | `vault`, `always` or `never` |
-| `appearance.persian_calendar` | a boolean |
+| `appearance.persian_calendar`, `appearance.link_preview`, `appearance.section_bar` | a boolean |
 | `appearance.remote_images` | `false` |
 | `calendar.place` | a place the app knows, or empty for none |
-| `editor.live_preview`, `editor.format_on_save` | a boolean |
+| `editor.live_preview`, `editor.format_bar`, `editor.format_on_save`, `editor.slash_menu`, `editor.focus` | a boolean |
 | `git.sync_interval` | 0 to 10080 |
 | `git.pull_on_launch` | a boolean |
 | `git.name`, `git.email` | text of one line that is not blank |
