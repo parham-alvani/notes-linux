@@ -788,6 +788,7 @@ impl Styler {
     /// After an edit in characters [range]: its paragraph again, or the rest
     /// of the note when a block line changed.
     pub fn restyle_after(self: &Rc<Self>, range: Range<usize>) {
+        self.follow_edit();
         let text = self.text();
         let now = structure(&text);
         let total = self.buffer.char_count().max(0) as usize;
@@ -807,6 +808,39 @@ impl Styler {
             }
             self.style_seen_soon();
         }
+    }
+
+    /// An edit moves the cursor's place and sets no mark: text typed at
+    /// it, or a change before it (a click on a task's box, Format Note,
+    /// Neovim's lines). What is styled next is compared with where the
+    /// cursor is now, not with where it was: on the same lines only the
+    /// places move, and on other lines it is a move like any other.
+    fn follow_edit(self: &Rc<Self>) {
+        let Some(revealed) = self.revealed_lines.get() else { return };
+        let selection = self.buffer.selection_bounds().map_or_else(
+            || {
+                let at = self.buffer.iter_at_mark(&self.buffer.get_insert()).offset() as usize;
+                (at, at)
+            },
+            |(a, b)| (a.offset() as usize, b.offset() as usize),
+        );
+        if selection == self.cursor.get() {
+            return;
+        }
+        let (first, last) = (self.buffer.iter_at_offset(selection.0 as i32), self.buffer.iter_at_offset(selection.1 as i32));
+        if revealed != ((first.line(), last.line()), selection.0 != selection.1) {
+            self.reveal(selection);
+            return;
+        }
+        let start = self.buffer.iter_at_line(first.line()).unwrap_or(first);
+        let mut end = self.buffer.iter_at_line(last.line()).unwrap_or(last);
+        if !end.ends_line() {
+            end.forward_to_line_end();
+        }
+        end.forward_char();
+        self.cursor.set(selection);
+        self.revealed.set((start.offset() as usize, end.offset() as usize));
+        self.follow_raw_tables(selection);
     }
 
     /// The end of the line that holds character [at], past its newline.
@@ -1245,7 +1279,9 @@ impl Styler {
         if lines_from < base + range.end && base + range.start < lines_to.max(lines_from + 1) {
             let total = self.buffer.char_count().max(0) as usize;
             let cursor = self.cursor.get();
-            let absolute: Vec<Range<usize>> = elements.iter().map(|e| base + e.start..base + e.end).collect();
+            // An element that starts before these lines is none of theirs.
+            let absolute: Vec<Range<usize>> =
+                elements.iter().map(|e| base + e.start..base + e.end).filter(|e| e.start >= lines_from).collect();
             *self.open.borrow_mut() =
                 absolute.iter().filter(|e| is_open(e, cursor)).map(|e| e.start - lines_from..e.end - lines_from).collect();
             *self.elements.borrow_mut() = absolute.iter().map(|e| e.start - lines_from..e.end - lines_from).collect();
