@@ -173,6 +173,10 @@ pub struct GridLine {
     pub last: bool,
     /// The pipes between its cells: each is drawn as a hairline, not as a character.
     pub pipes: Vec<usize>,
+    /// The table's widest line, in the columns of a monospaced line: an
+    /// app that cannot scroll a table sideways draws one wider than its
+    /// measure as before.
+    pub widest: usize,
 }
 
 /// One panel of a note: its lines, from 0, and what it is.
@@ -519,6 +523,7 @@ impl LivePreview {
             let after: &[String] = if run[run.len() - 1].end >= end { below } else { &[] };
             let table: Vec<String> = before.iter().cloned().chain(run.iter().map(text)).chain(after.iter().cloned()).collect();
             if MarkdownTable::is_grid(&table) {
+                let widest = table.iter().map(|line| MarkdownTable::width(line)).max().unwrap_or(0);
                 for (index, row) in run.iter().enumerate() {
                     let place = before.len() + index;
                     out.push(GridLine {
@@ -530,6 +535,7 @@ impl LivePreview {
                         },
                         last: place + 1 == table.len(),
                         pipes: MarkdownTable::pipes(&table[place]).into_iter().map(|pipe| row.start + pipe).collect(),
+                        widest,
                     });
                 }
             }
@@ -804,7 +810,8 @@ mod tests {
         let two = grid("| A |\n| - |\n\nx\n| B |\n| --- |\n| 1 |", &[], &[]);
         assert_eq!(two, [(15, Header, false), (21, Delimiter, false), (29, Row, true)]);
         let parts = LivePreview::parts(table, 100, &BlockState::Normal, &Above::Nothing, false, today());
-        assert_eq!(LivePreview::grid_lines(table, 100, &parts.rows, &[], &[])[0].pipes, [100, 104, 108]);
+        let lines = LivePreview::grid_lines(table, 100, &parts.rows, &[], &[]);
+        assert_eq!((lines[0].pipes.as_slice(), lines[0].widest, lines[2].widest), ([100, 104, 108].as_slice(), 13, 13));
         // One row read on its own knows its table by the rows above and below it.
         assert_eq!(grid("| 1 | 2 |\n", &["| A | B |", "| --- | --- |"], &[]), [(0, Row, true)]);
         assert_eq!(grid("| 1 | 2 |\n", &["| A | B |", "| --- | --- |"], &["| 3 | 4 |"]), [(0, Row, false)]);

@@ -89,6 +89,30 @@ impl LinkPreview {
         (!name.is_empty() || heading.is_some() || block.is_some()).then_some(LinkTarget { name, heading, block })
     }
 
+    /// The `[[link]]` of [line] that holds character [offset], brackets
+    /// counted, as its characters in the line and what it names. None on
+    /// an embed and where the line has no link.
+    pub fn link_at(line: &str, offset: usize) -> Option<(std::ops::Range<usize>, LinkTarget)> {
+        let chars: Vec<char> = line.chars().collect();
+        let pair = |at: usize, mark: char| chars.get(at) == Some(&mark) && chars.get(at + 1) == Some(&mark);
+        let mut at = 0;
+        while at + 1 < chars.len() {
+            if !pair(at, '[') {
+                at += 1;
+                continue;
+            }
+            let Some(close) = (at + 2..chars.len()).find(|&end| pair(end, ']')) else { break };
+            let range = at..close + 2;
+            if range.contains(&offset) {
+                let embed = at > 0 && chars[at - 1] == '!';
+                let inner: String = chars[at + 2..close].iter().collect();
+                return if embed || inner.contains("[[") { None } else { Self::target(&inner).map(|target| (range, target)) };
+            }
+            at = close + 2;
+        }
+        None
+    }
+
     /// The card of a link to [target]: [path] is the note it resolves to
     /// and [text] that note's text, both None when no note has the name.
     pub fn card(target: &LinkTarget, path: Option<&str>, text: Option<&str>) -> LinkCard {
@@ -294,6 +318,15 @@ mod tests {
         // An embed has no card, and neither has a link that names nothing.
         assert_eq!(target("![[Plan]]"), None);
         assert_eq!(target("[[]]"), None);
+        // The link under a place of a line, its brackets counted.
+        let line = "See [[Plan#Next|it]] and ![[pic.png]] or [[Other]].";
+        let at = |offset: usize| LinkPreview::link_at(line, offset).map(|(range, target)| (range, target.name));
+        assert_eq!(at(4), Some((4..20, "Plan".into())));
+        assert_eq!(at(19), Some((4..20, "Plan".into())));
+        assert_eq!((at(3), at(20)), (None, None));
+        assert_eq!(at(30), None);
+        assert_eq!(at(44), Some((41..50, "Other".into())));
+        assert_eq!(LinkPreview::link_at("a [[open", 4), None);
     }
 
     #[test]

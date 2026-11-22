@@ -123,10 +123,13 @@ impl MarkdownTable {
         while next < table.len() && separators[next] {
             next += 1;
         }
+        let mut column = column;
         if next >= table.len() {
-            // A header alone gets its delimiter row first, as Advanced Tables makes it.
+            // A header alone gets its delimiter row first, as Advanced Tables
+            // makes it, and the cursor goes to the first cell under it.
             if table.len() == 1 && !separators[0] {
                 table.push(format!("|{}", " --- |".repeat(columns)));
+                column = 0;
             }
             table.push(Self::empty_row(columns));
             table = Self::format(&table);
@@ -420,7 +423,7 @@ mod tests {
         let TableReturn::Cell(under) = MarkdownTable::enter(&grid(), 0, 1) else { panic!("the table goes on") };
         assert_eq!((under.row, cell(&under).as_str()), (2, "2"));
         // A header with no delimiter row yet gets one, and a row.
-        let TableReturn::Cell(made) = MarkdownTable::enter(&lines(&["| a | b |"]), 0, 0) else { panic!("the table goes on") };
+        let TableReturn::Cell(made) = MarkdownTable::enter(&lines(&["| a | b |"]), 0, 1) else { panic!("the table goes on") };
         assert_eq!(made.lines, ["| a   | b   |", "| --- | --- |", "|     |     |"]);
         assert_eq!((made.row, made.column), (2, 0));
     }
