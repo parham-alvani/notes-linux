@@ -231,8 +231,8 @@ mod tests {
         assert!(shown.contains("◷ Recent"), "{shown}");
         assert!(shown.contains("▌ Kite  Projects/Kite"), "{shown}");
         assert!(shown.contains("Work  Tasks"), "{shown}");
-        // The clock in blocks: a pane this tall has room for it.
-        assert!(shown.contains("███"), "{shown}");
+        // The clock in blocks: a pane this tall has room for it. One block is all 11:11 has in a row.
+        assert!(shown.contains('█'), "{shown}");
         // j, then Enter, opens the second note read last.
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Enter);
