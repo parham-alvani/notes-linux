@@ -19,8 +19,8 @@ use webkit6::prelude::*;
 use webkit6::{NavigationPolicyDecision, PolicyDecisionType, URISchemeRequest, URISchemeResponse, WebView};
 
 use daftar_core::{
-    Base, BaseCell, BaseEngine, BaseImage, BaseLayout, Canvas, Day, Detected, NoteParser, QueryTask, TaskStatuses, TasksQuery, Vault,
-    VaultIndex,
+    Base, BaseCell, BaseEngine, BaseImage, BaseLayout, Canvas, Day, Detected, LinkPreview, NoteParser, QueryTask, TaskStatuses, TasksQuery,
+    Vault, VaultIndex,
 };
 
 use crate::settings::AppSettings;
@@ -87,6 +87,42 @@ impl OpenIn {
     }
 }
 
+/// The soft change between reading and editing: the view that leaves fades
+/// out as the one that comes fades in, in 120 ms, at the same line, with no
+/// movement (`docs/specs/look.md`, "A soft change"). The page makes the same
+/// change between two notes by itself (`softly` in `web/src/reader.js`).
+///
+/// The view that comes is on screen from the start of the change and has
+/// the keys from then, so a key during the fade is never lost; only what is
+/// seen fades. Without animations (`gtk-enable-animations`) the change is
+/// made at once.
+pub struct SoftChange;
+
+impl SoftChange {
+    /// The fade's time, in milliseconds.
+    pub const FADE: u32 = 120;
+    /// How long the view that comes may take to draw, in milliseconds;
+    /// after it the change is made at once.
+    pub const PATIENCE: u64 = 400;
+
+    /// The fade's time, or none when the change is made at once.
+    pub fn fade(animations: bool) -> Option<u32> {
+        animations.then_some(Self::FADE)
+    }
+
+    /// A picture of [widget] as it is drawn now, to leave over the page
+    /// while the page draws (`Reader::show_under`). None for a widget that
+    /// is not on screen.
+    pub fn picture(widget: &impl IsA<gtk::Widget>) -> Option<Leaving> {
+        let widget = widget.as_ref();
+        (widget.is_mapped() && widget.width() > 0 && widget.height() > 0)
+            .then(|| Leaving(gtk::WidgetPaintable::new(Some(widget)).current_image()))
+    }
+}
+
+/// The picture of a view that leaves: seen, never clicked.
+pub struct Leaving(gdk::Paintable);
+
 // Shared, so a handler is taken out of the state before it runs: one that
 // shows a note borrows the state again.
 type OpenHandler = Rc<dyn Fn(&str, Option<&str>, OpenIn)>;
@@ -121,6 +157,9 @@ struct State {
 #[derive(Clone)]
 pub struct Reader {
     pub view: WebView,
+    /// The view, and over it the picture of a view that leaves (`show_under`):
+    /// what a window holds as the reader.
+    pub page: gtk::Overlay,
     settings: Rc<RefCell<AppSettings>>,
     state: Rc<RefCell<State>>,
 }
@@ -136,8 +175,10 @@ impl Reader {
             web.set_enable_developer_extras(cfg!(debug_assertions));
             web.set_enable_back_forward_navigation_gestures(false);
         }
+        let page = gtk::Overlay::builder().child(&view).vexpand(true).hexpand(true).build();
         let reader = Reader {
             view,
+            page,
             settings,
             state: Rc::new(RefCell::new(State {
                 ready: false,
@@ -259,6 +300,62 @@ impl Reader {
         self.show(request, keep_scroll);
     }
 
+    /// Back from the editor: [show] at [request]'s line, under [leaving],
+    /// the editor's picture, which fades out once the page has drawn the
+    /// note there, or after `SoftChange::PATIENCE`. The page is never seen
+    /// at the place it was before, and it can have the keys from the start:
+    /// the caller puts the reader on screen and gives it the focus at once.
+    /// The picture takes no click and no key, and never stays over the page.
+    pub fn show_under(&self, leaving: Option<Leaving>, request: Request) {
+        let Some(Leaving(image)) = leaving else {
+            self.show(request, false);
+            return;
+        };
+        let picture = gtk::Picture::builder()
+            .paintable(&image)
+            .content_fit(gtk::ContentFit::Cover)
+            .can_shrink(true)
+            .can_target(false)
+            .can_focus(false)
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .build();
+        self.page.add_overlay(&picture);
+        let lift = {
+            let (page, lifted) = (self.page.clone(), Rc::new(std::cell::Cell::new(false)));
+            move || {
+                if lifted.replace(true) {
+                    return;
+                }
+                let Some(fade) = SoftChange::fade(picture.settings().is_gtk_enable_animations()) else {
+                    page.remove_overlay(&picture);
+                    return;
+                };
+                let target = adw::CallbackAnimationTarget::new({
+                    let picture = picture.clone();
+                    move |opacity| picture.set_opacity(opacity)
+                });
+                let animation = adw::TimedAnimation::builder()
+                    .widget(&picture)
+                    .value_from(1.0)
+                    .value_to(0.0)
+                    .duration(fade)
+                    .easing(adw::Easing::EaseInOutCubic)
+                    .target(&target)
+                    .build();
+                animation.play();
+                // By the clock, not by the animation's end: a window that
+                // draws no frame ends no animation.
+                let (page, picture) = (page.clone(), picture.clone());
+                glib::timeout_add_local_once(std::time::Duration::from_millis(u64::from(fade) + 30), move || {
+                    animation.skip();
+                    page.remove_overlay(&picture);
+                });
+            }
+        };
+        glib::timeout_add_local_once(std::time::Duration::from_millis(SoftChange::PATIENCE), lift.clone());
+        self.show_then(request, false, lift);
+    }
+
     /// Hands [request]'s note to the page: [text] as markdown, or a base's
     /// views when [base] has them.
     fn draw(&self, store: &VaultStore, request: &Request, keep_scroll: bool, text: &str, base: Option<Value>) {
@@ -348,6 +445,8 @@ impl Reader {
         object.insert("readingLine".into(), json!(settings.reading_line()));
         object.insert("textWidth".into(), json!(settings.text_width()));
         object.insert("remoteImages".into(), json!(settings.remote_images()));
+        object.insert("linkPreview".into(), json!(settings.link_preview()));
+        object.insert("sectionBar".into(), json!(settings.section_bar()));
         object.insert("fontText".into(), json!(font_text));
         object.insert("fontCode".into(), json!(font_code));
         if !keep_scroll {
@@ -431,7 +530,7 @@ impl Reader {
                 reader.message(&body);
             }
         });
-        for name in ["embed", "tasks", "base"] {
+        for name in ["embed", "preview", "tasks", "base"] {
             manager.register_script_message_handler_with_reply(name, None);
             let reader = self.clone();
             manager.connect_script_message_with_reply_received(Some(name), move |_, value, reply| {
@@ -617,13 +716,17 @@ impl Reader {
         });
     }
 
-    /// The page's other questions: an embedded note, a tasks query.
+    /// The page's other questions: an embedded note, a link's card, a tasks query.
     fn answer(&self, name: &str, body: &Value) -> Value {
         if name == "tasks" {
             let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
             let source = body.get("source").and_then(Value::as_str).unwrap_or("");
             let path = body.get("path").and_then(Value::as_str);
             run_query(&store, source, path)
+        } else if name == "preview" {
+            let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
+            let text = |key: &str| body.get(key).and_then(Value::as_str).unwrap_or("");
+            preview(&store, text("path"), text("anchor"))
         } else {
             let Some(store) = self.state.borrow().store.clone() else { return Value::Null };
             let path = body.get("path").and_then(Value::as_str).unwrap_or("");
@@ -800,6 +903,21 @@ fn bytes(header: &str, size: usize) -> Option<(usize, usize)> {
     (start <= end && start < size).then_some((start, end))
 }
 
+/// What a link's card shows of the note at [path]: its title and its first
+/// lines (`LinkPreview::excerpt`), or those of the section or the block
+/// [anchor] names, with the links those lines need. Null for a file that is
+/// no note of the vault.
+fn preview(store: &VaultStore, path: &str, anchor: &str) -> Value {
+    if !Vault::is_note(path) || !store.index().files.contains(path) {
+        return Value::Null;
+    }
+    let Some(text) = store.text(path) else { return Value::Null };
+    let title = Vault::title(path);
+    let lines = LinkPreview::excerpt(&text, &title, Some(anchor).filter(|anchor| !anchor.is_empty()));
+    let links = store.index().resolved_links_in(&NoteParser::parse(&lines), path);
+    json!({ "title": title, "text": lines, "links": links })
+}
+
 /// A query's result as the page draws it: each task with the groups it is
 /// under, its note, its line, and the links its text needs.
 fn run_query(store: &VaultStore, source: &str, path: Option<&str>) -> Value {
@@ -950,7 +1068,7 @@ mod tests {
         let settings = Rc::new(RefCell::new(AppSettings::of(PathBuf::new(), config)));
         let reader = Reader::new(settings);
         reader.set_store(store.clone());
-        let window = gtk::Window::builder().default_width(800).default_height(600).child(&reader.view).build();
+        let window = gtk::Window::builder().default_width(800).default_height(600).child(&reader.page).build();
         window.present();
         reader.show(Request { path: "Trip.md".into(), heading: None, line: None }, false);
         (reader, store, window, root)
@@ -1017,7 +1135,107 @@ mod tests {
             assert!(drawn(&reader));
             assert_eq!(page(context, &reader, SHUT), "");
             window.destroy();
+
+            the_page_asks_for_a_links_first_lines_and_the_editors_picture_leaves(context);
         });
+    }
+
+    /// The link's card and the soft change, in the real page
+    /// (docs/specs/look.md, part 2). A part of the test above, which is the
+    /// one test with a display.
+    fn the_page_asks_for_a_links_first_lines_and_the_editors_picture_leaves(context: &glib::MainContext) {
+        use crate::vault_checks::tests::wait;
+        let (reader, _store, window, _root) = reader_on("", "[appearance]\nsection_bar = false\n");
+        assert!(wait(context, || page(context, &reader, "String(!!document.querySelector('#note h2'))") == "true"), "the note is drawn");
+
+        // The page has the `preview` message, and the host answers it.
+        assert_eq!(page(context, &reader, "String(!!window.webkit.messageHandlers.preview)"), "true");
+        let answer: Rc<RefCell<Option<String>>> = Rc::default();
+        let got = answer.clone();
+        reader.view.call_async_javascript_function(
+            "const note = await window.webkit.messageHandlers.preview.postMessage({ path: 'Trip.md', anchor: 'Hotel' }); return JSON.stringify(note);",
+            None,
+            None,
+            None,
+            gio::Cancellable::NONE,
+            move |result| *got.borrow_mut() = Some(result.map_or_else(|error| format!("error: {error}"), |value| value.to_str().to_string())),
+        );
+        assert!(wait(context, || answer.borrow().is_some()), "the host answered");
+        let note: Value = serde_json::from_str(&answer.take().unwrap()).unwrap();
+        assert_eq!(note, json!({ "title": "Trip", "text": "One room.", "links": {} }));
+
+        // Back from the editor: a picture of what leaves is over the page, takes no click, and is gone soon.
+        let overlays = |reader: &Reader| reader.page.observe_children().n_items() - 1;
+        assert_eq!(overlays(&reader), 0);
+        let leaving = SoftChange::picture(&reader.view);
+        assert!(leaving.is_some(), "a widget on screen has a picture");
+        reader.show_under(leaving, Request { path: "Trip.md".into(), heading: None, line: Some(12) });
+        assert_eq!(overlays(&reader), 1);
+        let cover = reader.page.last_child().unwrap();
+        assert!(!cover.can_target() && !cover.can_focus());
+        assert!(wait(context, || overlays(&reader) == 0), "the picture is gone");
+        // With no picture, the note is only shown.
+        reader.show_under(None, Request { path: "Trip.md".into(), heading: None, line: Some(0) });
+        assert_eq!(overlays(&reader), 0);
+        // A widget that is not on screen has no picture.
+        assert!(SoftChange::picture(&gtk::Label::new(Some("a"))).is_none());
+        window.destroy();
+    }
+
+    /// A store on a vault of [notes], each a path and its text.
+    fn store_of(notes: &[(&str, &str)]) -> (VaultStore, tempfile::TempDir) {
+        let root = tempfile::tempdir().unwrap();
+        for (path, text) in notes {
+            let file = root.path().join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        let index = Vault::index(root.path(), None);
+        (VaultStore::new(root.path().to_path_buf(), index, std::sync::Arc::new(daftar_core::SearchIndex::new())), root)
+    }
+
+    #[test]
+    fn a_links_card_is_given_the_first_lines_and_their_links() {
+        let twenty: String = (1..=20).map(|n| format!("l{n}\n")).collect();
+        let (store, _root) = store_of(&[
+            (
+                "Plan.md",
+                &format!(
+                    "---\ntags: [a]\n---\n# Plan\n\nSee [[Other]] and ![[Other]].\n{twenty}\n## Next\n\nunder [[Deep]]\n\n## Later\n\nlast ^b1\n"
+                ),
+            ),
+            ("Notes/Other.md", "other"),
+            ("Notes/Deep.md", "deep"),
+            ("Empty.md", "---\ntags: [a]\n---\n"),
+            ("a.png", "png"),
+        ]);
+        // The title and the first 12 lines, an embed as its link, and only the links those lines have.
+        let note = preview(&store, "Plan.md", "");
+        let lines: Vec<String> = (1..=11).map(|n| format!("l{n}")).collect();
+        assert_eq!(note["title"], "Plan");
+        assert_eq!(note["text"], format!("See [[Other]] and [[Other]].\n{}\n\n…", lines.join("\n")));
+        assert_eq!(note["links"], json!({ "Other": "Notes/Other.md" }));
+        // A heading's section without the heading, and a block alone.
+        assert_eq!(
+            preview(&store, "Plan.md", "Next"),
+            json!({ "title": "Plan", "text": "under [[Deep]]", "links": { "Deep": "Notes/Deep.md" } })
+        );
+        assert_eq!(preview(&store, "Plan.md", "^b1")["text"], "last ^b1");
+        // An anchor that names nothing and an empty note have no lines: the page says so.
+        assert_eq!(preview(&store, "Plan.md", "Nowhere")["text"], "");
+        assert_eq!(preview(&store, "Empty.md", ""), json!({ "title": "Empty", "text": "", "links": {} }));
+        // No answer for a file that is no note, or is not in the vault.
+        assert_eq!(preview(&store, "a.png", ""), Value::Null);
+        assert_eq!(preview(&store, "Missing.md", ""), Value::Null);
+        assert_eq!(preview(&store, "../Plan.md", ""), Value::Null);
+    }
+
+    #[test]
+    fn the_soft_change_is_120_ms_and_none_without_animations() {
+        assert_eq!(SoftChange::fade(true), Some(120));
+        assert_eq!(SoftChange::fade(false), None);
+        // The view that comes has 400 ms to draw.
+        assert_eq!(SoftChange::PATIENCE, 400);
     }
 
     #[test]
