@@ -785,10 +785,16 @@ li.task-list-item.is-checked .query-date { text-decoration: none; opacity: 0.75;
   margin: 0; padding: 0; border: 0; background: none; font: inherit; color: var(--text-muted); cursor: pointer;
 }
 .section-crumb.is-last { flex: 0 1 auto; min-width: 0; color: var(--text); font-weight: 600; }
+/* While the path is measured, the last heading is as wide as its text. */
+.section-path.is-measured .section-crumb.is-last { flex: none; }
 .section-sep, .section-dots { flex: none; color: var(--text-faint); }
 .section-sep { margin: 0 0.4em; }
 /* In a path that reads from the right, the mark points the way the path reads. */
 .section-path[dir="rtl"] .section-sep { transform: scaleX(-1); }
+/* A block that is gone to (a link's heading, the editor's line) comes to
+   rest under the bar's place: at the very top, the bar would be over its
+   first line. */
+:root.keeps-section-bar { scroll-padding-top: 36px; }
 /* The reading progress line is at the bar's bottom edge while the bar shows. */
 :root.has-section-bar #progress { top: 26px; }
 

@@ -1085,14 +1085,19 @@ const sectionBar = {
   /** Leaves parents out from the start, with `…` there, until the path fits the bar. */
   fit(line) {
     const crumbs = [...line.querySelectorAll(".section-crumb")];
-    if (crumbs.length < 2 || line.scrollWidth <= line.clientWidth) return;
+    if (crumbs.length < 2) return;
+    // Measured with the last heading as wide as its text (at most 24 em):
+    // on the line it gives way first, and the parents would squeeze it out.
+    line.classList.add("is-measured");
+    const widths = crumbs.map((crumb) => crumb.getBoundingClientRect().width);
     const dots = line.querySelector(".section-dots");
     const mark = crumbs[0].nextElementSibling;
     const style = getComputedStyle(mark);
     const separator = mark.getBoundingClientRect().width + parseFloat(style.marginLeft) + parseFloat(style.marginRight);
     dots.hidden = false;
     const dotsWidth = dots.getBoundingClientRect().width - separator;
-    const from = leftOut(crumbs.map((crumb) => crumb.getBoundingClientRect().width), separator, dotsWidth, line.clientWidth);
+    line.classList.remove("is-measured");
+    const from = leftOut(widths, separator, dotsWidth, line.clientWidth);
     dots.hidden = from === 0;
     crumbs.slice(0, from).forEach((crumb) => {
       crumb.nextElementSibling.hidden = true;
@@ -1157,10 +1162,15 @@ const tableSort = {
 
   /** A click on the header cell [cell] of [table]. */
   click(table, column) {
+    // The reading cursor stays on the row it is on, wherever the sort puts it.
+    const at = reading.block === table ? reading.line : null;
     this.apply(table, nextSort(table.sort, column));
     tableHead.forget();
-    reading.redraw();
+    if (at != null) reading.restore(at);
+    else reading.redraw();
     onScroll();
+    // The matches of a find are places in the rows that moved.
+    if (finder.bar?.classList.contains("is-open")) search(finder.input.value);
   },
 
   /** The sorts on the page, to put back when the same note is drawn again. */
@@ -1530,22 +1540,49 @@ function forgetPage() {
 }
 
 /**
- * Makes the change [draw] softly: the note that leaves fades out as the new
+ * The soft change that has not drawn its note yet, or null. Until it has,
+ * the page still shows the note that leaves, and the app already has the
+ * one that comes: a click or a key there would name a line of the wrong
+ * note (a task's box sends its line and no path). So the note that leaves
+ * takes none. It is a frame, and never more than `softly` waits.
+ */
+let leaving = null;
+for (const kind of ["click", "auxclick", "keydown"]) {
+  window.addEventListener(
+    kind,
+    (event) => {
+      // A key with Command or Control is the app's, not the note's.
+      if (!leaving || event.metaKey || event.ctrlKey) return;
+      event.stopImmediatePropagation();
+      event.preventDefault();
+    },
+    true,
+  );
+}
+
+/**
+ * Makes the change [change] softly: the note that leaves fades out as the new
  * one fades in, with no movement. The new note is drawn at its place first
- * (the page's view transition takes a picture of the old one, runs [draw],
+ * (the page's view transition takes a picture of the old one, runs [change],
  * and fades between the two, in the 120 ms `reader.css` gives it). With Reduce Motion, or on a page that has no
  * view transitions, the change is made at once. A page that draws no frame
  * (a window behind another) would wait for ever: after 400 ms the change is
  * made at once. The keys are the page's all along, so none is lost.
  */
-async function softly(draw) {
-  if (motion() !== "smooth" || !document.startViewTransition || document.visibilityState !== "visible") return draw();
+async function softly(change) {
+  if (motion() !== "smooth" || !document.startViewTransition || document.visibilityState !== "visible") return change();
+  const mine = {};
+  const draw = () => {
+    if (leaving === mine) leaving = null;
+    return change();
+  };
   let transition;
   try {
     transition = document.startViewTransition(draw);
   } catch (error) {
-    return draw();
+    return change();
   }
+  leaving = mine;
   // A transition that is skipped rejects these; that is no error here.
   transition.ready.catch(() => {});
   transition.finished.catch(() => {});
@@ -1553,8 +1590,9 @@ async function softly(draw) {
   const late = new Promise((resolve) => (timer = setTimeout(resolve, 400, "late")));
   const first = await Promise.race([transition.updateCallbackDone.catch(() => {}), late]);
   clearTimeout(timer);
-  if (first !== "late") return;
-  transition.skipTransition();
+  if (first === "late") transition.skipTransition();
+  // Drawn by now in every case: [change] draws once, so this is for a
+  // transition that was late, or that ended without running it.
   draw();
 }
 
@@ -1575,6 +1613,8 @@ window.daftar = {
     closePreview();
     preview.on = note.linkPreview !== false;
     sectionBar.on = note.sectionBar !== false;
+    // A line or a heading that is gone to stops under where the bar is, not under the bar.
+    document.documentElement.classList.toggle("keeps-section-bar", sectionBar.on && !note.canvas && !note.image && !note.base);
     const root = document.documentElement.style;
     if (note.palette) document.documentElement.dataset.palette = note.palette;
     if (note.textSize) root.setProperty("--text-size", `${note.textSize}px`);
@@ -1658,7 +1698,10 @@ window.daftar = {
       if (note.folds == null && note.folded) folds.shutAll();
       folds.apply();
       timing.mark("folds");
-      tableSort.restore(sorts);
+      // A table drawn again gets its sort back. With an embed still to fill,
+      // not yet: an embed's tables are counted too, so until they are there
+      // a table's number is another table's.
+      if (!main.querySelector(".embed")) tableSort.restore(sorts);
       // A note shown again after it changed on disk (a format on leaving the
       // editor, a pull) stays where it was, and a heading or a line (back
       // from the editor) is scrolled to. The code blocks' heads and the folds
@@ -2166,6 +2209,12 @@ const reading = {
     const y = (row.top + row.bottom) / 2 - window.scrollY;
     const caret = document.caretRangeFromPoint?.(x, y);
     if (!caret || !block.contains(caret.startContainer)) return null;
+    // A table's row is a line of the file: the header, the line of dashes,
+    // then each row. A sorted row has the line it has in the file.
+    if (block.tagName === "TABLE") {
+      const cells = caret.startContainer.parentElement?.closest("tr");
+      if (cells && cells.closest("table") === block) return line + (cells.parentElement.tagName === "THEAD" ? 0 : 2 + (cells.fileOrder ?? cells.sectionRowIndex));
+    }
     const before = document.createRange();
     before.setStart(block, 0);
     before.setEnd(caret.startContainer, caret.startOffset);
@@ -2254,8 +2303,11 @@ const reading = {
     this.line = block ? Number(block.dataset.line) : null;
     const rows = block ? this.rows(block) : [];
     if (rows.length > 1 && line > this.line) {
+      // A sorted table's rows are not in the file's order: every row is asked.
+      const sorted = block.tagName === "TABLE" && Boolean(block.sort);
       for (let index = 1; index < rows.length; index++) {
         const at = this.sourceLine(block, rows, index);
+        if (sorted && (at == null || at > line || at <= this.line)) continue;
         if (at == null || at > line) break;
         this.row = index;
         this.line = at;
