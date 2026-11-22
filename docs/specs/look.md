@@ -80,9 +80,9 @@ A selection inside one paragraph shows a bar over its start (under its end when 
 | Reader in the new look | done | done | done (its own Compose reader: headings, callouts, highlights, italic and bold) |
 | `appearance.dark_palette` | done | done | done (Settings, Reading, Soft dark colours) |
 | New default size and measure | done | done (the editor has no measure yet) | not done: the phone has its own text scale and line width |
-| Editor: sizes, weights, italic, line height | done | done (branch) | not started |
+| Editor: sizes, weights, italic, line height | done | done | not started |
 | Editor: highlight, callout, quote, list markers and current line in the new look | done | done (a quote and a callout are a tint behind each line, since the view draws no panel) | not started |
-| Marks of one element at a time | done | done (branch) | not started |
+| Marks of one element at a time | done | done | not started |
 | Format bar | done (not in Neovim mode) | done (not in Neovim mode) | not started |
 | Caret in the accent, with a glide | done (Neovim mode's cursor slides already) | not started (GtkTextView draws its own caret) | not started |
 | Editor: task box and date chips, a table as a grid | not started | not started | not started |
