@@ -1131,6 +1131,7 @@ window.daftar = {
     const keep = note.keepScroll ? window.scrollY : null;
     current = note;
     const root = document.documentElement.style;
+    if (note.palette) document.documentElement.dataset.palette = note.palette;
     if (note.textSize) root.setProperty("--text-size", `${note.textSize}px`);
     if (note.fontText) root.setProperty("--font-text", note.fontText);
     // SF Pro's alternates mean other things in other fonts.

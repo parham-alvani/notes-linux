@@ -139,6 +139,7 @@ enum Rule {
 /// The keys a vault may set, each with what its value must be.
 const ALLOWED: &[(&str, Rule)] = &[
     ("appearance.theme", Rule::Choice(&["system", "light", "dark"])),
+    ("appearance.dark_palette", Rule::Choice(&["naz", "naz-soft"])),
     ("appearance.text_size", Rule::Int(10, 28)),
     ("appearance.font", Rule::Name),
     ("appearance.code_font", Rule::Name),
@@ -149,6 +150,7 @@ const ALLOWED: &[(&str, Rule)] = &[
     ("appearance.remote_images", Rule::OnlyFalse),
     ("calendar.place", Rule::Place),
     ("editor.live_preview", Rule::Bool),
+    ("editor.format_bar", Rule::Bool),
     ("editor.format_on_save", Rule::Bool),
     ("git.sync_interval", Rule::Int(0, 10_080)),
     ("git.pull_on_launch", Rule::Bool),
@@ -550,7 +552,7 @@ mod tests {
         // With neither, the default.
         let settings = Settings::resolved("", "");
         let size = settings.entries().into_iter().find(|e| e.key == "appearance.text_size").unwrap();
-        assert_eq!((size.value, size.from), (Some(Value::Int(14)), Origin::Default));
+        assert_eq!((size.value, size.from), (Some(Value::Int(16)), Origin::Default));
         let from = |settings: &Settings, key: &str| settings.entries().into_iter().find(|e| e.key == key).unwrap().from;
         assert_eq!(from(&Settings::resolved("[appearance]\ntext_size = 16\n", COMPUTER), "appearance.text_size"), Origin::Vault);
         assert_eq!(from(&Settings::resolved("", COMPUTER), "appearance.text_size"), Origin::Computer);

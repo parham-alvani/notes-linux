@@ -344,6 +344,7 @@ impl Reader {
         let object = note.as_object_mut().unwrap();
         object.insert("keepScroll".into(), json!(keep_scroll));
         object.insert("textSize".into(), json!(settings.text_size()));
+        object.insert("palette".into(), json!(if settings.soft_palette() { "soft" } else { "naz" }));
         object.insert("readingLine".into(), json!(settings.reading_line()));
         object.insert("textWidth".into(), json!(settings.text_width()));
         object.insert("remoteImages".into(), json!(settings.remote_images()));

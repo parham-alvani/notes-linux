@@ -219,16 +219,19 @@ vault_settings = true
 [appearance]
 # "system", "light" (Daftar's Daylight palette) or "dark" (naz).
 theme = "system"
-# 14, as the vault's Obsidian snippet sets it.
-text_size = 14
+# The dark theme's colours: "naz", or "naz-soft" (naz's hues with the
+# colour strength capped, for long sessions).
+dark_palette = "naz"
+# The size of a note's text, in points.
+text_size = 16
 # The font of notes, in the reader and the editor: a font family. Persian
 # always uses Vazirmatn.
 font = "Inter"
 # Code and the editor's markup.
 code_font = "JetBrains Mono"
 # The widest a line of text is in the reader, in em of the text size:
-# 46 is about 95 letters. 0 is the whole window.
-text_width = 46
+# 35 is about 70 letters. 0 is the whole window.
+text_width = 35
 # The reader's cursor marks the line being read in a paragraph of
 # many lines with a band: its strength, in percent of the accent
 # colour. 0 leaves it out, and j and k go a paragraph at a time.
@@ -256,6 +259,9 @@ place = ""
 # Away from the cursor's line, the marks (**, ==, [[ ]], #, a link's
 # address) hide, so the note reads as it will look.
 live_preview = true
+# A bar of formats (bold, italic, highlight, code, strike, link) shows
+# over the selected text.
+format_bar = true
 # Ctrl+E opens the note in Neovide's own window instead of the editor.
 neovide = false
 # Format a note you typed in with daftar-cli fmt (the vault's
@@ -470,7 +476,7 @@ mod tests {
         let file = ConfigFile::new(ConfigFile::TEMPLATE);
         assert_eq!(file.string("vault").as_deref(), Some(""));
         assert_eq!(file.string("appearance.theme").as_deref(), Some("system"));
-        assert_eq!(file.int("appearance.text_size"), Some(14));
+        assert_eq!(file.int("appearance.text_size"), Some(16));
         assert_eq!(file.string("appearance.code_font").as_deref(), Some("JetBrains Mono"));
         assert_eq!(file.int("appearance.reading_line"), Some(18));
         assert_eq!(file.bool("git.pull_on_launch"), Some(true));
