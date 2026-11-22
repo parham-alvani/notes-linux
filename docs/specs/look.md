@@ -543,16 +543,16 @@ Ported by name (snake case in Rust, camelCase in Swift and Kotlin). Each is a pu
 | --- | --- | --- | --- |
 | Reader in the new look | done | done | done (its own Compose reader: headings, callouts, highlights, italic and bold) |
 | `appearance.dark_palette` | done | done | done (Settings, Reading, Soft dark colours) |
-| New default size and measure | done | done (the editor has no measure yet) | not done: the phone has its own text scale and line width |
+| New default size and measure | done | done | not done: the phone has its own text scale and line width |
 | Editor: sizes, weights, italic, line height | done | done | not started |
 | Editor: highlight, callout, quote, list markers and current line in the new look | done | done (a quote and a callout are a tint behind each line, since the view draws no panel) | not started |
 | Marks of one element at a time | done | done | not started |
 | Format bar | done (not in Neovim mode) | done (not in Neovim mode) | not started |
-| Caret in the accent, with a glide | done (Neovim mode's cursor slides already) | not started (GtkTextView draws its own caret) | not started |
-| Part 2: editor, the task box | not started | not started | not started |
-| Part 2: editor, date chips | not started | not started | not started |
+| Caret in the accent, with a glide | done (Neovim mode's cursor slides already) | done (drawn by the editor over the text; GTK's own caret is clear) | not started |
+| Part 2: editor, the task box | not started | done (no status menu on a right click: the editor has none; in a Persian line whose syntax starts Latin the box is where GTK puts the marks) | not started |
+| Part 2: editor, date chips | not started | done (a date in a line with Persian before it is drawn by GTK's bidi order, `30-10-2026`: a tag cannot isolate it) | not started |
 | Part 2: editor, a table as a grid | not started | not started | not in part 2 |
-| Part 2: editor, callouts and code blocks as the reader draws them | not started | not started | not started (the callout; the code block's panel is not in part 2) |
+| Part 2: editor, callouts and code blocks as the reader draws them | not started | done (code in a callout keeps part 1's tint; a code line that starts Persian is left-aligned but still reads right to left; a quote is still a tint) | not started (the callout; the code block's panel is not in part 2) |
 | Part 2: editor, the slash bar | not started (a menu today, not filtered) | not started (a filtered list today, with the old items) | not in part 2 |
 | Part 2: editor, focus mode (`editor.focus`) | not started (it dims today, in the faint colour, as its own key) | not started | not in part 2 |
 | Part 2: link preview, reader and editor | not started (the reader has a card after 450 ms) | not started (the reader has a card after 450 ms) | out of scope |
@@ -560,6 +560,6 @@ Ported by name (snake case in Rust, camelCase in Swift and Kotlin). Each is a pu
 | Part 2: reader, a table header that stays, and the sort | not started | not started | not started |
 | Part 2: reader, footnote popover | not started (a card on hover today) | not started (a card on hover today) | not started |
 | Part 2: reader, the soft change | not started | not started (reading and editing crossfade today) | not started |
-| Part 2: Linux, the caret in the accent and the editor's measure | does not apply | not started | does not apply |
+| Part 2: Linux, the caret in the accent and the editor's measure | does not apply | done | does not apply |
 | Part 2: Android, the editor with part 1, the task box and date chips | does not apply | does not apply | not started (the phone has no editor of a note's text yet) |
 | One palette file with generators | not started | not started | not started |
