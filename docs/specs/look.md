@@ -63,6 +63,10 @@ Reduce Motion stops the slide, the glide and the fade.
 
 The marks of one element (`**`, `==`, a backtick, `[[ ]]`) are shown only while the caret is inside that element. A heading's `#` marks are shown on the caret's line. A task's box is drawn as soon as `- [ ] ` is complete, and a click on it changes the status. A callout, a table and a code block are drawn in the editor as the reader draws them.
 
+## The format bar
+
+A selection inside one paragraph shows a bar over its start (under its end when there is no room above): bold, italic, highlight, code, strike and a link to a note. A button runs the same command as its key, so it is one undo step. The bar never takes the keys from the text, and `editor.format_bar = false` turns it off. It is not shown in Neovim mode or with many cursors.
+
 ## Tests every app has
 
 - naz, soft: the accent `#ffb040` becomes `#e9b87d`, heading 2 `#ffff88` becomes `#e3e499`, the green `#20ffa0` becomes `#a3ecbf`, the red `#ff5070` becomes `#e1717e`, the grey `#a8a8a0` stays.
@@ -77,7 +81,8 @@ The marks of one element (`**`, `==`, a backtick, `[[ ]]`) are shown only while 
 | `appearance.dark_palette` | done (branch) | not started | not started |
 | New default size and measure | done (branch) | not started | not started |
 | Editor: sizes, weights, italic, line height | done (branch) | not started | not started |
-| Editor: highlight, callout and quote in the new look | not started | not started | not started |
-| Caret glide and fade, per-element marks, format bar | not started | not started | not started |
+| Editor: highlight, callout, quote, list markers and current line in the new look | done (branch) | not started | not started |
+| Caret in the accent with a glide, per-element marks, format bar | done (branch; not in Neovim mode, whose cursor slides already) |
+| Editor: task box and date chips, a table as a grid | not started | not started | not started |
 | Reader: section bar, table header and sort, footnote popover | not started | not started | not started |
 | One palette file with generators | not started | not started | not started |
