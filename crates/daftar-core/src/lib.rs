@@ -20,6 +20,7 @@ pub mod drill;
 pub mod due_tasks;
 pub mod editor_commands;
 pub mod embed_size;
+pub mod focus_paragraph;
 pub mod folder_overview;
 pub mod fuzzy;
 pub mod git;
@@ -31,6 +32,7 @@ pub mod inbox;
 pub mod jalali;
 pub mod job_search;
 pub mod line_diff;
+pub mod link_preview;
 pub mod link_resolver;
 pub mod live_preview;
 pub mod markdown_format;
@@ -99,6 +101,7 @@ pub use detected::{Detected, DetectedItem, DetectedKind};
 pub use drill::{Card, Drill, DrillState, Rating, Review};
 pub use due_tasks::DueTasks;
 pub use editor_commands::{EditorCommands, Return, Snippet, TextEdit};
+pub use focus_paragraph::FocusParagraph;
 pub use folder_overview::FolderOverview;
 pub use fuzzy::{Fuzzy, Match};
 pub use git::{Conflicted, Diagnosis, Git, GitFailure, GitStatus, Resolution, Revision, Side, Stopped, SyncFailure, Synced};
@@ -109,15 +112,16 @@ pub use iconic::{Icon, Iconic};
 pub use inbox::{Inbox, InboxItem};
 pub use job_search::{Application, ChannelCount, JobKeys, JobSearch};
 pub use line_diff::{Kind as DiffKind, Line as DiffLine, LineDiff};
+pub use link_preview::{LinkCard, LinkPreview, LinkTarget, PreviewBody};
 pub use link_resolver::LinkResolver;
 pub use live_preview::{
     Above as PreviewAbove, Block as PreviewBlock, BlockLine as PreviewLine, BoxLook, CalloutHead, Chip, ChipKind, CodeRole, Fence,
-    LivePreview, Measure, Panel, PanelKind, Parts as PreviewParts, TaskBox,
+    GridLine, GridRole, LivePreview, Measure, Panel, PanelKind, Parts as PreviewParts, TaskBox,
 };
 pub use markdown_format::{FormatConfig, MarkdownFormat, ProseWrap};
 pub use markdown_highlighter::{BlockState, Kind as HighlightKind, MarkdownHighlighter, Span as HighlightSpan};
 pub use markdown_lint::{LintConfig, MarkdownLint, Problem as LintProblem};
-pub use markdown_table::{MarkdownTable, TableTab};
+pub use markdown_table::{MarkdownTable, TableReturn, TableTab};
 pub use message_pack::{MessagePack, MsgFailure, MsgStream, MsgValue};
 pub use month_grid::{Calendar, Month};
 pub use neovim::{BufferMirror, MirrorEdit, NeovimClient, NeovimFailure, NeovimNotification, VimKeys, VimModifiers};

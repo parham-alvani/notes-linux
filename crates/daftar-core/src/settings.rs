@@ -148,10 +148,13 @@ const ALLOWED: &[(&str, Rule)] = &[
     ("appearance.fold_sections", Rule::Choice(&["vault", "always", "never"])),
     ("appearance.persian_calendar", Rule::Bool),
     ("appearance.remote_images", Rule::OnlyFalse),
+    ("appearance.link_preview", Rule::Bool),
     ("calendar.place", Rule::Place),
     ("editor.live_preview", Rule::Bool),
     ("editor.format_bar", Rule::Bool),
     ("editor.format_on_save", Rule::Bool),
+    ("editor.slash_menu", Rule::Bool),
+    ("editor.focus", Rule::Bool),
     ("git.sync_interval", Rule::Int(0, 10_080)),
     ("git.pull_on_launch", Rule::Bool),
     ("git.name", Rule::Name),
@@ -662,6 +665,33 @@ mod tests {
         assert_eq!(Settings::resolved_in("[capture]\ntarget = \"daily\"\n", "", &root).string("capture.target").as_deref(), Some("daily"));
         assert_eq!(capture.string("capture.heading").as_deref(), Some("../Ideas"));
         assert_eq!(capture.string("scratchpad.folder").as_deref(), Some("Scratch"));
+    }
+
+    /// docs/specs/look.md, part 2, case 23, for the keys this app has: the
+    /// slash bar, focus mode and the link preview.
+    #[test]
+    fn the_new_settings_have_their_defaults() {
+        let template = ConfigFile::new(ConfigFile::TEMPLATE);
+        assert_eq!(template.bool("editor.slash_menu"), Some(true));
+        assert_eq!(template.bool("appearance.link_preview"), Some(true));
+        assert_eq!(template.bool("editor.focus"), Some(false));
+        // With no setting each is as not there, and the app takes its default.
+        let none = Settings::resolved("", "");
+        assert_eq!((none.bool("editor.slash_menu"), none.bool("appearance.link_preview"), none.bool("editor.focus")), (None, None, None));
+        // A vault that sets each is followed, and none is refused.
+        let vault = "[editor]\nslash_menu = false\nfocus = true\n\n[appearance]\nlink_preview = false\n";
+        let settings = Settings::resolved(vault, "[editor]\nslash_menu = true\nfocus = false\n");
+        assert_eq!(settings.bool("editor.slash_menu"), Some(false));
+        assert_eq!(settings.bool("editor.focus"), Some(true));
+        assert_eq!(settings.bool("appearance.link_preview"), Some(false));
+        for key in ["editor.slash_menu", "editor.focus", "appearance.link_preview"] {
+            assert!(settings.is_from_vault(key), "{key}");
+        }
+        assert!(settings.refused().is_empty());
+        // A value a key may not have is as not there.
+        let wrong = Settings::resolved("[editor]\nslash_menu = \"yes\"\n", "[editor]\nslash_menu = false\n");
+        assert_eq!(wrong.bool("editor.slash_menu"), Some(false));
+        assert!(!wrong.is_from_vault("editor.slash_menu") && wrong.refused().is_empty());
     }
 
     #[test]

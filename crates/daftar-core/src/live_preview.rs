@@ -1,6 +1,6 @@
 //! What live preview draws over a note's text in the editor, part 2 of
-//! `docs/specs/look.md`: a task's box, the date chips, a callout's panel and
-//! a code block's panel. Every rule here is over text only, in **character**
+//! `docs/specs/look.md`: a task's box, the date chips, a callout's panel, a
+//! code block's panel and a table's grid. Every rule here is over text only, in **character**
 //! ranges, so an app with any toolkit draws the same parts. A drawn part is a
 //! way to see the text, never the text: nothing here changes a line but
 //! `click`, which is the task toggle.
@@ -17,6 +17,7 @@ use regex::Regex;
 
 use crate::day::Day;
 use crate::markdown_highlighter::{BlockState, MarkdownHighlighter, inline_code};
+use crate::markdown_table::MarkdownTable;
 use crate::task_line::TaskLine;
 use crate::task_status::{TaskStatuses, TaskType};
 
@@ -147,6 +148,31 @@ pub struct Parts {
     pub boxes: Vec<TaskBox>,
     pub chips: Vec<Chip>,
     pub lines: Vec<BlockLine>,
+    /// The lines that are a table's rows in Markdown, without their line
+    /// endings: outside a quote, a list item and a code block. `grid_lines`
+    /// says which of them are drawn as a grid.
+    pub rows: Vec<Range<usize>>,
+}
+
+/// What a line of a grid is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridRole {
+    Header,
+    /// `| --- | :-: |`: not drawn as text, it is the hairline under the header.
+    Delimiter,
+    Row,
+}
+
+/// One line of a table drawn as a grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GridLine {
+    /// The line's characters, without its line ending.
+    pub range: Range<usize>,
+    pub role: GridRole,
+    /// The table's last line: the box ends under it.
+    pub last: bool,
+    /// The pipes between its cells: each is drawn as a hairline, not as a character.
+    pub pipes: Vec<usize>,
 }
 
 /// One panel of a note: its lines, from 0, and what it is.
@@ -430,6 +456,9 @@ impl LivePreview {
                     let fence = Self::fence(line).map(|f| Fence { marks: shift(f.marks), word: f.word.map(shift) });
                     parts.lines.push(BlockLine { range, block: Block::Code { role: CodeRole::Open, fence } });
                 } else if markdown {
+                    if MarkdownTable::is_row(line) {
+                        parts.rows.push(range.clone());
+                    }
                     Self::inline(line, range.start, today, &statuses, &mut parts);
                 }
                 continue;
@@ -465,6 +494,48 @@ impl LivePreview {
             }
         }
         parts
+    }
+
+    /// The lines of the tables drawn as a grid among [rows], the row lines
+    /// `parts` found in [lines], which start at character [offset]. A table
+    /// is a grid by all of its rows (`MarkdownTable::is_grid`), so the rows
+    /// right [above] the first line given and right [below] the last are
+    /// given too, when those lines are rows: a row read again on its own
+    /// after a key still knows its table.
+    pub fn grid_lines(lines: &str, offset: usize, rows: &[Range<usize>], above: &[String], below: &[String]) -> Vec<GridLine> {
+        let chars: Vec<char> = lines.chars().collect();
+        let end = offset + chars.len() - usize::from(chars.last() == Some(&'\n'));
+        let text = |row: &Range<usize>| chars[row.start - offset..row.end - offset].iter().collect::<String>();
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < rows.len() {
+            // One table: the rows with no other line between them.
+            let mut next = at + 1;
+            while next < rows.len() && rows[next].start == rows[next - 1].end + 1 {
+                next += 1;
+            }
+            let run = &rows[at..next];
+            let before: &[String] = if run[0].start == offset { above } else { &[] };
+            let after: &[String] = if run[run.len() - 1].end >= end { below } else { &[] };
+            let table: Vec<String> = before.iter().cloned().chain(run.iter().map(text)).chain(after.iter().cloned()).collect();
+            if MarkdownTable::is_grid(&table) {
+                for (index, row) in run.iter().enumerate() {
+                    let place = before.len() + index;
+                    out.push(GridLine {
+                        range: row.clone(),
+                        role: match place {
+                            0 => GridRole::Header,
+                            1 => GridRole::Delimiter,
+                            _ => GridRole::Row,
+                        },
+                        last: place + 1 == table.len(),
+                        pipes: MarkdownTable::pipes(&table[place]).into_iter().map(|pipe| row.start + pipe).collect(),
+                    });
+                }
+            }
+            at = next;
+        }
+        out
     }
 
     /// The box and the chips of one line of Markdown, outside its inline code.
@@ -705,6 +776,41 @@ mod tests {
         assert_eq!(LivePreview::fence("~~~~ py"), Some(Fence { marks: 0..5, word: Some(5..7) }));
         let quoted = LivePreview::panels("> [!note]\n> ```\n> a\n> ```\n");
         assert_eq!(quoted, [Panel { lines: 0..4, kind: PanelKind::Callout { kind: "note".into(), title: "Note".into() } }]);
+    }
+
+    /// The grid lines of a whole note, as (line's start, role, last).
+    fn grid(text: &str, above: &[&str], below: &[&str]) -> Vec<(usize, GridRole, bool)> {
+        let parts = LivePreview::parts(text, 0, &BlockState::Normal, &Above::Nothing, false, today());
+        let own = |lines: &[&str]| lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+        LivePreview::grid_lines(text, 0, &parts.rows, &own(above), &own(below))
+            .into_iter()
+            .map(|l| (l.range.start, l.role, l.last))
+            .collect()
+    }
+
+    #[test]
+    fn a_table_is_a_grid_only_with_its_delimiter_row() {
+        use GridRole::{Delimiter, Header, Row};
+        let table = "| A | B |\n| --- | --- |\n| 1 | 2 |\n";
+        assert_eq!(grid(table, &[], &[]), [(0, Header, false), (10, Delimiter, false), (24, Row, true)]);
+        assert_eq!(grid("| A | B |\n", &[], &[]), []);
+        assert_eq!(grid("> | A | B |\n> | --- | --- |\n> | 1 | 2 |\n", &[], &[]), []);
+        assert_eq!(grid("- | A | B |\n  | --- | --- |\n", &[], &[]), []);
+        assert_eq!(grid(&format!("```\n{table}```\n"), &[], &[]), []);
+        let long = format!("{table}{}", "| 3 | 4 |\n".repeat(200));
+        assert_eq!(grid(&long, &[], &[]), []);
+        assert_eq!(grid(&long[..long.len() - 10], &[], &[]).len(), 202);
+        // Two tables with text between them, and the pipes of a line.
+        let two = grid("| A |\n| - |\n\nx\n| B |\n| --- |\n| 1 |", &[], &[]);
+        assert_eq!(two, [(15, Header, false), (21, Delimiter, false), (29, Row, true)]);
+        let parts = LivePreview::parts(table, 100, &BlockState::Normal, &Above::Nothing, false, today());
+        assert_eq!(LivePreview::grid_lines(table, 100, &parts.rows, &[], &[])[0].pipes, [100, 104, 108]);
+        // One row read on its own knows its table by the rows above and below it.
+        assert_eq!(grid("| 1 | 2 |\n", &["| A | B |", "| --- | --- |"], &[]), [(0, Row, true)]);
+        assert_eq!(grid("| 1 | 2 |\n", &["| A | B |", "| --- | --- |"], &["| 3 | 4 |"]), [(0, Row, false)]);
+        assert_eq!(grid("| A | B |\n", &[], &["| --- | --- |"]), [(0, Header, false)]);
+        assert_eq!(grid("| --- | --- |\n", &["| A | B |"], &[]), [(0, Delimiter, true)]);
+        assert_eq!(grid("| 1 | 2 |\n", &["| A | B |"], &[]), []);
     }
 
     #[test]

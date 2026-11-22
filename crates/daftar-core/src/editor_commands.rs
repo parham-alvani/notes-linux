@@ -13,6 +13,8 @@ use chrono::NaiveDateTime;
 use regex::Regex;
 
 use crate::day::Day;
+use crate::fuzzy::Fuzzy;
+use crate::markdown_highlighter::{BlockState, Kind as HighlightKind, MarkdownHighlighter};
 use crate::task_line::TaskLine;
 use crate::vault::Vault;
 
@@ -205,10 +207,13 @@ impl EditorCommands {
         lines.join("\n")
     }
 
+    /// The items of the slash bar, in the order they are listed
+    /// (`docs/specs/look.md`, part 2). A callout puts the caret in its
+    /// title, and the yellow highlight writes no circle: it is the default.
     pub fn slash_commands(today: Day, time: &str) -> Vec<Snippet> {
         let today = today.to_string();
         let s = Snippet::new;
-        vec![
+        let mut items = vec![
             s("h1", "Heading 1", "Text", "textformat.size.larger", "orange", "# ", None, true),
             s("h2", "Heading 2", "Text", "textformat.size", "vividYellow", "## ", None, true),
             s("h3", "Heading 3", "Text", "textformat.size.smaller", "blue", "### ", None, true),
@@ -226,10 +231,28 @@ impl EditorCommands {
             s("bullet", "Bulleted list", "Lists", "list.bullet", "aqua", "- ", None, true),
             s("number", "Numbered list", "Lists", "list.number", "aqua", "1. ", None, true),
             s("quote", "Quote", "Blocks", "text.quote", "warmGrey", "> ", None, true),
-            s("note", "Note callout", "Blocks", "pencil", "blue", "> [!note] \n> ", None, true),
-            s("tip", "Tip callout", "Blocks", "flame.fill", "chartreuse", "> [!tip] \n> ", None, true),
-            s("warning", "Warning callout", "Blocks", "exclamationmark.triangle.fill", "orange", "> [!warning] \n> ", None, true),
-            s("danger", "Danger callout", "Blocks", "bolt.fill", "red", "> [!danger] \n> ", None, true),
+        ];
+        let callout = |id: &str, title: &str, kind: &str, symbol: &str, color: &str| {
+            let head = format!("> [!{kind}] ");
+            s(id, title, "Blocks", symbol, color, &format!("{head}\n> "), Some(head.len()), true)
+        };
+        items.push(callout("callout", "Callout", "note", "text.bubble", "blue"));
+        for (kind, title, symbol, color) in [
+            ("note", "Note callout", "pencil", "blue"),
+            ("info", "Info callout", "info.circle", "blue"),
+            ("tip", "Tip callout", "flame.fill", "chartreuse"),
+            ("important", "Important callout", "exclamationmark.circle", "chartreuse"),
+            ("warning", "Warning callout", "exclamationmark.triangle.fill", "orange"),
+            ("danger", "Danger callout", "bolt.fill", "red"),
+            ("example", "Example callout", "list.bullet.rectangle", "purple"),
+            ("question", "Question callout", "questionmark.circle", "yellow"),
+            ("success", "Success callout", "checkmark.circle", "green"),
+            ("summary", "Summary callout", "doc.plaintext", "mint"),
+            ("todo", "Todo callout", "checkmark.circle", "vividYellow"),
+        ] {
+            items.push(callout(kind, title, kind, symbol, color));
+        }
+        items.extend([
             s("code", "Code block", "Blocks", "chevron.left.forwardslash.chevron.right", "pink", "```\n\n```", Some(4), true),
             s(
                 "mermaid",
@@ -242,6 +265,8 @@ impl EditorCommands {
                 true,
             ),
             s("math", "Math block", "Blocks", "function", "purple", "$$\n\n$$", Some(3), true),
+            s("tasks", "Tasks query", "Blocks", "checklist", "orange", "```tasks\nnot done\ndue before tomorrow\n```", None, true),
+            // The caret before the first header cell's word.
             s(
                 "table",
                 "Table",
@@ -249,22 +274,67 @@ impl EditorCommands {
                 "tablecells",
                 "green",
                 "| Column | Column |\n| ------ | ------ |\n|        |        |",
-                Some(42),
+                Some(2),
                 true,
             ),
-            s("tasks", "Tasks query", "Blocks", "checklist", "orange", "```tasks\nnot done\ndue before tomorrow\n```", None, true),
-            s("divider", "Divider", "Blocks", "minus", "grey", "---\n", None, true),
+            s("divider", "Rule", "Blocks", "minus", "grey", "---\n", None, true),
             s("link", "Link to a note", "Links", "link", "aqua", "[[]]", Some(2), false),
             s("embed", "Embed a note or a file", "Links", "photo.on.rectangle", "pink", "![[]]", Some(3), false),
             s("date", "Today's date", "Insert", "calendar", "orange", &today, None, false),
             s("time", "The time now", "Insert", "clock", "blue", time, None, false),
-            s("red", "Red highlight", "Highlight", "highlighter", "red", "==🔴 ==", Some(5), false),
-            s("orange", "Orange highlight", "Highlight", "highlighter", "orange", "==🟠 ==", Some(5), false),
-            s("yellow", "Yellow highlight", "Highlight", "highlighter", "vividYellow", "==🟡 ==", Some(5), false),
-            s("green", "Green highlight", "Highlight", "highlighter", "green", "==🟢 ==", Some(5), false),
-            s("blue", "Blue highlight", "Highlight", "highlighter", "blue", "==🔵 ==", Some(5), false),
-            s("purple", "Purple highlight", "Highlight", "highlighter", "purple", "==🟣 ==", Some(5), false),
-        ]
+            // The caret after the circle: two UTF-16 units each.
+            s("red", "Red highlight", "Highlight", "highlighter", "red", "==🔴==", Some(4), false),
+            s("orange", "Orange highlight", "Highlight", "highlighter", "orange", "==🟠==", Some(4), false),
+            s("yellow", "Yellow highlight", "Highlight", "highlighter", "vividYellow", "====", Some(2), false),
+            s("green", "Green highlight", "Highlight", "highlighter", "green", "==🟢==", Some(4), false),
+            s("blue", "Blue highlight", "Highlight", "highlighter", "blue", "==🔵==", Some(4), false),
+            s("purple", "Purple highlight", "Highlight", "highlighter", "purple", "==🟣==", Some(4), false),
+        ]);
+        items
+    }
+
+    /// The items of [commands] the slash bar shows for [query], what is
+    /// typed after the `/`: those whose title or id it matches as the
+    /// palette matches (`Fuzzy::matches`), best first, and in the list's
+    /// order when two match the same. An empty query shows every item.
+    pub fn slash_matches(query: &str, commands: &[Snippet]) -> Vec<Snippet> {
+        let mut found: Vec<(i64, usize)> = commands
+            .iter()
+            .enumerate()
+            .filter_map(|(order, item)| {
+                let score =
+                    [&item.title, &item.id].into_iter().filter_map(|text| Fuzzy::matches(query, text)).map(|hit| hit.score).max()?;
+                Some((score, order))
+            })
+            .collect();
+        found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        found.into_iter().map(|(_, order)| commands[order].clone()).collect()
+    }
+
+    /// Whether the `/` typed just before character [location] opens the
+    /// slash bar. [lines] are whole lines of the note that start at
+    /// character [offset] in the block [state] and hold the `/`. It opens
+    /// at the start of a line or after a space, never in a code block,
+    /// inline code, the front matter, math or a comment, in Neovim mode or
+    /// with `editor.slash_menu` off.
+    pub fn slash_bar_opens(lines: &str, offset: usize, location: usize, state: &BlockState, neovim: bool, enabled: bool) -> bool {
+        if !enabled || neovim || location <= offset || !Self::opens_slash_menu(lines, location - offset) {
+            return false;
+        }
+        let slash = location - 1;
+        let (spans, _) = MarkdownHighlighter::spans_of_lines(lines, offset, state.clone());
+        !spans.iter().any(|span| {
+            span.range.contains(&slash)
+                && matches!(
+                    span.kind,
+                    HighlightKind::Code
+                        | HighlightKind::CodeBlock
+                        | HighlightKind::Fence
+                        | HighlightKind::FrontMatter
+                        | HighlightKind::Math
+                        | HighlightKind::Comment
+                )
+        })
     }
 
     /// Whether the `/` just before character [location] opens the menu: at
@@ -280,13 +350,21 @@ impl EditorCommands {
     /// The edit that puts [snippet] where the `/` at character [slash] is.
     /// The selection is the cursor, empty.
     pub fn apply(snippet: &Snippet, slash: usize, text: &str) -> TextEdit {
+        Self::apply_over(snippet, slash..slash + 1, text)
+    }
+
+    /// The edit that puts [snippet] in place of [typed], the `/` and what
+    /// was typed after it to find the item, as one step. [text] may be the
+    /// note or only the line that holds the `/`, with [typed] in its characters.
+    pub fn apply_over(snippet: &Snippet, typed: Range<usize>, text: &str) -> TextEdit {
         let chars: Vec<char> = text.chars().collect();
+        let slash = typed.start;
         let start = line_start(&chars, slash);
         let before: String = chars[start..slash].iter().collect();
         // A block after other text on the line starts a line of its own.
         let lead = if snippet.block && !before.trim().is_empty() { "\n" } else { "" };
         let cursor = slash + lead.len() + snippet.cursor;
-        TextEdit { range: slash..slash + 1, text: format!("{lead}{}", snippet.text), selection: cursor..cursor }
+        TextEdit { range: typed, text: format!("{lead}{}", snippet.text), selection: cursor..cursor }
     }
 
     /// Ctrl+Alt+1 to Ctrl+Alt+6: the line as a heading of [level]; the same
@@ -516,8 +594,10 @@ mod tests {
         assert_eq!(edit.text, "[[]]");
         assert_eq!(edit.selection.start, 6);
         assert_eq!(EditorCommands::apply(&snippet("date"), 4, text).text, "2026-10-25");
-        // After `==🔴 `: five UTF-16 units, four characters.
-        assert_eq!(EditorCommands::apply(&snippet("red"), 4, text).selection.start, 4 + 4);
+        // After `==🔴`: four UTF-16 units, three characters.
+        assert_eq!(EditorCommands::apply(&snippet("red"), 4, text).selection.start, 4 + 3);
+        // Yellow is the default colour: no circle is written.
+        assert_eq!((snippet("yellow").text.as_str(), snippet("yellow").cursor), ("====", 2));
     }
 
     #[test]
@@ -536,13 +616,78 @@ mod tests {
         for snippet in commands() {
             assert!(snippet.cursor <= snippet.text.chars().count(), "{}", snippet.id);
         }
-        // The table's cursor is in its first empty cell; the task's before its date.
+        // The table's cursor is before its first header cell; the task's before its date.
         let table = snippet("table");
-        assert_eq!(substring(&table.text, table.cursor - 2..table.cursor), "| ");
+        assert_eq!(substring(&table.text, table.cursor..table.cursor + 6), "Column");
+        assert_eq!(crate::MarkdownTable::format(&table.text.lines().map(str::to_string).collect::<Vec<_>>()).join("\n"), table.text);
         let mermaid = snippet("mermaid");
         assert!(substring(&mermaid.text, 0..mermaid.cursor).ends_with("A --> B"));
         let task = snippet("task-today");
         assert_eq!(substring(&task.text, task.cursor..task.text.chars().count()), " 📅 2026-10-25");
+    }
+
+    // docs/specs/look.md, part 2, cases 14 to 16.
+
+    #[test]
+    fn the_slash_bar_opens_only_at_a_words_start() {
+        let opens = |text: &str| EditorCommands::slash_bar_opens(text, 0, text.chars().count(), &BlockState::Normal, false, true);
+        assert!(opens("/") && opens("a /") && opens("one\n/"));
+        assert!(!opens("a/") && !opens("https:/") && !opens("10/"));
+        // Not in a code block, inline code or the front matter.
+        assert!(!EditorCommands::slash_bar_opens("/", 4, 5, &BlockState::Fence("```".into()), false, true));
+        assert!(!EditorCommands::slash_bar_opens("a `b /` c", 0, 6, &BlockState::Normal, false, true));
+        assert!(EditorCommands::slash_bar_opens("a `b` /", 0, 7, &BlockState::Normal, false, true));
+        assert!(!EditorCommands::slash_bar_opens("---\ntitle: /", 0, 12, &BlockState::Normal, false, true));
+        assert!(!EditorCommands::slash_bar_opens("title: /", 4, 12, &BlockState::FrontMatter, false, true));
+        assert!(!EditorCommands::slash_bar_opens("$$\n/", 0, 4, &BlockState::Normal, false, true));
+        // Not in Neovim mode, and not with `editor.slash_menu = false`.
+        assert!(!EditorCommands::slash_bar_opens("/", 0, 1, &BlockState::Normal, true, true));
+        assert!(!EditorCommands::slash_bar_opens("/", 0, 1, &BlockState::Normal, false, false));
+        // In lines that start further down the note.
+        assert!(EditorCommands::slash_bar_opens("a /", 40, 43, &BlockState::Normal, false, true));
+    }
+
+    #[test]
+    fn the_slash_bar_filters_by_title_and_id() {
+        let first = |query: &str| EditorCommands::slash_matches(query, &commands()).first().map(|item| item.title.clone());
+        let titles = |query: &str| EditorCommands::slash_matches(query, &commands()).into_iter().map(|item| item.title).collect::<Vec<_>>();
+        assert_eq!(first("tab").as_deref(), Some("Table"));
+        assert_eq!(first("h2").as_deref(), Some("Heading 2"));
+        assert_eq!(first("rule").as_deref(), Some("Rule"));
+        assert_eq!(first("divider").as_deref(), Some("Rule"));
+        let callouts = titles("call");
+        // Callout, then the eleven kinds.
+        assert_eq!((callouts[0].as_str(), callouts.len()), ("Callout", 12));
+        assert!(callouts[1..].iter().all(|title| title.ends_with(" callout")));
+        assert_eq!(titles("zzz"), Vec::<String>::new());
+        // With nothing typed every item shows, in the list's order.
+        assert_eq!(first("").as_deref(), Some("Heading 1"));
+        assert_eq!(titles(""), commands().into_iter().map(|item| item.title).collect::<Vec<_>>());
+        let ids: Vec<String> = commands().into_iter().map(|item| item.id).collect();
+        assert_eq!(
+            ids.join(" "),
+            "h1 h2 h3 task task-today bullet number quote callout note info tip important warning danger example question success \
+             summary todo code mermaid math tasks table divider link embed date time red orange yellow green blue purple"
+        );
+    }
+
+    #[test]
+    fn enter_inserts_and_escape_leaves_the_slash() {
+        // The line with the `/` and what was typed after it, and the item picked: the text and the caret after.
+        let insert = |line: &str, id: &str| {
+            let slash = line.chars().position(|c| c == '/').unwrap();
+            let picked = EditorCommands::slash_matches(&substring(line, slash + 1..line.chars().count()), &commands());
+            assert_eq!(picked[0].id, id, "{line}");
+            let edit = EditorCommands::apply_over(&picked[0], slash..line.chars().count(), line);
+            (replaced(line, &edit), edit.selection.start)
+        };
+        assert_eq!(insert("/task", "task"), ("- [ ] ".to_string(), 6));
+        assert_eq!(insert("/warn", "warning"), ("> [!warning] \n> ".to_string(), 13));
+        assert_eq!(insert("/rule", "divider"), ("---\n".to_string(), 4));
+        assert_eq!(insert("text /code", "code"), ("text \n```\n\n```".to_string(), 10));
+        assert_eq!(insert("See /link", "link"), ("See [[]]".to_string(), 6));
+        // Escape inserts nothing: the `/` and what was typed stay as they are.
+        assert_eq!(EditorCommands::slash_matches("tab", &commands())[0].id, "table");
     }
 
     // ExtractTests
