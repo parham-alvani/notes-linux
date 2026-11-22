@@ -77,14 +77,14 @@ A selection inside one paragraph shows a bar over its start (under its end when 
 
 | Part | macOS | Linux | Android |
 | --- | --- | --- | --- |
-| Reader page in the new look | done (branch) | done (branch) | not started |
-| `appearance.dark_palette` | done (branch) | done (branch) | not started |
-| New default size and measure | done (branch) | done (branch; the editor has no measure yet) | not started |
-| Editor: sizes, weights, italic, line height | done (branch) | done (branch) | not started |
-| Editor: highlight, callout, quote, list markers and current line in the new look | done (branch) | done (branch; a quote and a callout are a tint behind each line, since the view draws no panel) | not started |
-| Marks of one element at a time | done (branch) | done (branch) | not started |
-| Format bar | done (branch; not in Neovim mode) | done (branch; not in Neovim mode) | not started |
-| Caret in the accent, with a glide | done (branch; Neovim mode's cursor slides already) | not started (GtkTextView draws its own caret) | not started |
+| Reader in the new look | done | done | done (its own Compose reader: headings, callouts, highlights, italic and bold) |
+| `appearance.dark_palette` | done | done | done (Settings, Reading, Soft dark colours) |
+| New default size and measure | done | done (the editor has no measure yet) | not done: the phone has its own text scale and line width |
+| Editor: sizes, weights, italic, line height | done | done (branch) | not started |
+| Editor: highlight, callout, quote, list markers and current line in the new look | done | done (a quote and a callout are a tint behind each line, since the view draws no panel) | not started |
+| Marks of one element at a time | done | done (branch) | not started |
+| Format bar | done (not in Neovim mode) | done (not in Neovim mode) | not started |
+| Caret in the accent, with a glide | done (Neovim mode's cursor slides already) | not started (GtkTextView draws its own caret) | not started |
 | Editor: task box and date chips, a table as a grid | not started | not started | not started |
 | Reader: section bar, table header and sort, footnote popover | not started | not started | not started |
 | One palette file with generators | not started | not started | not started |
