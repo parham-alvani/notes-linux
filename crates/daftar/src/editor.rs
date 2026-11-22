@@ -33,8 +33,8 @@ use gtk::{gdk, glib};
 use sourceview5::prelude::*;
 
 use daftar_core::{
-    BufferMirror, Candidate, Day, EditorCommands, HtmlMarkdown, LivePreview, MarkdownTable, NoteFormat, QuickSwitcher, Return, Sections,
-    Snippet, TableReturn, TableTab, TaskSorter, Vault, VaultMoves,
+    BlockState, BufferMirror, Candidate, Day, EditorCommands, HtmlMarkdown, LivePreview, MarkdownHighlighter, MarkdownTable, NoteFormat,
+    QuickSwitcher, Return, Sections, Snippet, TableReturn, TableTab, TaskSorter, Vault, VaultMoves,
 };
 
 #[path = "editor_link_card.rs"]
@@ -1134,7 +1134,13 @@ impl Editor {
     /// lines, and which of them holds the cursor.
     fn table_block(&self) -> Option<(Range<usize>, Vec<String>, usize)> {
         let line = self.current_line();
-        if !MarkdownTable::is_row(&self.slice(line)) {
+        if !MarkdownTable::is_row(&self.slice(line.clone())) {
+            return None;
+        }
+        // A `|` line in a code block, the front matter, math or a comment is
+        // no table: its keys are the text's own, and nothing formats it.
+        // Read from the note on a key in such a line only.
+        if MarkdownHighlighter::block_state(line.start, &self.text()) != BlockState::Normal {
             return None;
         }
         let at = self.buffer.iter_at_mark(&self.buffer.get_insert()).line();
