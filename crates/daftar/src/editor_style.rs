@@ -17,7 +17,8 @@ use gtk::{glib, pango};
 
 use daftar_core::text::direction;
 use daftar_core::{
-    BlockState, CodeRole, Day, HighlightKind, HighlightSpan, LivePreview, MarkdownHighlighter, PreviewAbove, PreviewBlock, PreviewParts,
+    BlockState, CodeRole, Day, GridLine, GridRole, HighlightKind, HighlightSpan, LivePreview, MarkdownHighlighter, MarkdownTable,
+    PreviewAbove, PreviewBlock, PreviewParts,
 };
 
 /// A color of the palette by name: (dark, light), as `NSPalette.pairs`.
@@ -28,6 +29,8 @@ fn pair(name: &str) -> (u32, u32) {
         "muted" => (0xA8A8A0, 0x6A6A62),
         "background" => (0x323232, 0xFAF9F5),
         "panel" => (0x282826, 0xEFEDE6),
+        // The reader's `--table-hairline`.
+        "hairline" => (0x4A4A4A, 0xD8D5CC),
         "heading1" => (0xFFE0A0, 0xA85200),
         "heading2" => (0xFFFF88, 0x8A6A00),
         "heading3" => (0x60D8FF, 0x0070A0),
@@ -108,6 +111,12 @@ struct Look {
     above: Option<f64>,
     /// Room under the line beyond the line gap, in em: a panel's last line.
     below: Option<f64>,
+    /// The room above and under the line, in em, with no line gap: a row
+    /// of a table drawn as a grid, whose rows stand one on the other.
+    rows: Option<(f64, f64)>,
+    /// Room after each character, in px: what a cell of a grid lost to its
+    /// hidden marks and its smaller letters, given back in its padding.
+    pixels: Option<i32>,
     /// In small letters, as a code block's language is drawn.
     lower: bool,
     /// Never struck through: a date chip and a reason on a done task.
@@ -121,16 +130,21 @@ struct Look {
 
 /// The sizes a tag's look is worked out from: the text size in px, the room
 /// at each side of the measure, and the width of a `[` in the note's font.
+/// A table is a grid only when it fits the line: `line` is the measure's
+/// width in px and `mono` the width of one letter of the code font, 0
+/// when they are not known yet.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Metrics {
     pub size: f64,
     pub room: i32,
     pub bracket: f64,
+    pub line: f64,
+    pub mono: f64,
 }
 
 impl Default for Metrics {
     fn default() -> Self {
-        Metrics { size: 16.0, room: 32, bracket: 5.0 }
+        Metrics { size: 16.0, room: 32, bracket: 5.0, line: 0.0, mono: 0.0 }
     }
 }
 
@@ -138,6 +152,13 @@ impl Metrics {
     /// The space under every line: the line height 1.65 less the text's own.
     pub fn gap(&self) -> i32 {
         (self.size * 0.65).round() as i32
+    }
+
+    /// Whether a table whose widest line is [columns] letters of the code
+    /// font fits the line. One that does not is drawn as before: the view
+    /// cannot scroll one part of a note sideways, and a wrapped row is no grid.
+    pub fn fits(&self, columns: usize) -> bool {
+        self.line <= 0.0 || self.mono <= 0.0 || columns as f64 * self.mono <= self.line
     }
 }
 
@@ -155,6 +176,10 @@ pub enum Drawn {
     CodePanel,
     /// The first line of a panel: two panels with no line between them are two.
     PanelTop,
+    /// A table drawn as a grid: its box, its header's fill and its hairlines.
+    Grid,
+    /// The last line of a grid: the box ends over the gap under it.
+    GridLast,
 }
 
 /// A colour by the name the reader's CSS has for it, as the palette here names it.
@@ -277,6 +302,10 @@ pub struct Styler {
     drawn: RefCell<Vec<(gtk::TextTag, Drawn)>>,
     /// The day the late chips were worked out for.
     day: std::cell::Cell<Day>,
+    /// The characters of the tables that show raw: a selection reaches
+    /// outside one cell of each (the table at its start and the one at its
+    /// end), or the caret is on a delimiter row.
+    raw_tables: std::cell::Cell<[Option<(usize, usize)>; 2]>,
 }
 
 /// The tint of the cursor's line: neutral, weaker than the reader's block.
@@ -323,6 +352,7 @@ impl Styler {
             metrics: std::cell::Cell::new(Metrics::default()),
             drawn: RefCell::new(Vec::new()),
             day: std::cell::Cell::new(Day::today()),
+            raw_tables: std::cell::Cell::new([None, None]),
         });
         styler.line.set_paragraph_background_rgba(Some(&line_tint(manager.is_dark())));
         buffer.tag_table().add(&styler.line);
@@ -380,6 +410,11 @@ impl Styler {
         self.line.set_paragraph_background_rgba(Some(&line_tint(self.dark.get())));
     }
 
+    /// The family code is set in.
+    pub fn code_font(&self) -> String {
+        self.code_font.borrow().clone()
+    }
+
     pub fn set_code_font(&self, family: &str) {
         if *self.code_font.borrow() == family {
             return;
@@ -397,9 +432,15 @@ impl Styler {
 
     /// The text size and the measure's room changed: the looks that are
     /// worked out from them follow. Never while the view lays itself out.
-    pub fn set_metrics(&self, metrics: Metrics) {
-        if self.metrics.replace(metrics) != metrics {
+    pub fn set_metrics(self: &Rc<Self>, metrics: Metrics) {
+        let old = self.metrics.replace(metrics);
+        if old != metrics {
             self.dress();
+            // A table is a grid only while it fits the line: with another
+            // line, the tables of a note that has grids are looked at again.
+            if (old.line, old.mono) != (metrics.line, metrics.mono) && self.tags.borrow().contains_key("grid") {
+                self.restyle_all();
+            }
         }
     }
 
@@ -415,6 +456,217 @@ impl Styler {
     /// The tags the view draws something for.
     pub fn drawn(&self) -> Vec<(gtk::TextTag, Drawn)> {
         self.drawn.borrow().clone()
+    }
+
+    /// Whether the character at [offset] is in a table drawn as a grid.
+    pub fn in_grid(&self, offset: usize) -> bool {
+        let grid = self.tags.borrow().get("grid").map(|(tag, _)| tag.clone());
+        grid.is_some_and(|tag| self.buffer.iter_at_offset(offset as i32).has_tag(&tag))
+    }
+
+    /// Whether the character at [offset] is drawn as a link to a note.
+    pub fn is_link(&self, offset: usize) -> bool {
+        let link = self.tags.borrow().get("link").map(|(tag, _)| tag.clone());
+        link.is_some_and(|tag| self.buffer.iter_at_offset(offset as i32).has_tag(&tag))
+    }
+
+    /// The text of line [line] of the buffer, without its line ending.
+    fn line_text(&self, line: i32) -> Option<String> {
+        if line < 0 || line >= self.buffer.line_count() {
+            return None;
+        }
+        let start = self.buffer.iter_at_line(line)?;
+        let mut end = start;
+        if !end.ends_line() {
+            end.forward_to_line_end();
+        }
+        Some(self.buffer.text(&start, &end, true).to_string())
+    }
+
+    /// The rows of a table right above line [line] ([step] -1) or right
+    /// under it ([step] 1), nearest first: at most what a grid may hold,
+    /// read from the buffer's lines, never from the whole note.
+    fn rows_beside(&self, line: i32, step: i32) -> Vec<String> {
+        let mut rows = Vec::new();
+        let mut at = line + step;
+        while rows.len() < MarkdownTable::GRID_ROWS + 3 {
+            let Some(text) = self.line_text(at).filter(|text| MarkdownTable::is_row(text)) else { break };
+            rows.push(text);
+            at += step;
+        }
+        rows
+    }
+
+    /// The lines of the tables drawn as a grid among the lines styled, from
+    /// [from] to [to] with the text [lines] at character [base]: a table
+    /// with its delimiter row, that fits the line and does not show raw.
+    fn grid_lines(&self, parts: &PreviewParts, lines: &str, base: usize, from: &gtk::TextIter, to: &gtk::TextIter) -> Vec<GridLine> {
+        let (Some(first), Some(last)) = (parts.rows.first(), parts.rows.last()) else { return Vec::new() };
+        let mut above = if first.start == base { self.rows_beside(from.line(), -1) } else { Vec::new() };
+        above.reverse();
+        // The line after the last styled, when the lines end with a line break.
+        let ends = base + lines.chars().count() - usize::from(lines.ends_with('\n'));
+        let below = if last.end >= ends && to.starts_line() && !lines.is_empty() && lines.ends_with('\n') {
+            self.rows_beside(to.line() - 1, 1)
+        } else {
+            Vec::new()
+        };
+        let metrics = self.metrics.get();
+        let raw = self.raw_tables.get();
+        let shown_raw = |line: &GridLine| raw.iter().flatten().any(|(from, to)| line.range.end >= *from && line.range.start < *to);
+        LivePreview::grid_lines(lines, base, &parts.rows, &above, &below)
+            .into_iter()
+            .filter(|line| metrics.fits(line.widest) && !shown_raw(line))
+            .collect()
+    }
+
+    /// The tags of a table drawn as a grid: its rows in the code font, one
+    /// on the other with 0.35 em of room; the header in weight 600; the
+    /// delimiter row at no height; each pipe clear, as it is drawn as the
+    /// hairline between two columns. The caret in a cell changes none of them.
+    fn draw_grid(&self, grid: &[GridLine]) {
+        let total = self.buffer.char_count().max(0) as usize;
+        let iter = |offset: usize| self.buffer.iter_at_offset(offset.min(total) as i32);
+        let apply = |tag: &gtk::TextTag, range: Range<usize>| {
+            if range.start < range.end {
+                self.buffer.apply_tag(tag, &iter(range.start), &iter(range.end));
+            }
+        };
+        for line in grid {
+            let row = self.drawn_tag("grid", Drawn::Grid, || Look { mono: true, rows: Some((0.35, 0.35)), left: true, ..Look::default() });
+            // On the line's ending too, so the table's lines are one run.
+            apply(&row, line.range.start..line.range.end + 1);
+            let text = line.range.start..line.range.end.max(line.range.start + 1);
+            // The delimiter row has no height: a table that ends with it has no gap to take off.
+            if line.last && line.role != GridRole::Delimiter {
+                let last = self.drawn_tag("grid-last", Drawn::GridLast, || Look { below: Some(0.35), ..Look::default() });
+                apply(&last, text.clone());
+            }
+            match line.role {
+                GridRole::Header => apply(&self.tag("grid-head", || Look { semibold: true, ..Look::default() }), text),
+                GridRole::Delimiter => {
+                    let rule = self.tag("grid-rule", || Look { hidden: true, rows: Some((0.0, 0.0)), rank: 5, ..Look::default() });
+                    apply(&rule, text);
+                    continue;
+                }
+                GridRole::Row => {}
+            }
+            let pipe = self.tag("grid-pipe", || Look { clear: true, rank: 5, ..Look::default() });
+            for at in &line.pipes {
+                apply(&pipe, *at..*at + 1);
+            }
+        }
+    }
+
+    /// The columns of a grid stay in line. Its rows are in the code font,
+    /// lined up by the formatter's spaces, but a hidden mark (`**`) has no
+    /// width and inline code is set smaller, so a cell with them is
+    /// narrower than its column. What each cell lost is given back as room
+    /// after its last padding space. Run after the marks are hidden; a row
+    /// styled again (the caret went into an element of it) is padded again.
+    fn pad_grid(&self, grid: &[GridLine]) {
+        let mono = self.metrics.get().mono;
+        if mono <= 0.0 {
+            return;
+        }
+        // How much smaller the letter at a place is drawn: every tag's scale counts.
+        let scale = |at: &gtk::TextIter| -> f64 {
+            let tags = self.tags.borrow();
+            at.tags()
+                .iter()
+                .filter_map(|tag| {
+                    let name = tag.name()?;
+                    let (_, look) = tags.get(name.strip_prefix("daftar:")?)?;
+                    Some(if look.hidden { 0.0 } else { look.scale.unwrap_or(1.0) })
+                })
+                .product()
+        };
+        for line in grid.iter().filter(|line| line.role != GridRole::Delimiter) {
+            for pair in line.pipes.windows(2) {
+                let (open, close) = (pair[0], pair[1]);
+                if close < open + 2 {
+                    continue;
+                }
+                let mut at = self.buffer.iter_at_offset(open as i32 + 1);
+                let mut lost = 0.0;
+                for _ in open + 1..close {
+                    lost += mono * MarkdownTable::width(&at.char().to_string()) as f64 * (1.0 - scale(&at));
+                    at.forward_char();
+                }
+                let pixels = lost.round() as i32;
+                // The room goes after the cell's last space, before its closing pipe.
+                let mut last = self.buffer.iter_at_offset(close as i32 - 1);
+                if pixels > 0 && last.char() == ' ' {
+                    let pad = self.tag(&format!("grid-pad:{pixels}"), || Look { pixels: Some(pixels), rank: 4, ..Look::default() });
+                    let end = self.buffer.iter_at_offset(close as i32);
+                    self.buffer.apply_tag(&pad, &last, &end);
+                    last.forward_char();
+                }
+            }
+        }
+    }
+
+    /// The tables that show raw for [selection], each as the characters of
+    /// its rows: the ones a selection reaches into from outside one cell,
+    /// or the one whose delimiter row the caret is on. Found from the lines
+    /// the selection starts and ends on, so a table wholly inside a
+    /// selection stays drawn.
+    fn tables_raw(&self, selection: (usize, usize)) -> [Option<(usize, usize)>; 2] {
+        if !self.live.get() {
+            return [None, None];
+        }
+        let (a, b) = (selection.0.min(selection.1), selection.0.max(selection.1));
+        let (first, last) = (self.buffer.iter_at_offset(a as i32), self.buffer.iter_at_offset(b as i32));
+        let row = |at: &gtk::TextIter| self.line_text(at.line()).filter(|text| MarkdownTable::is_row(text));
+        let (first_row, last_row) = (row(&first), row(&last));
+        let raw = match (&first_row, &last_row) {
+            (None, None) => false,
+            // A caret: only on the delimiter row.
+            (Some(text), _) if a == b => MarkdownTable::is_delimiter(text),
+            (Some(text), Some(_)) if first.line() == last.line() => {
+                MarkdownTable::column(first.line_offset() as usize, text) != MarkdownTable::column(last.line_offset() as usize, text)
+                    || MarkdownTable::is_delimiter(text)
+            }
+            _ => true,
+        };
+        if !raw {
+            return [None, None];
+        }
+        // The rows of the table that holds line [at].
+        let table = |at: i32| {
+            let (top, bottom) = (at - self.rows_beside(at, -1).len() as i32, at + self.rows_beside(at, 1).len() as i32);
+            let from = self.buffer.iter_at_line(top).map_or(0, |at| at.offset() as usize);
+            let mut to = self.buffer.iter_at_line(bottom).unwrap_or_else(|| self.buffer.end_iter());
+            if !to.ends_line() {
+                to.forward_to_line_end();
+            }
+            to.forward_char();
+            (from, to.offset() as usize)
+        };
+        let start = first_row.map(|_| table(first.line()));
+        let end = last_row.map(|_| table(last.line())).filter(|end| Some(*end) != start);
+        [start, end]
+    }
+
+    /// The tables that show raw follow the selection: one that was raw is
+    /// drawn again, and one that is raw now loses its grid.
+    fn follow_raw_tables(&self, selection: (usize, usize)) {
+        let raw = self.tables_raw(selection);
+        let old = self.raw_tables.replace(raw);
+        if old == raw {
+            return;
+        }
+        let total = self.buffer.char_count().max(0) as usize;
+        let text = self.text();
+        for (a, b) in old.into_iter().chain(raw).flatten() {
+            let (a, b) = (a.min(total), b.min(total));
+            if a < b {
+                let line = self.buffer.iter_at_offset(a as i32).line();
+                let a = self.buffer.iter_at_line(line).map_or(0, |at| at.offset() as usize);
+                let b = self.line_end_after(b);
+                self.style(a..b, Some(MarkdownHighlighter::block_state(a, &text)));
+            }
+        }
     }
 
     /// A new day: the lines are styled again, since a due date may be late now.
@@ -648,6 +900,7 @@ impl Styler {
         let local = 0..chars.len();
         let highlights: Vec<Range<usize>> = spans.iter().filter(|s| s.kind == HighlightKind::Highlight).map(|s| s.range.clone()).collect();
         let panels = Panels::of(&parts, base);
+        let grid = if self.live.get() { self.grid_lines(&parts, &lines, base, &from, &to) } else { Vec::new() };
         for span in &spans {
             if span.range.end > chars.len() || span.range.is_empty() {
                 continue;
@@ -658,8 +911,10 @@ impl Styler {
         }
         self.style_script(&chars, local.clone(), base);
         if self.live.get() {
+            self.draw_grid(&grid);
             let elements = self.draw_parts(&parts, &chars, base);
             self.hide_marks(&spans, &chars, local, base, elements);
+            self.pad_grid(&grid);
         }
         next
     }
@@ -866,6 +1121,7 @@ impl Styler {
         let (start, end) = (start_iter.offset() as usize, end_iter.offset() as usize);
         let selecting = selection.0 != selection.1;
         self.cursor.set(selection);
+        self.follow_raw_tables(selection);
         // Typing on the line keeps it: only where it ends moves.
         if self.revealed_lines.replace(Some((lines, selecting))) == Some((lines, selecting)) {
             self.revealed.set((start, end));
@@ -1008,7 +1264,7 @@ impl Styler {
             let line: String = chars[start..end].iter().collect();
             // A table's rows in the code font, so the columns its
             // formatting lines up stand in line.
-            if daftar_core::MarkdownTable::is_row(&line) && line.trim_end().ends_with('|') {
+            if MarkdownTable::is_row(&line) && line.trim_end().ends_with('|') {
                 let table = self.tag("table", || Look { mono: true, ..Look::default() });
                 self.buffer.apply_tag(&table, &iter(start), &iter(end));
             }
@@ -1215,6 +1471,13 @@ fn apply_look(tag: &gtk::TextTag, look: &Look, dark: bool, code_font: &str, metr
     if let Some(below) = look.below {
         tag.set_pixels_below_lines(metrics.gap() + (below * metrics.size).round() as i32);
     }
+    if let Some(pixels) = look.pixels {
+        tag.set_letter_spacing(pixels * pango::SCALE);
+    }
+    if let Some((above, below)) = look.rows {
+        tag.set_pixels_above_lines((above * metrics.size).round() as i32);
+        tag.set_pixels_below_lines((below * metrics.size).round() as i32);
+    }
     if look.lower {
         tag.set_text_transform(pango::TextTransform::Lowercase);
     }
@@ -1301,8 +1564,10 @@ mod tests {
 
     #[test]
     fn the_looks_follow_the_text_size() {
-        let metrics = Metrics { size: 20.0, room: 100, bracket: 6.0 };
+        let metrics = Metrics { size: 20.0, room: 100, bracket: 6.0, line: 700.0, mono: 10.0 };
         assert_eq!(metrics.gap(), 13);
+        // A table is a grid while its widest line fits the measure: 70 letters of 10 px in 700 px.
+        assert!(metrics.fits(70) && !metrics.fits(71) && Metrics::default().fits(500));
         assert_eq!(Metrics::default().gap(), 10);
         // The reader's names for a status's and a chip's colour, in this palette.
         assert_eq!(palette_name("list-marker"), "accent");

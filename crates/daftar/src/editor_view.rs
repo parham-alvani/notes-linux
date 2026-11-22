@@ -11,7 +11,7 @@ use gtk::subclass::prelude::*;
 type Painter = Box<dyn Fn(&gtk::TextView, gtk::TextViewLayer, &gtk::Snapshot)>;
 
 mod imp {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     use gtk::glib;
     use gtk::prelude::*;
@@ -23,6 +23,8 @@ mod imp {
     #[derive(Default)]
     pub struct EditorView {
         pub painter: RefCell<Option<Painter>>,
+        /// The height the view asks for, when its holder said one.
+        pub natural_height: Cell<Option<i32>>,
     }
 
     #[glib::object_subclass]
@@ -33,7 +35,17 @@ mod imp {
     }
 
     impl ObjectImpl for EditorView {}
-    impl WidgetImpl for EditorView {}
+    impl WidgetImpl for EditorView {
+        fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            let (minimum, natural, minimum_baseline, natural_baseline) = self.parent_measure(orientation, for_size);
+            match self.natural_height.get().filter(|_| orientation == gtk::Orientation::Vertical) {
+                // Only the height it would like: the least it takes stays, so
+                // a holder already on screen is never smaller than its least.
+                Some(height) => (minimum, height.max(minimum), minimum_baseline, natural_baseline),
+                None => (minimum, natural, minimum_baseline, natural_baseline),
+            }
+        }
+    }
 
     impl TextViewImpl for EditorView {
         fn snapshot_layer(&self, layer: gtk::TextViewLayer, snapshot: gtk::Snapshot) {
@@ -56,6 +68,19 @@ glib::wrapper! {
 impl EditorView {
     pub fn new(buffer: &sourceview5::Buffer) -> EditorView {
         glib::Object::builder().property("buffer", buffer).build()
+    }
+
+    /// The height the view would like, for a holder that sizes itself by
+    /// it (the link preview's card): a text view knows its lines' height
+    /// only once it has laid them out. `None` is the view's own answer.
+    pub fn set_natural_height(&self, height: Option<i32>) {
+        if self.imp().natural_height.replace(height) != height {
+            gtk::prelude::WidgetExt::queue_resize(self);
+        }
+    }
+
+    pub fn natural_height(&self) -> Option<i32> {
+        self.imp().natural_height.get()
     }
 
     /// [painter] draws each layer after the view's own.

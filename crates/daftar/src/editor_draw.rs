@@ -1,6 +1,6 @@
 //! What the editor draws beside the text, part 2 of `docs/specs/look.md`: a
-//! callout's and a code block's panel and a date chip's pill under the text,
-//! a task's box and a callout's icon over it. Nothing here is a character of
+//! callout's and a code block's panel, a table's grid and a date chip's pill
+//! under the text, a task's box and a callout's icon over it. Nothing here is a character of
 //! the buffer: each part is found by the tag `editor_style.rs` put on its
 //! text, only among the lines on screen, and drawn in the buffer's
 //! coordinates from `EditorView`'s layers. A part whose tag is gone (the
@@ -16,7 +16,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib, graphene, gsk, pango};
 
-use daftar_core::{LivePreview, TaskStatuses};
+use daftar_core::{LivePreview, MarkdownTable, TaskStatuses};
 
 use crate::editor_style::{Drawn, Metrics, Styler, callout_color, palette_name, rgba};
 
@@ -76,6 +76,53 @@ pub fn pill_frame(text: Frame, em: f32) -> Frame {
 /// wide as the measure: [room] at each side of a pane [pane] wide.
 pub fn panel_frame(top: f32, bottom: f32, room: f32, pane: f32) -> Frame {
     (room, top, (pane - 2.0 * room).max(0.0), (bottom - top).max(0.0))
+}
+
+/// One row of a grid on screen: its top, its bottom, and where its pipes are.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GridRow {
+    pub top: f32,
+    pub bottom: f32,
+    pub pipes: Vec<f32>,
+}
+
+/// The shapes of a table drawn as a grid, in the buffer's coordinates.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GridShape {
+    /// The box around the table: from its first pipe to its last.
+    pub frame: Frame,
+    /// The header row's fill.
+    pub head: Option<Frame>,
+    /// The hairlines under the rows and between the columns, each 1 px.
+    pub lines: Vec<Frame>,
+}
+
+/// The grid of a table whose box goes from [top] to [bottom]: [header] is
+/// its first line's pipes (the box is as wide as they reach, with the rows
+/// on screen), [head] the header row's top and bottom when it is on screen,
+/// and [rows] the rows on screen, each with whether a hairline goes under
+/// it. A pipe is the hairline between two columns; the first and the last
+/// are the box's own sides.
+pub fn grid_shape(top: f32, bottom: f32, header: &[f32], head: Option<(f32, f32)>, rows: &[(GridRow, bool)]) -> Option<GridShape> {
+    let xs = || header.iter().chain(rows.iter().flat_map(|(row, _)| row.pipes.iter())).copied();
+    let (left, right) = (xs().reduce(f32::min)?, xs().reduce(f32::max)?);
+    if right - left < 1.0 || bottom <= top {
+        return None;
+    }
+    let mut shape = GridShape { frame: (left, top, right - left, bottom - top), ..GridShape::default() };
+    shape.head = head.map(|(y, end)| (left, y, right - left, end - y));
+    for (row, ruled) in rows {
+        // A row's own first and last pipe are the box's sides, also in a
+        // row that is typed in and not lined up with the others yet.
+        let inner = row.pipes.get(1..row.pipes.len().saturating_sub(1)).unwrap_or(&[]);
+        for x in inner.iter().filter(|x| **x - left >= 1.0 && right - **x >= 1.0) {
+            shape.lines.push((x.round() - 0.5, row.top, 1.0, row.bottom - row.top));
+        }
+        if *ruled {
+            shape.lines.push((left, row.bottom - 1.0, right - left, 1.0));
+        }
+    }
+    Some(shape)
 }
 
 fn rect(frame: Frame) -> graphene::Rect {
@@ -159,6 +206,7 @@ impl Draw {
         let (mut to, _) = view.line_at_y(seen.y() + seen.height());
         to.forward_line();
         let top = drawn.iter().find(|(_, what)| *what == Drawn::PanelTop).map(|(tag, _)| tag.clone());
+        let grid_last = drawn.iter().find(|(_, what)| *what == Drawn::GridLast).map(|(tag, _)| tag.clone());
         let under = layer == gtk::TextViewLayer::BelowText;
         for (tag, what) in &drawn {
             match what {
@@ -168,6 +216,11 @@ impl Draw {
                 }
                 Drawn::CodePanel if under => {
                     self.panels(view, snapshot, tag, top.as_ref(), (&from, &to), &rgba("panel", 1.0, dark), None, metrics);
+                }
+                Drawn::Grid if under => {
+                    for (start, end) in runs(tag, &from, &to) {
+                        self.grid(view, snapshot, (&start, &end), (&from, &to), grid_last.as_ref(), metrics, dark);
+                    }
                 }
                 Drawn::Chip(color, strength) if under => {
                     let fill = rgba(color, *strength, dark);
@@ -244,6 +297,87 @@ impl Draw {
                 }
             }
         }
+    }
+
+    /// One table as a grid, the reader's table: a hairline box with a 12 px
+    /// corner around its lines from [start] to [end], the header row on the
+    /// panel colour, a hairline under each row but the last and one where
+    /// each pipe stands. Only the rows between [from] and [to] are looked at.
+    #[expect(clippy::too_many_arguments, reason = "one drawing call, with what it draws and where")]
+    fn grid(
+        &self,
+        view: &gtk::TextView,
+        snapshot: &gtk::Snapshot,
+        (start, end): (&gtk::TextIter, &gtk::TextIter),
+        (from, to): (&gtk::TextIter, &gtk::TextIter),
+        last_tag: Option<&gtk::TextTag>,
+        metrics: Metrics,
+        dark: bool,
+    ) {
+        let buffer = view.buffer();
+        let mut last = *end;
+        if last.offset() > start.offset() {
+            last.backward_char();
+        }
+        let (first_line, last_line) = (start.line(), last.line());
+        // Where the pipes of a line stand, and the line's top and bottom.
+        let row = |line: i32| -> Option<GridRow> {
+            let at = buffer.iter_at_line(line)?;
+            let mut line_end = at;
+            if !line_end.ends_line() {
+                line_end.forward_to_line_end();
+            }
+            let pipes = MarkdownTable::pipes(&buffer.text(&at, &line_end, true))
+                .into_iter()
+                .map(|pipe| {
+                    let mut place = at;
+                    place.set_line_offset(pipe as i32);
+                    let spot = view.iter_location(&place);
+                    spot.x() as f32 + spot.width() as f32 / 2.0
+                })
+                .collect();
+            let (y, height) = view.line_yrange(&at);
+            Some(GridRow { top: y as f32, bottom: (y + height) as f32, pipes })
+        };
+        let Some(header) = row(first_line) else { return };
+        let (y, height) = view.line_yrange(&last);
+        let mut line_start = last;
+        line_start.set_line_offset(0);
+        // The gap under the last row is the space to what follows, outside the box.
+        let gap = if last_tag.is_some_and(|tag| line_start.has_tag(tag)) { metrics.gap() } else { 0 };
+        let bottom = (y + height - gap) as f32;
+        let mut rows = Vec::new();
+        for line in first_line.max(from.line())..=last_line.min(to.line()) {
+            // The delimiter row is not drawn: it is the hairline under the header.
+            if line == first_line + 1 {
+                continue;
+            }
+            let Some(mut row) = row(line) else { continue };
+            if line == last_line {
+                row.bottom = bottom;
+            } else if line == first_line && first_line + 2 <= last_line {
+                // The header's row goes down to the first row under the delimiter.
+                if let Some(next) = buffer.iter_at_line(first_line + 2) {
+                    row.bottom = view.line_yrange(&next).0 as f32;
+                }
+            }
+            rows.push((row, line != last_line && !(line == first_line && first_line + 1 == last_line)));
+        }
+        let head = rows.first().filter(|_| first_line >= from.line()).map(|(row, _)| (row.top, row.bottom));
+        let Some(shape) = grid_shape(header.top, bottom, &header.pipes, head, &rows) else { return };
+        let frame = rect(shape.frame);
+        let corner = PANEL_CORNER.min(shape.frame.3 / 2.0);
+        let outline = gsk::RoundedRect::from_rect(frame, corner);
+        let hairline = rgba("hairline", 1.0, dark);
+        snapshot.push_rounded_clip(&outline);
+        if let Some(head) = shape.head {
+            snapshot.append_color(&rgba("panel", 1.0, dark), &rect(head));
+        }
+        for line in &shape.lines {
+            snapshot.append_color(&hairline, &rect(*line));
+        }
+        snapshot.pop();
+        snapshot.append_border(&outline, &[1.0; 4], &[hairline; 4]);
     }
 
     /// A callout's icon where its `[` stands, and the kind's name after it
@@ -399,6 +533,34 @@ mod tests {
         ] {
             assert!(icons.contains_key(LivePreview::callout_icon(kind)), "{kind}");
         }
+    }
+
+    /// A table's grid: the box from the first pipe to the last, the header's
+    /// fill, a hairline under each row but the last and one at each inner pipe.
+    #[test]
+    fn a_grid_has_its_box_its_header_and_its_hairlines() {
+        let pipes = vec![100.0, 160.0, 220.0];
+        let row = |top: f32, bottom: f32| GridRow { top, bottom, pipes: pipes.clone() };
+        let rows = [(row(10.0, 41.0), true), (row(41.0, 71.0), true), (row(71.0, 101.0), false)];
+        let shape = grid_shape(10.0, 101.0, &pipes, Some((10.0, 41.0)), &rows).unwrap();
+        assert_eq!(shape.frame, (100.0, 10.0, 120.0, 91.0));
+        assert_eq!(shape.head, Some((100.0, 10.0, 120.0, 31.0)));
+        // One inner pipe in each of three rows, and a line under the first two rows.
+        assert_eq!(shape.lines.len(), 5);
+        assert_eq!(shape.lines[0], (159.5, 10.0, 1.0, 31.0));
+        assert_eq!(shape.lines[1], (100.0, 40.0, 120.0, 1.0));
+        assert!(!shape.lines.iter().any(|line| line.1 == 100.0 && line.3 == 1.0), "no line under the last row");
+        // A row not lined up yet has its hairlines where its own pipes are, and widens the box;
+        // the last pipe of a shorter row is the box's side, not a line in it.
+        let ragged = [
+            (GridRow { top: 41.0, bottom: 71.0, pipes: vec![100.0, 180.0, 260.0] }, true),
+            (GridRow { top: 71.0, bottom: 101.0, pipes: pipes.clone() }, false),
+        ];
+        let shape = grid_shape(10.0, 101.0, &pipes, None, &ragged).unwrap();
+        assert_eq!((shape.frame, shape.head), ((100.0, 10.0, 160.0, 91.0), None));
+        assert_eq!(shape.lines, [(179.5, 41.0, 1.0, 30.0), (100.0, 70.0, 160.0, 1.0), (159.5, 71.0, 1.0, 30.0)]);
+        // A line with one pipe is no box.
+        assert_eq!(grid_shape(10.0, 40.0, &[100.0], None, &[]), None);
     }
 
     #[test]

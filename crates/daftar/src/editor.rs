@@ -4,8 +4,11 @@
 //! go to the next cell of a table, Ctrl+B, Ctrl+I and Ctrl+Shift+H mark the
 //! selection, Ctrl+K links it, Ctrl+Return ticks the task on the line,
 //! Alt+Up and Alt+Down move lines and Ctrl+Alt+Up and Down the section, `[[`
-//! offers notes and `/` snippets, and a pasted picture is saved in the
-//! vault's attachment folder. The pictures a
+//! offers notes and `/` the slash bar (`editor_slash.rs`), a table is a grid
+//! with Tab, Shift+Tab and Return on its cells, and a pasted picture is
+//! saved in the vault's attachment folder. Focus mode dims every paragraph
+//! but the cursor's (`editor_focus.rs`), and resting the pointer on a link
+//! shows the note's first lines (`editor_link_card.rs`). The pictures a
 //! line embeds are drawn under it, and a dropped file becomes a link
 //! (`editor_media.rs`); Ctrl+Alt+X extracts the selection to a new note.
 //!
@@ -30,17 +33,22 @@ use gtk::{gdk, glib};
 use sourceview5::prelude::*;
 
 use daftar_core::{
-    BufferMirror, Candidate, Day, EditorCommands, Fuzzy, HtmlMarkdown, LivePreview, MarkdownTable, NoteFormat, QuickSwitcher, Return,
-    Sections, Snippet, TaskSorter, Vault, VaultMoves,
+    BufferMirror, Candidate, Day, EditorCommands, HtmlMarkdown, LivePreview, MarkdownTable, NoteFormat, QuickSwitcher, Return, Sections,
+    Snippet, TableReturn, TableTab, TaskSorter, Vault, VaultMoves,
 };
 
+#[path = "editor_link_card.rs"]
+mod link_card;
 #[path = "editor_media.rs"]
 pub(crate) mod media;
 #[path = "editor_problems.rs"]
 mod problems;
+#[path = "editor_slash.rs"]
+mod slash;
 
 use crate::editor_caret::Caret;
 use crate::editor_draw::Draw;
+use crate::editor_focus::Focus;
 use crate::editor_popup::{Choice, Popup};
 use crate::editor_style::{Metrics, Styler};
 use crate::editor_view::EditorView;
@@ -119,6 +127,14 @@ pub struct Editor {
     buffer: sourceview5::Buffer,
     styler: Rc<Styler>,
     popup: Rc<Popup>,
+    /// The slash bar, and where a `/` was typed since the text was last styled.
+    slash: Rc<slash::SlashBar>,
+    slash_typed: Cell<Option<usize>>,
+    /// The card of the link the pointer rests on, and what the pointer does.
+    card: Rc<link_card::Card>,
+    hover: link_card::Hover,
+    /// Focus mode's veil over every paragraph but the cursor's.
+    focus: Rc<Focus>,
     completing: Cell<Completing>,
     candidates: RefCell<Vec<Candidate>>,
     /// Where a closing bracket was put that the person did not type, so
@@ -242,12 +258,15 @@ impl Editor {
         let styler = Styler::new(buffer.upcast_ref());
         let draw = Draw::new(&styler);
         let caret = Caret::new(&view);
+        let focus = Focus::new(view.upcast_ref());
         {
-            // Over the text, the caret last: nothing is drawn on it.
-            let (draw, caret, styler) = (draw.clone(), caret.clone(), styler.clone());
+            // Over the text: focus mode's veil over all that is drawn, then
+            // the caret last, with nothing on it.
+            let (draw, caret, styler, focus) = (draw.clone(), caret.clone(), styler.clone(), focus.clone());
             canvas.set_painter(move |view, layer, snapshot| {
                 draw.paint(view, layer, snapshot);
                 if layer == gtk::TextViewLayer::AboveText {
+                    focus.paint(view, snapshot, &crate::editor_style::rgba("background", 1.0, styler.is_dark()));
                     caret.paint(snapshot, &crate::editor_style::rgba("accent", 1.0, styler.is_dark()));
                 }
             });
@@ -257,6 +276,11 @@ impl Editor {
             styler,
             draw,
             popup: Popup::new(&view),
+            slash: slash::SlashBar::new(&view),
+            slash_typed: Cell::new(None),
+            card: link_card::Card::new(&view),
+            hover: link_card::Hover::default(),
+            focus,
             glide: Glide::new(&view),
             caret,
             stage,
@@ -306,6 +330,7 @@ impl Editor {
         editor.connect_buffer();
         editor.connect_keys();
         editor.connect_clicks();
+        editor.connect_card();
         editor.connect_drop();
         editor.styler.attach(editor.view.upcast_ref());
         editor.connect_measure();
@@ -339,8 +364,9 @@ impl Editor {
         let Some(file) = file_in(path, root) else { return false };
         let Ok(text) = fs::read_to_string(&file) else { return false };
         self.cancel_pending();
-        self.popup.close();
-        self.completing.set(Completing::Nothing);
+        self.stop_completion();
+        self.close_card();
+        self.focus.forget();
         self.auto_closed.set(None);
         self.apply_fonts();
         self.buffer.begin_irreversible_action();
@@ -621,6 +647,7 @@ impl Editor {
         self.styler.set_code_font(&code);
         self.styler.set_live(settings.file.bool("editor.live_preview").unwrap_or(true));
         self.styler.set_soft(settings.soft_palette());
+        self.focus.set_on(settings.focus());
         // Line height 1.65, as the reader's: the space between lines and between wrapped rows.
         let gap = (size as f64 * 0.65).round() as i32;
         self.view.set_pixels_below_lines(gap);
@@ -655,7 +682,14 @@ impl Editor {
             self.view.set_right_margin(room);
         }
         let bracket = f64::from(self.view.create_pango_layout(Some("[")).pixel_size().0);
-        self.styler.set_metrics(Metrics { size, room, bracket });
+        // A table is a grid while its widest line fits the measure, in the code font.
+        let letters = self.view.create_pango_layout(Some(&"0".repeat(20)));
+        let mut face = self.view.pango_context().font_description().unwrap_or_default();
+        face.set_family(&self.styler.code_font());
+        letters.set_font_description(Some(&face));
+        let mono = f64::from(letters.pixel_size().0) / 20.0;
+        let line = if pane > 1.0 { pane - 2.0 * f64::from(room) } else { 0.0 };
+        self.styler.set_metrics(Metrics { size, room, bracket, line, mono });
     }
 
     /// The measure follows the pane's width, and the late chips the day.
@@ -777,6 +811,8 @@ impl Editor {
                 |(a, b)| (a.offset() as usize, b.offset() as usize),
             );
             this.styler.reveal((a, b));
+            this.focus.follow(None);
+            this.slash_follows_caret();
             this.update_counts();
             this.show_format_bar();
         });
@@ -862,8 +898,17 @@ impl Editor {
             this.restyle_soon.set(false);
             if let Some((start, end)) = this.dirty.take() {
                 this.styler.restyle_after(start..end);
+                // Focus mode's paragraph is looked at again only where the text changed.
+                if this.focus.is_on() {
+                    let total = this.buffer.char_count().max(0) as usize;
+                    let line = |offset: usize| this.iter(offset.min(total)).line();
+                    this.focus.follow(Some(line(start)..line(end)));
+                }
             }
             this.update_counts();
+            if let Some(slash) = this.slash_typed.take() {
+                this.maybe_slash_bar(slash);
+            }
             this.follow_completion();
             this.refresh_pictures();
         });
@@ -911,8 +956,13 @@ impl Editor {
         let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
         let alt = state.contains(gdk::ModifierType::ALT_MASK);
         let super_ = state.contains(gdk::ModifierType::SUPER_MASK);
+        // A key closes the link's card, and typing under a still pointer opens none.
+        self.typed_under_pointer();
         if self.vim.borrow().is_some() {
             return self.vim_key(key, keycode, control, alt, super_, shift);
+        }
+        if !super_ && self.slash_key(key, control, alt, shift) {
+            return glib::Propagation::Stop;
         }
         if !control && !alt && self.popup.key(key) {
             return glib::Propagation::Stop;
@@ -925,6 +975,9 @@ impl Editor {
                 glib::Propagation::Stop
             }
             gdk::Key::Return | gdk::Key::KP_Enter if plain && !shift => stop(self.on_return()),
+            // In a table Shift+Return is Return: a cell never holds a line break.
+            gdk::Key::Return | gdk::Key::KP_Enter if plain && shift => stop(self.table_block().is_some() && self.on_return()),
+            gdk::Key::Left | gdk::Key::Right if plain && !shift => stop(self.table_arrow(key == gdk::Key::Right)),
             gdk::Key::Tab if plain && !shift => stop(self.on_tab(false)),
             gdk::Key::ISO_Left_Tab | gdk::Key::Tab if plain && shift => stop(self.on_tab(true)),
             gdk::Key::Up | gdk::Key::Down if alt && !control && shift => {
@@ -996,8 +1049,10 @@ impl Editor {
         }
     }
 
-    /// Return continues a list, and on an empty item ends it; at the end of
-    /// a table row it makes a new row, and on an empty last row ends the table.
+    /// Return continues a list, and on an empty item ends it. In a table it
+    /// goes to the same column of the row below, with a new row after the
+    /// last, and on an empty last row it ends the table
+    /// (`MarkdownTable::enter`): one step to undo, with the formatting.
     fn on_return(&self) -> bool {
         let line = self.current_line();
         let cursor = self.selection();
@@ -1005,33 +1060,18 @@ impl Editor {
             return false;
         }
         let text = self.slice(line.clone());
-        // In a table row Return goes to a new row from any cell, as Tab
-        // leaves the cursor inside one; elsewhere only at the line's end.
-        let table = self.table_block();
-        if table.is_none() && cursor.start != line.end {
+        if let Some((range, lines, row)) = self.table_block() {
+            let column = MarkdownTable::column(cursor.start - line.start, &text);
+            match MarkdownTable::enter(&lines, row, column) {
+                TableReturn::Cell(moved) => self.place_in_table(range, &moved),
+                // The row goes, and a blank line follows the table, or the
+                // next line would be a row too.
+                TableReturn::End(_) => self.replace(line.clone(), "\n", Some(line.start + 1..line.start + 1)),
+            }
+            return true;
+        }
+        if cursor.start != line.end {
             return false;
-        }
-        // Return on the table's empty last row ends the table: the row goes,
-        // and a blank line follows it, or the next line would be a row too.
-        if let Some((_, lines, row)) = &table
-            && MarkdownTable::cells(&text).iter().all(|cell| cell.trim().is_empty())
-            && *row + 1 == lines.len()
-            && *row > 0
-        {
-            self.replace(line.clone(), "\n", Some(line.start + 1..line.start + 1));
-            return true;
-        }
-        if let Some((range, lines, row)) = table
-            && !MarkdownTable::cells(&text).iter().all(String::is_empty)
-        {
-            let formatted = MarkdownTable::new_row(&lines[..=row]);
-            let replaced = range.start..line.end;
-            let joined = formatted.join("\n");
-            let last = formatted.last().unwrap();
-            let start = replaced.start + joined.chars().count() - last.chars().count();
-            let cell = start + MarkdownTable::cell_start(last, 0);
-            self.replace(replaced, &joined, Some(cell..cell));
-            return true;
         }
         match EditorCommands::on_return(&text) {
             Some(Return::Insert(insert)) => {
@@ -1123,11 +1163,54 @@ impl Editor {
         let Some((range, lines, row)) = self.table_block() else { return false };
         let line = self.current_line();
         let column = MarkdownTable::column(self.cursor() - line.start, &self.slice(line));
-        let moved = MarkdownTable::tab(&lines, row, column, back);
+        self.place_in_table(range, &MarkdownTable::tab(&lines, row, column, back));
+        true
+    }
+
+    /// The table at characters [range] becomes [moved]'s formatted rows,
+    /// as one step to undo, with the caret at the start of the text of the
+    /// cell it names.
+    fn place_in_table(&self, range: Range<usize>, moved: &TableTab) {
         let start = range.start + moved.lines[..moved.row].iter().map(|l| l.chars().count() + 1).sum::<usize>();
         let cell = start + MarkdownTable::cell_start(&moved.lines[moved.row], moved.column);
         self.replace(range, &moved.lines.join("\n"), Some(cell..cell));
+    }
+
+    /// Left and Right in a table drawn as a grid: at the edge of a cell's
+    /// text the caret goes to the next cell's text, over the pipe and the
+    /// padding, which are not drawn. Elsewhere, and in a line with
+    /// right-to-left text, where the arrows go by what is seen, the key is
+    /// the view's own.
+    fn table_arrow(&self, right: bool) -> bool {
+        let at = self.cursor();
+        if !self.selection().is_empty() || !self.styler.in_grid(at) {
+            return false;
+        }
+        let line = self.current_line();
+        let text = self.slice(line.clone());
+        if daftar_core::text::direction::contains_rtl(&text) {
+            return false;
+        }
+        let place = if right { MarkdownTable::right(&text, at - line.start) } else { MarkdownTable::left(&text, at - line.start) };
+        let Some(place) = place else { return false };
+        self.buffer.place_cursor(&self.iter(line.start + place));
+        self.view.scroll_mark_onscreen(&self.buffer.get_insert());
         true
+    }
+
+    /// A click in a table drawn as a grid puts the caret at the nearest
+    /// place in the cell's text, never in the padding or on a pipe, which
+    /// are not drawn; in an empty cell, between its two padding spaces.
+    fn click_in_grid(&self) {
+        let at = self.cursor();
+        if !self.selection().is_empty() || !self.styler.in_grid(at) {
+            return;
+        }
+        let line = self.current_line();
+        let place = line.start + MarkdownTable::nearest(&self.slice(line.clone()), at - line.start);
+        if place != at {
+            self.buffer.place_cursor(&self.iter(place));
+        }
     }
 
     fn move_lines(&self, up: bool) {
@@ -1261,13 +1344,9 @@ impl Editor {
             return true;
         }
         if typed == '/' {
-            // After the slash is in, so it is on screen under the list.
-            let this = Rc::downgrade(self);
-            glib::idle_add_local_once(move || {
-                if let Some(this) = this.upgrade() {
-                    this.maybe_slash_menu();
-                }
-            });
+            // Looked at once the slash is in the text and styled, so it is
+            // on screen under the list. A pasted `/` never comes here.
+            self.slash_typed.set(Some(at));
             return false;
         }
         let Some(close) = Self::closing(typed) else {
@@ -1335,14 +1414,6 @@ impl Editor {
         self.follow_completion();
     }
 
-    fn maybe_slash_menu(self: &Rc<Self>) {
-        let at = self.cursor();
-        if EditorCommands::opens_slash_menu(&self.text(), at) {
-            self.completing.set(Completing::Slash(at - 1));
-            self.follow_completion();
-        }
-    }
-
     /// The list at the cursor, for what is typed now; closed when the cursor
     /// left the `[[` or the `/`.
     fn follow_completion(self: &Rc<Self>) {
@@ -1362,34 +1433,10 @@ impl Editor {
                     })
                     .collect::<Vec<_>>()
             }
-            Completing::Slash(slash) => {
-                let at = self.cursor();
-                if at <= slash || self.slice(slash..slash + 1) != "/" {
-                    return self.stop_completion();
-                }
-                let typed = self.slice(slash + 1..at);
-                if typed.chars().any(char::is_whitespace) {
-                    return self.stop_completion();
-                }
-                let mut found: Vec<(i64, usize, Choice)> = slash_snippets()
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(order, snippet)| {
-                        let hit = Fuzzy::matches(&typed, &snippet.title)?;
-                        let choice = Choice {
-                            title: glib::markup_escape_text(&snippet.title).into(),
-                            subtitle: snippet.group.clone(),
-                            value: snippet.id.clone(),
-                        };
-                        Some((hit.score, order, choice))
-                    })
-                    .collect();
-                found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-                found.into_iter().map(|(_, _, choice)| choice).collect()
-            }
+            Completing::Slash(slash) => return self.follow_slash(slash),
         };
-        // Nothing matches what is typed yet: no list, but the `[[` or the `/`
-        // still listens, as more is typed.
+        // Nothing matches what is typed yet: no list, but the `[[` still
+        // listens, as more is typed.
         if choices.is_empty() {
             self.popup.close();
             return;
@@ -1400,10 +1447,8 @@ impl Editor {
         self.popup.show(self.cursor_rectangle(), below, choices, move |choice| {
             if let Some(this) = this.upgrade() {
                 this.completing.set(Completing::Nothing);
-                match kind {
-                    Completing::Link => this.insert_completion(&choice.value),
-                    Completing::Slash(slash) => this.apply_slash(&choice.value, slash),
-                    Completing::Nothing => {}
+                if kind == Completing::Link {
+                    this.insert_completion(&choice.value);
                 }
             }
         });
@@ -1412,6 +1457,7 @@ impl Editor {
     fn stop_completion(&self) {
         self.completing.set(Completing::Nothing);
         self.popup.close();
+        self.slash.close();
     }
 
     /// The note picked for `[[`: its name, or its path when another note has
@@ -1427,26 +1473,6 @@ impl Editor {
             self.buffer.place_cursor(&self.iter(end + 2));
         }
         self.view.grab_focus();
-    }
-
-    /// The snippet picked for the `/` at [slash], in its place, as one step.
-    fn apply_slash(self: &Rc<Self>, id: &str, slash: usize) {
-        let Some(snippet) = slash_snippets().into_iter().find(|s| s.id == id) else { return };
-        if self.slice(slash..slash + 1) != "/" {
-            return;
-        }
-        // What was typed after the slash to find it goes with the slash.
-        let typed_end = self.cursor().max(slash + 1);
-        self.buffer.begin_user_action();
-        let (mut start, mut end) = (self.iter(slash + 1), self.iter(typed_end));
-        self.buffer.delete(&mut start, &mut end);
-        let edit = EditorCommands::apply(&snippet, slash, &self.text());
-        self.replace(edit.range, &edit.text, Some(edit.selection));
-        self.buffer.end_user_action();
-        self.view.grab_focus();
-        if snippet.id == "link" || snippet.id == "embed" {
-            self.complete_links();
-        }
     }
 
     // Pasting
@@ -2027,6 +2053,8 @@ impl Editor {
                 | gdk::ModifierType::CONTROL_MASK
                 | gdk::ModifierType::ALT_MASK
                 | gdk::ModifierType::SUPER_MASK;
+            // A click outside the link's card closes it.
+            this.close_card();
             if gesture.current_event_state().intersects(keys) {
                 return;
             }
@@ -2054,10 +2082,22 @@ impl Editor {
         };
         let over = Rc::new(over);
         {
-            let over = over.clone();
-            pointer.connect_motion(move |_, x, y| over(Some((x, y))));
+            let (over, this) = (over.clone(), Rc::downgrade(self));
+            pointer.connect_motion(move |pointer, x, y| {
+                over(Some((x, y)));
+                if let Some(this) = this.upgrade() {
+                    let buttons = gdk::ModifierType::BUTTON1_MASK | gdk::ModifierType::BUTTON2_MASK | gdk::ModifierType::BUTTON3_MASK;
+                    this.hover_link(Some((x, y)), pointer.current_event_state().intersects(buttons));
+                }
+            });
         }
-        pointer.connect_leave(move |_| over(None));
+        let this = Rc::downgrade(self);
+        pointer.connect_leave(move |_| {
+            over(None);
+            if let Some(this) = this.upgrade() {
+                this.hover_link(None, false);
+            }
+        });
         self.view.add_controller(pointer);
         let click = gtk::GestureClick::new();
         let this = Rc::downgrade(self);
@@ -2066,6 +2106,9 @@ impl Editor {
             let this = Rc::downgrade(&this);
             glib::idle_add_local_once(move || {
                 let Some(this) = this.upgrade() else { return };
+                if this.vim.borrow().is_none() {
+                    this.click_in_grid();
+                }
                 let vim = this.vim.borrow();
                 let Some(vim) = vim.as_ref() else { return };
                 let Some(mirror) = vim.mirror.as_ref() else { return };
@@ -2321,6 +2364,296 @@ mod tests {
             assert!((pane - 2.0 * f64::from(editor.view.left_margin()) - 560.0).abs() <= 1.0, "{pane}");
             assert_eq!(editor.view.left_margin(), editor.view.right_margin());
             assert!(editor.view.is_cursor_visible(), "the arrow keys move the cursor of a view that has one");
+            editor.discard();
+            window.destroy();
+        });
+    }
+
+    /// The table's grid and its keys, the slash bar, focus mode and the
+    /// link preview in a real view (docs/specs/look.md, part 2). Needs a
+    /// display: `xvfb-run -a cargo test -p daftar -- --ignored
+    /// the_grid_the_slash_bar`, alone, as GTK keeps to the thread that
+    /// started it.
+    #[test]
+    #[ignore = "needs a display"]
+    fn the_grid_the_slash_bar_focus_mode_and_the_link_card_in_a_view() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            crate::style::install();
+            let vault = tempfile::tempdir().unwrap();
+            let text = "Intro with [[Plan#Next|the plan]] and [[Nowhere]].\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n\nlast\n\n| X | Y |\n| --- | --- |\n| **b** | c |\n";
+            fs::write(vault.path().join("Note.md"), text).unwrap();
+            fs::create_dir_all(vault.path().join("Work")).unwrap();
+            fs::write(vault.path().join("Work/Plan.md"), "# Plan\n\nfirst\n\n## Next\n\n- [ ] do it\nthen rest\n").unwrap();
+            let index = Vault::index(vault.path(), None);
+            let store = Rc::new(VaultStore::new(vault.path().to_path_buf(), index, std::sync::Arc::new(daftar_core::SearchIndex::new())));
+            let settings = Rc::new(RefCell::new(AppSettings::of(vault.path().join("config.toml"), daftar_core::ConfigFile::TEMPLATE)));
+            let editor = Editor::new(settings.clone(), |_| {}, |_| {});
+            editor.set_store(store);
+            let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
+            window.present();
+            assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            // Where [needle] starts in the editor's text, in characters.
+            let at = |needle: &str| {
+                let text = editor.text();
+                text[..text.find(needle).unwrap_or_else(|| panic!("{needle:?} is in {text:?}"))].chars().count()
+            };
+            let tagged =
+                |name: &str, at: usize| editor.iter(at).tags().iter().any(|tag| tag.name().is_some_and(|n| n == format!("daftar:{name}")));
+            let none = gdk::ModifierType::empty();
+            let key = |key: gdk::Key, state: gdk::ModifierType| editor.key(key, 0, state) == glib::Propagation::Stop;
+            // Keys as the view gets them: one the editor leaves alone goes into the text.
+            let typed = |letters: &str| {
+                for letter in letters.chars() {
+                    let name = match letter {
+                        '/' => "slash".to_string(),
+                        ' ' => "space".to_string(),
+                        letter => letter.to_string(),
+                    };
+                    if !key(gdk::Key::from_name(name).unwrap(), none) {
+                        editor.buffer.insert_at_cursor(&letter.to_string());
+                    }
+                }
+            };
+            // The loop runs for this long, for what a timer does.
+            let spin = |ms: u64| {
+                let start = std::time::Instant::now();
+                while start.elapsed() < Duration::from_millis(ms) {
+                    while context.iteration(false) {}
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            };
+
+            // The table is a grid: its rows one run, the header, the
+            // delimiter row at no height, each pipe clear, the last row marked.
+            let (head, rule, one) = (at("| A |"), at("| --- |"), at("| 1 |"));
+            assert!(wait(context, || tagged("grid", head)), "the table is a grid");
+            assert!(
+                tagged("grid-head", head + 2)
+                    && tagged("grid-pipe", head)
+                    && tagged("grid-pipe", head + 4)
+                    && !tagged("grid-pipe", head + 2)
+            );
+            assert!(tagged("grid-rule", rule) && tagged("grid", one) && tagged("grid-last", at("| 3 |")) && !tagged("grid-last", one));
+            assert!(!tagged("grid", at("last")) && editor.styler.in_grid(one) && !editor.styler.in_grid(0));
+
+            // The caret in a cell keeps the grid; on the delimiter row, and
+            // with a selection that reaches outside one cell, the table is raw.
+            editor.buffer.place_cursor(&editor.iter(one + 2));
+            spin(50);
+            assert!(tagged("grid", head) && tagged("grid-pipe", one), "a cell is edited in place");
+            editor.buffer.place_cursor(&editor.iter(rule + 2));
+            assert!(wait(context, || !tagged("grid", head)), "raw with the caret on the delimiter row");
+            assert!(!tagged("grid-rule", rule) && !tagged("grid-pipe", head) && !tagged("grid", at("| 3 |")));
+            editor.buffer.place_cursor(&editor.iter(one + 2));
+            assert!(wait(context, || tagged("grid", head) && tagged("grid-rule", rule)), "drawn again when the caret leaves");
+            editor.buffer.select_range(&editor.iter(one + 2), &editor.iter(one + 6));
+            assert!(wait(context, || !tagged("grid", head)), "raw with a selection over two cells");
+            editor.buffer.select_range(&editor.iter(one + 2), &editor.iter(one + 3));
+            assert!(wait(context, || tagged("grid", head)), "a selection inside one cell keeps the grid");
+
+            // A cell has part 1's marks rule: `**` shows with the caret in
+            // the bold text and hides when it leaves. What the hidden marks
+            // lost of the column's width is given back in the cell's padding.
+            let bold = at("| **b**");
+            let padded = |at: usize| editor.iter(at).tags().iter().any(|tag| tag.name().is_some_and(|n| n.starts_with("daftar:grid-pad:")));
+            assert!(wait(context, || tagged("hidden", bold + 2) && tagged("hidden", bold + 6) && padded(bold + 7)), "hidden, and padded");
+            editor.buffer.place_cursor(&editor.iter(bold + 5));
+            assert!(wait(context, || !tagged("hidden", bold + 2) && !padded(bold + 7)), "the marks show with the caret in the element");
+            assert!(tagged("grid", bold) && tagged("grid-pipe", bold));
+            editor.buffer.place_cursor(&editor.iter(bold + 11));
+            assert!(wait(context, || tagged("hidden", bold + 2) && padded(bold + 7)), "and hide when it leaves, in the same row");
+
+            // Right at the end of a cell's text goes to the next cell's text, and Left back.
+            editor.buffer.place_cursor(&editor.iter(one + 3));
+            assert!(key(gdk::Key::Right, none));
+            assert_eq!(editor.cursor(), one + 6);
+            assert!(key(gdk::Key::Left, none));
+            assert_eq!(editor.cursor(), one + 3);
+            assert!(!key(gdk::Key::Left, none), "inside the text the key is the view's");
+
+            // Return goes to the same column of the row below, with the
+            // table formatted, as one step to undo.
+            assert!(key(gdk::Key::Return, none));
+            assert!(editor.text().contains("| A   | B   |\n| --- | --- |\n| 1   | 2   |\n| 3   | 4   |\n"));
+            assert_eq!(editor.cursor(), at("| 3  ") + 2);
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text, "one undo takes the move and its formatting back");
+            // Shift+Return is Return. On the last row a new row is added,
+            // the caret in its same column, and Return on it ends the table.
+            editor.buffer.place_cursor(&editor.iter(at("| 3 |") + 6));
+            assert!(key(gdk::Key::Return, gdk::ModifierType::SHIFT_MASK));
+            assert!(editor.text().contains("| 3   | 4   |\n|     |     |\n"));
+            let added = at("|     |     |");
+            assert_eq!(editor.cursor(), added + 8);
+            assert!(wait(context, || tagged("grid-last", added) && !tagged("grid-last", at("| 3  "))), "the box ends under the new row");
+            assert!(key(gdk::Key::Return, none));
+            assert!(editor.text().contains("| 3   | 4   |\n\n") && !editor.text().contains("|     |"), "{}", editor.text());
+            // Tab from the header's last cell passes the delimiter row.
+            editor.buffer.place_cursor(&editor.iter(at("| A  ") + 8));
+            assert!(key(gdk::Key::Tab, none));
+            assert_eq!(editor.cursor(), at("| 1  ") + 2);
+            // Outside a table Shift+Return is the view's own key.
+            editor.buffer.place_cursor(&editor.iter(at("last")));
+            assert!(!key(gdk::Key::Return, gdk::ModifierType::SHIFT_MASK));
+
+            // Focus mode: the caret's paragraph is the bright one. The table
+            // is lines 2 to 5; a blank line is alone; a selection keeps
+            // every paragraph it touches.
+            assert!(!editor.focus.is_on(), "off with no setting");
+            settings.borrow_mut().file.set("editor.focus", daftar_core::Value::Bool(true));
+            editor.settings_changed();
+            assert!(editor.focus.is_on());
+            editor.buffer.place_cursor(&editor.iter(at("| 1  ") + 2));
+            assert!(wait(context, || editor.focus.bright_lines() == Some((2, 5))), "{:?}", editor.focus.bright_lines());
+            editor.buffer.place_cursor(&editor.iter(3));
+            assert!(wait(context, || editor.focus.bright_lines() == Some((0, 0))));
+            let blank = at("| 3  ") + 15;
+            editor.buffer.place_cursor(&editor.iter(blank));
+            assert!(wait(context, || editor.focus.bright_lines() == Some((7, 7))), "{:?}", editor.focus.bright_lines());
+            // A blank line typed in is still its own paragraph, between blank lines.
+            editor.buffer.insert_at_cursor("x");
+            spin(50);
+            assert_eq!(editor.focus.bright_lines(), Some((7, 7)));
+            editor.buffer.undo();
+            editor.buffer.select_range(&editor.iter(3), &editor.iter(at("| 1  ") + 2));
+            assert!(wait(context, || editor.focus.bright_lines() == Some((0, 5))), "{:?}", editor.focus.bright_lines());
+            // A line break in a paragraph of two lines parts it.
+            editor.buffer.place_cursor(&editor.iter(at("last") + 4));
+            editor.buffer.insert_at_cursor("\nmore");
+            assert!(wait(context, || editor.focus.bright_lines().is_some_and(|(first, last)| last == first + 1)));
+            let two = editor.focus.bright_lines().unwrap();
+            editor.buffer.place_cursor(&editor.iter(at("more")));
+            editor.buffer.insert_at_cursor("\n");
+            assert!(wait(context, || editor.focus.bright_lines() == Some((two.1 + 1, two.1 + 1))), "{:?}", editor.focus.bright_lines());
+            settings.borrow_mut().file.set("editor.focus", daftar_core::Value::Bool(false));
+            editor.settings_changed();
+            assert!(!editor.focus.is_on() && editor.focus.bright_lines().is_none());
+
+            // The slash bar: a `/` at a line's start opens it with every
+            // item, the first chosen; what is typed after it filters.
+            editor.buffer.place_cursor(&editor.buffer.end_iter());
+            editor.buffer.insert_at_cursor("\n");
+            typed("/");
+            assert!(wait(context, || editor.slash.is_open()), "a `/` at a line's start opens the bar");
+            let (chosen, shown) = editor.slash.shown();
+            assert_eq!((chosen.as_deref(), shown.len()), (Some("h1"), 36));
+            // Down, Up, Ctrl+N and Ctrl+P choose, and stop at the ends.
+            assert!(key(gdk::Key::n, gdk::ModifierType::CONTROL_MASK) && key(gdk::Key::Down, none));
+            assert_eq!(editor.slash.shown().0.as_deref(), Some("h3"));
+            assert!(key(gdk::Key::Up, none) && key(gdk::Key::p, gdk::ModifierType::CONTROL_MASK) && key(gdk::Key::Up, none));
+            assert_eq!(editor.slash.shown().0.as_deref(), Some("h1"));
+            typed("tab");
+            assert!(wait(context, || editor.slash.shown().0.as_deref() == Some("table")), "{:?}", editor.slash.shown());
+            // Nothing matches: the list hides and still listens, Return is
+            // an ordinary key, and Backspace brings the list back.
+            typed("zz");
+            assert!(wait(context, || !editor.slash.is_open()));
+            assert!(matches!(editor.completing.get(), Completing::Slash(_)));
+            assert!(!key(gdk::Key::Return, none), "with the list hidden Return is an ordinary key");
+            let backspace = || {
+                if !key(gdk::Key::BackSpace, none) {
+                    let mut at = editor.buffer.iter_at_mark(&editor.buffer.get_insert());
+                    editor.buffer.backspace(&mut at, true, true);
+                }
+            };
+            backspace();
+            backspace();
+            assert!(wait(context, || editor.slash.is_open() && editor.slash.shown().0.as_deref() == Some("table")));
+            // Escape closes the list and leaves the `/` and what was typed;
+            // the same `/` does not open it again.
+            assert!(key(gdk::Key::Escape, none));
+            assert!(!editor.slash.is_open() && editor.completing.get() == Completing::Nothing);
+            assert!(editor.text().ends_with("\n/tab"));
+            typed("l");
+            spin(100);
+            assert!(!editor.slash.is_open());
+            // Return inserts the chosen row in place of the `/` and what was typed, as one step.
+            editor.buffer.insert_at_cursor("\n");
+            typed("/task");
+            assert!(wait(context, || editor.slash.is_open() && editor.slash.shown().0.as_deref() == Some("task")));
+            assert!(key(gdk::Key::Return, none));
+            assert!(editor.text().ends_with("\n- [ ] ") && !editor.slash.is_open(), "{}", editor.text());
+            assert_eq!(editor.cursor(), editor.buffer.char_count() as usize);
+            editor.buffer.undo();
+            assert!(editor.text().ends_with("\n/task"), "one undo takes the insert back");
+            // A space closes the list; so does the caret leaving the `/`.
+            editor.buffer.place_cursor(&editor.buffer.end_iter());
+            editor.buffer.insert_at_cursor("\n");
+            typed("/h");
+            assert!(wait(context, || editor.slash.is_open()));
+            typed(" ");
+            assert!(wait(context, || !editor.slash.is_open() && editor.completing.get() == Completing::Nothing));
+            editor.buffer.insert_at_cursor("\n");
+            typed("/he");
+            assert!(wait(context, || editor.slash.is_open()));
+            editor.buffer.place_cursor(&editor.iter(editor.cursor() - 3));
+            assert!(wait(context, || !editor.slash.is_open() && editor.completing.get() == Completing::Nothing));
+            // A `/` in a word, in inline code, and with the setting off opens nothing.
+            editor.buffer.place_cursor(&editor.buffer.end_iter());
+            editor.buffer.insert_at_cursor("\n");
+            typed("a/");
+            spin(100);
+            assert!(!editor.slash.is_open() && editor.completing.get() == Completing::Nothing);
+            editor.buffer.insert_at_cursor("\n`x y`");
+            editor.buffer.place_cursor(&editor.iter(editor.cursor() - 1));
+            typed(" /");
+            spin(100);
+            assert!(!editor.slash.is_open() && editor.completing.get() == Completing::Nothing, "not in inline code");
+            settings.borrow_mut().file.set("editor.slash_menu", daftar_core::Value::Bool(false));
+            editor.buffer.place_cursor(&editor.buffer.end_iter());
+            editor.buffer.insert_at_cursor("\n");
+            typed("/");
+            spin(100);
+            assert!(!editor.slash.is_open(), "`editor.slash_menu = false`: a `/` is only a `/`");
+
+            // The link preview: the card of a link to a heading has the
+            // note's title, the heading, the folder and the lines under the heading.
+            let link = at("[[Plan#Next|the plan]]");
+            editor.show_card((link, link + 22));
+            assert!(editor.card.is_open());
+            assert_eq!(editor.card.said(), ("Plan".into(), "› Next".into(), "Work".into(), "- [ ] do it\nthen rest".into()));
+            // Any key closes it at once.
+            editor.key(gdk::Key::Shift_L, 0, none);
+            assert!(!editor.card.is_open());
+            let missing = at("[[Nowhere]]");
+            editor.show_card((missing, missing + 11));
+            assert_eq!(editor.card.said(), ("Nowhere".into(), String::new(), String::new(), "No note yet.".into()));
+            editor.close_card();
+            // The pointer rests on the link for 350 ms before the card
+            // shows, and the card stays 250 ms after the pointer left.
+            let place = editor.view.iter_location(&editor.iter(at("the plan") + 2));
+            let (x, y) = editor.view.buffer_to_window_coords(gtk::TextWindowType::Widget, place.x() + 2, place.y() + place.height() / 2);
+            let point = Some((f64::from(x), f64::from(y)));
+            let rested = std::time::Instant::now();
+            editor.hover_link(point, false);
+            assert!(!editor.card.is_open(), "not before the pointer has rested");
+            assert!(wait(context, || editor.card.is_open()), "after 350 ms on the link");
+            assert!(rested.elapsed() >= Duration::from_millis(daftar_core::LinkPreview::REST - 10), "{:?}", rested.elapsed());
+            assert_eq!(editor.card.said().0, "Plan");
+            let left = std::time::Instant::now();
+            editor.hover_link(None, false);
+            assert!(editor.card.is_open(), "it stays while the pointer goes to it");
+            assert!(wait(context, || !editor.card.is_open()), "and closes after the pointer left");
+            assert!(left.elapsed() >= Duration::from_millis(daftar_core::LinkPreview::LINGER - 10), "{:?}", left.elapsed());
+            // Off a link there is no card; a key pressed since the pointer
+            // last moved opens none; a button held down opens none.
+            editor.hover_link(Some((f64::from(x), f64::from(y) + 300.0)), false);
+            spin(450);
+            assert!(!editor.card.is_open());
+            editor.hover_link(point, false);
+            editor.key(gdk::Key::Shift_L, 0, none);
+            spin(450);
+            assert!(!editor.card.is_open(), "typing under a still pointer opens no card");
+            editor.hover_link(point, true);
+            spin(450);
+            assert!(!editor.card.is_open(), "not while a mouse button is down");
+            settings.borrow_mut().file.set("appearance.link_preview", daftar_core::Value::Bool(false));
+            editor.hover_link(Some((f64::from(x) + 1.0, f64::from(y))), false);
+            spin(450);
+            assert!(!editor.card.is_open(), "`appearance.link_preview = false`");
             editor.discard();
             window.destroy();
         });
