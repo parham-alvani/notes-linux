@@ -154,6 +154,8 @@ const ALLOWED: &[(&str, Rule)] = &[
     ("editor.live_preview", Rule::Bool),
     ("editor.format_bar", Rule::Bool),
     ("editor.format_on_save", Rule::Bool),
+    ("editor.slash_menu", Rule::Bool),
+    ("editor.focus", Rule::Bool),
     ("git.sync_interval", Rule::Int(0, 10_080)),
     ("git.pull_on_launch", Rule::Bool),
     ("git.name", Rule::Name),
@@ -666,6 +668,54 @@ mod tests {
         assert_eq!(capture.string("scratchpad.folder").as_deref(), Some("Scratch"));
     }
 
+    /// docs/specs/look.md, part 2, case 23, for the keys this app has: the
+    /// slash bar, focus mode, the link preview and the section bar.
+    #[test]
+    fn the_new_settings_have_their_defaults() {
+        let template = ConfigFile::new(ConfigFile::TEMPLATE);
+        assert_eq!(template.bool("editor.slash_menu"), Some(true));
+        assert_eq!(template.bool("appearance.link_preview"), Some(true));
+        assert_eq!(template.bool("editor.focus"), Some(false));
+        // With no setting each is as not there, and the app takes its default.
+        let none = Settings::resolved("", "");
+        assert_eq!((none.bool("editor.slash_menu"), none.bool("appearance.link_preview"), none.bool("editor.focus")), (None, None, None));
+        // A vault that sets each is followed, and none is refused.
+        let vault = "[editor]\nslash_menu = false\nfocus = true\n\n[appearance]\nlink_preview = false\n";
+        let settings = Settings::resolved(vault, "[editor]\nslash_menu = true\nfocus = false\n");
+        assert_eq!(settings.bool("editor.slash_menu"), Some(false));
+        assert_eq!(settings.bool("editor.focus"), Some(true));
+        assert_eq!(settings.bool("appearance.link_preview"), Some(false));
+        for key in ["editor.slash_menu", "editor.focus", "appearance.link_preview"] {
+            assert!(settings.is_from_vault(key), "{key}");
+        }
+        assert!(settings.refused().is_empty());
+        // A value a key may not have is as not there.
+        let wrong = Settings::resolved("[editor]\nslash_menu = \"yes\"\n", "[editor]\nslash_menu = false\n");
+        assert_eq!(wrong.bool("editor.slash_menu"), Some(false));
+        assert!(!wrong.is_from_vault("editor.slash_menu") && wrong.refused().is_empty());
+        // The reader's two keys: the link preview and the section bar.
+        {
+            let keys = ["appearance.link_preview", "appearance.section_bar"];
+            let entry = |settings: &Settings, key: &str| settings.entries().into_iter().find(|e| e.key == key).unwrap();
+            let none = Settings::resolved("", "");
+            for key in keys {
+                let found = entry(&none, key);
+                assert_eq!((found.value, found.from), (Some(Value::Bool(true)), Origin::Default), "{key}");
+            }
+            // A vault that sets each is followed, and none is listed as refused.
+            let vault = Settings::resolved("[appearance]\nlink_preview = false\nsection_bar = false\n", "");
+            for key in keys {
+                assert_eq!(vault.bool(key), Some(false), "{key}");
+                assert!(vault.is_from_vault(key), "{key}");
+            }
+            assert!(vault.refused().is_empty());
+            // A value that is no boolean is as not there.
+            let wrong = Settings::resolved("[appearance]\nsection_bar = \"yes\"\n", "[appearance]\nsection_bar = false\n");
+            assert_eq!(wrong.bool("appearance.section_bar"), Some(false));
+            assert!(!wrong.is_from_vault("appearance.section_bar") && wrong.refused().is_empty());
+        }
+    }
+
     #[test]
     fn a_wrong_value_is_as_not_there() {
         for vault in ["[appearance]\ntext_size = \"big\"\n", "[appearance]\ntext_size = -3\n", "[appearance]\ntext_size = 400\n"] {
@@ -866,28 +916,5 @@ mod tests {
         let keys: Vec<String> = Settings::resolved("", "").entries().into_iter().map(|e| e.key).collect();
         let at = keys.iter().position(|k| k == "git.pull_on_launch").unwrap();
         assert_eq!(keys[at + 1..at + 3], ["git.name", "git.email"]);
-    }
-
-    /// Test 23 of `docs/specs/look.md`, part 2, for the reader's two keys.
-    #[test]
-    fn the_new_settings_have_their_defaults() {
-        let keys = ["appearance.link_preview", "appearance.section_bar"];
-        let entry = |settings: &Settings, key: &str| settings.entries().into_iter().find(|e| e.key == key).unwrap();
-        let none = Settings::resolved("", "");
-        for key in keys {
-            let found = entry(&none, key);
-            assert_eq!((found.value, found.from), (Some(Value::Bool(true)), Origin::Default), "{key}");
-        }
-        // A vault that sets each is followed, and none is listed as refused.
-        let vault = Settings::resolved("[appearance]\nlink_preview = false\nsection_bar = false\n", "");
-        for key in keys {
-            assert_eq!(vault.bool(key), Some(false), "{key}");
-            assert!(vault.is_from_vault(key), "{key}");
-        }
-        assert!(vault.refused().is_empty());
-        // A value that is no boolean is as not there.
-        let wrong = Settings::resolved("[appearance]\nsection_bar = \"yes\"\n", "[appearance]\nsection_bar = false\n");
-        assert_eq!(wrong.bool("appearance.section_bar"), Some(false));
-        assert!(!wrong.is_from_vault("appearance.section_bar") && wrong.refused().is_empty());
     }
 }

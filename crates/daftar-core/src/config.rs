@@ -244,8 +244,8 @@ remote_images = true
 # .daftar.toml), "always" or "never". A note whose sections you fold
 # or open yourself is kept as you left it.
 fold_sections = "vault"
-# Resting the pointer on a link to a note shows the note's first
-# lines in a small card.
+# Resting the pointer on a [[link]] to a note shows a small card with
+# the note's title and its first lines, in the reader and the editor.
 link_preview = true
 # The reader shows the heading path of the place being read in a bar
 # at the top of the note, once that heading has left the view.
@@ -268,6 +268,12 @@ live_preview = true
 # A bar of formats (bold, italic, highlight, code, strike, link) shows
 # over the selected text.
 format_bar = true
+# A / at the start of a line or after a space shows a list of things to
+# insert (a heading, a task, a callout, a table, today's date), filtered
+# as you type. false: a / is only a /.
+slash_menu = true
+# Focus mode: every paragraph but the cursor's is dimmed.
+focus = false
 # Ctrl+E opens the note in Neovide's own window instead of the editor.
 neovide = false
 # Format a note you typed in with daftar-cli fmt (the vault's
@@ -486,6 +492,7 @@ mod tests {
         assert_eq!(file.string("appearance.code_font").as_deref(), Some("JetBrains Mono"));
         assert_eq!(file.int("appearance.reading_line"), Some(18));
         assert_eq!((file.bool("appearance.link_preview"), file.bool("appearance.section_bar")), (Some(true), Some(true)));
+        assert_eq!((file.bool("editor.slash_menu"), file.bool("editor.focus")), (Some(true), Some(false)));
         assert_eq!(file.bool("git.pull_on_launch"), Some(true));
         assert_eq!(file.string("notifications.digest_time").as_deref(), Some("09:00"));
     }

@@ -1549,6 +1549,8 @@ impl Window {
         let tabs = self.tabs.borrow().clone();
         for tab in &tabs {
             tab.reader.reload();
+            // The editor has the reader's size and measure.
+            tab.editor.settings_changed();
         }
     }
 
@@ -1570,6 +1572,19 @@ impl Window {
             self.toasts.add_toast(crate::toast(&format!("The settings were not saved: {error}")));
         }
         self.reload_readers();
+    }
+
+    /// Turn On Focus Mode and Turn Off Focus Mode: `editor.focus` changes,
+    /// so it goes where a changed setting goes, and every editor follows.
+    fn toggle_focus_mode(&self) {
+        let on = !self.settings.borrow().focus();
+        if let Err(error) = self.settings.borrow_mut().set("editor.focus", Value::Bool(on)) {
+            self.toasts.add_toast(crate::toast(&format!("The settings were not saved: {error}")));
+        }
+        let tabs = self.tabs.borrow().clone();
+        for tab in &tabs {
+            tab.editor.settings_changed();
+        }
     }
 
     /// Files changed on disk, by another app, `git` or this one: the index
@@ -1680,6 +1695,13 @@ impl Window {
             command("Bigger Text", "View", "win.bigger-text", "Ctrl+="),
             command("Smaller Text", "View", "win.smaller-text", "Ctrl+-"),
             command("Actual Size", "View", "win.actual-size", "Ctrl+0"),
+            // It changes `editor.focus`, so it has the state in its name and no key.
+            command(
+                if self.settings.borrow().focus() { "Turn Off Focus Mode" } else { "Turn On Focus Mode" },
+                "View",
+                "win.focus-mode",
+                "",
+            ),
             command("Switch Vault…", "File", "win.switch-vault", ""),
             command("Open Vault…", "File", "win.open-vault", "Ctrl+Shift+O"),
             command("Forget Vault…", "File", "win.forget-vault", ""),
@@ -1975,6 +1997,10 @@ impl Window {
             action.connect_activate(move |_, _| this.text_size(step));
             self.window.add_action(&action);
         }
+        let focus_mode = gio::SimpleAction::new("focus-mode", None);
+        let this = self.clone();
+        focus_mode.connect_activate(move |_, _| this.toggle_focus_mode());
+        self.window.add_action(&focus_mode);
         let sync_error = gio::SimpleAction::new("sync-error", None);
         let this = self.clone();
         sync_error.connect_activate(move |_, _| this.show_sync_error());

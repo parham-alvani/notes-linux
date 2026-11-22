@@ -13,6 +13,9 @@ use chrono::NaiveDateTime;
 use regex::Regex;
 
 use crate::day::Day;
+use crate::fuzzy::Fuzzy;
+use crate::markdown_highlighter::{BlockState, Kind as HighlightKind, MarkdownHighlighter};
+use crate::markdown_table::MarkdownTable;
 use crate::task_line::TaskLine;
 use crate::vault::Vault;
 
@@ -205,10 +208,13 @@ impl EditorCommands {
         lines.join("\n")
     }
 
+    /// The items of the slash bar, in the order they are listed
+    /// (`docs/specs/look.md`, part 2). A callout puts the caret in its
+    /// title, and the yellow highlight writes no circle: it is the default.
     pub fn slash_commands(today: Day, time: &str) -> Vec<Snippet> {
         let today = today.to_string();
         let s = Snippet::new;
-        vec![
+        let mut items = vec![
             s("h1", "Heading 1", "Text", "textformat.size.larger", "orange", "# ", None, true),
             s("h2", "Heading 2", "Text", "textformat.size", "vividYellow", "## ", None, true),
             s("h3", "Heading 3", "Text", "textformat.size.smaller", "blue", "### ", None, true),
@@ -226,10 +232,28 @@ impl EditorCommands {
             s("bullet", "Bulleted list", "Lists", "list.bullet", "aqua", "- ", None, true),
             s("number", "Numbered list", "Lists", "list.number", "aqua", "1. ", None, true),
             s("quote", "Quote", "Blocks", "text.quote", "warmGrey", "> ", None, true),
-            s("note", "Note callout", "Blocks", "pencil", "blue", "> [!note] \n> ", None, true),
-            s("tip", "Tip callout", "Blocks", "flame.fill", "chartreuse", "> [!tip] \n> ", None, true),
-            s("warning", "Warning callout", "Blocks", "exclamationmark.triangle.fill", "orange", "> [!warning] \n> ", None, true),
-            s("danger", "Danger callout", "Blocks", "bolt.fill", "red", "> [!danger] \n> ", None, true),
+        ];
+        let callout = |id: &str, title: &str, kind: &str, symbol: &str, color: &str| {
+            let head = format!("> [!{kind}] ");
+            s(id, title, "Blocks", symbol, color, &format!("{head}\n> "), Some(head.len()), true)
+        };
+        items.push(callout("callout", "Callout", "note", "text.bubble", "blue"));
+        for (kind, title, symbol, color) in [
+            ("note", "Note callout", "pencil", "blue"),
+            ("info", "Info callout", "info.circle", "blue"),
+            ("tip", "Tip callout", "flame.fill", "chartreuse"),
+            ("important", "Important callout", "exclamationmark.circle", "chartreuse"),
+            ("warning", "Warning callout", "exclamationmark.triangle.fill", "orange"),
+            ("danger", "Danger callout", "bolt.fill", "red"),
+            ("example", "Example callout", "list.bullet.rectangle", "purple"),
+            ("question", "Question callout", "questionmark.circle", "yellow"),
+            ("success", "Success callout", "checkmark.circle", "green"),
+            ("summary", "Summary callout", "doc.plaintext", "mint"),
+            ("todo", "Todo callout", "checkmark.circle", "vividYellow"),
+        ] {
+            items.push(callout(kind, title, kind, symbol, color));
+        }
+        items.extend([
             s("code", "Code block", "Blocks", "chevron.left.forwardslash.chevron.right", "pink", "```\n\n```", Some(4), true),
             s(
                 "mermaid",
@@ -242,29 +266,80 @@ impl EditorCommands {
                 true,
             ),
             s("math", "Math block", "Blocks", "function", "purple", "$$\n\n$$", Some(3), true),
-            s(
-                "table",
-                "Table",
-                "Blocks",
-                "tablecells",
-                "green",
-                "| Column | Column |\n| ------ | ------ |\n|        |        |",
-                Some(42),
-                true,
-            ),
             s("tasks", "Tasks query", "Blocks", "checklist", "orange", "```tasks\nnot done\ndue before tomorrow\n```", None, true),
-            s("divider", "Divider", "Blocks", "minus", "grey", "---\n", None, true),
+            // The first header cell's word is selected: what is typed takes its place.
+            Snippet {
+                selected: MarkdownTable::PLACEHOLDER.chars().count(),
+                ..s(
+                    "table",
+                    "Table",
+                    "Blocks",
+                    "tablecells",
+                    "green",
+                    &MarkdownTable::format(&[format!("| {0} | {0} |", MarkdownTable::PLACEHOLDER), "| - | - |".into(), "| |".into()])
+                        .join("\n"),
+                    Some(2),
+                    true,
+                )
+            },
+            s("divider", "Rule", "Blocks", "minus", "grey", "---\n", None, true),
             s("link", "Link to a note", "Links", "link", "aqua", "[[]]", Some(2), false),
             s("embed", "Embed a note or a file", "Links", "photo.on.rectangle", "pink", "![[]]", Some(3), false),
             s("date", "Today's date", "Insert", "calendar", "orange", &today, None, false),
             s("time", "The time now", "Insert", "clock", "blue", time, None, false),
-            s("red", "Red highlight", "Highlight", "highlighter", "red", "==🔴 ==", Some(5), false),
-            s("orange", "Orange highlight", "Highlight", "highlighter", "orange", "==🟠 ==", Some(5), false),
-            s("yellow", "Yellow highlight", "Highlight", "highlighter", "vividYellow", "==🟡 ==", Some(5), false),
-            s("green", "Green highlight", "Highlight", "highlighter", "green", "==🟢 ==", Some(5), false),
-            s("blue", "Blue highlight", "Highlight", "highlighter", "blue", "==🔵 ==", Some(5), false),
-            s("purple", "Purple highlight", "Highlight", "highlighter", "purple", "==🟣 ==", Some(5), false),
-        ]
+            // The caret after the circle: two UTF-16 units each.
+            s("red", "Red highlight", "Highlight", "highlighter", "red", "==🔴==", Some(4), false),
+            s("orange", "Orange highlight", "Highlight", "highlighter", "orange", "==🟠==", Some(4), false),
+            s("yellow", "Yellow highlight", "Highlight", "highlighter", "vividYellow", "====", Some(2), false),
+            s("green", "Green highlight", "Highlight", "highlighter", "green", "==🟢==", Some(4), false),
+            s("blue", "Blue highlight", "Highlight", "highlighter", "blue", "==🔵==", Some(4), false),
+            s("purple", "Purple highlight", "Highlight", "highlighter", "purple", "==🟣==", Some(4), false),
+        ]);
+        items
+    }
+
+    /// The items of [commands] the slash bar shows for [query], what is
+    /// typed after the `/`: those whose title or id it matches as the
+    /// palette matches (`Fuzzy::matches`), best first, and in the list's
+    /// order when two match the same. An empty query shows every item.
+    pub fn slash_matches(query: &str, commands: &[Snippet]) -> Vec<Snippet> {
+        let mut found: Vec<(i64, usize)> = commands
+            .iter()
+            .enumerate()
+            .filter_map(|(order, item)| {
+                let score =
+                    [&item.title, &item.id].into_iter().filter_map(|text| Fuzzy::matches(query, text)).map(|hit| hit.score).max()?;
+                Some((score, order))
+            })
+            .collect();
+        found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        found.into_iter().map(|(_, order)| commands[order].clone()).collect()
+    }
+
+    /// Whether the `/` typed just before character [location] opens the
+    /// slash bar. [lines] are whole lines of the note that start at
+    /// character [offset] in the block [state] and hold the `/`. It opens
+    /// at the start of a line or after a space, never in a code block,
+    /// inline code, the front matter, math or a comment, in Neovim mode or
+    /// with `editor.slash_menu` off.
+    pub fn slash_bar_opens(lines: &str, offset: usize, location: usize, state: &BlockState, neovim: bool, enabled: bool) -> bool {
+        if !enabled || neovim || location <= offset || !Self::opens_slash_menu(lines, location - offset) {
+            return false;
+        }
+        let slash = location - 1;
+        let (spans, _) = MarkdownHighlighter::spans_of_lines(lines, offset, state.clone());
+        !spans.iter().any(|span| {
+            span.range.contains(&slash)
+                && matches!(
+                    span.kind,
+                    HighlightKind::Code
+                        | HighlightKind::CodeBlock
+                        | HighlightKind::Fence
+                        | HighlightKind::FrontMatter
+                        | HighlightKind::Math
+                        | HighlightKind::Comment
+                )
+        })
     }
 
     /// Whether the `/` just before character [location] opens the menu: at
@@ -280,13 +355,55 @@ impl EditorCommands {
     /// The edit that puts [snippet] where the `/` at character [slash] is.
     /// The selection is the cursor, empty.
     pub fn apply(snippet: &Snippet, slash: usize, text: &str) -> TextEdit {
+        Self::apply_over(snippet, slash..slash + 1, text)
+    }
+
+    /// The edit that puts [snippet] in place of [typed], the `/` and what
+    /// was typed after it to find the item, as one step. [text] is the
+    /// note, with [typed] in its characters, so the lines beside the `/`
+    /// are known. Only line breaks are added around the item's text, and
+    /// nothing of the note goes but [typed].
+    ///
+    /// A block after other text on the line starts a line of its own. One
+    /// that stands apart (`Snippet::stands_apart`: a callout, a fence, math,
+    /// a table, a rule) also gets a blank line between it and a line with
+    /// text before it or after it, and the rest of its line goes under it:
+    /// with none, the reader and the formatter take the next paragraph as a
+    /// row of the table, as the callout's body or as a heading over the rule.
+    pub fn apply_over(snippet: &Snippet, typed: Range<usize>, text: &str) -> TextEdit {
         let chars: Vec<char> = text.chars().collect();
+        let slash = typed.start;
         let start = line_start(&chars, slash);
-        let before: String = chars[start..slash].iter().collect();
-        // A block after other text on the line starts a line of its own.
-        let lead = if snippet.block && !before.trim().is_empty() { "\n" } else { "" };
+        let end = chars[typed.end..].iter().position(|&c| c == '\n').map_or(chars.len(), |found| typed.end + found);
+        let blank = |range: Range<usize>| chars[range].iter().all(|c| c.is_whitespace());
+        let (before, after) = (!blank(start..slash), !blank(typed.end..end));
+        let (lead, trail) = if !snippet.block {
+            ("", "")
+        } else if !snippet.stands_apart() {
+            (if before { "\n" } else { "" }, "")
+        } else {
+            // A line with text over the `/`'s line, and one under it.
+            let above = start > 0 && !blank(line_start(&chars, start - 1)..start - 1);
+            let below = end < chars.len() && {
+                let next = end + 1;
+                !blank(next..chars[next..].iter().position(|&c| c == '\n').map_or(chars.len(), |found| next + found))
+            };
+            // The rule ends with its own line break: the caret's line is the blank one.
+            let closed = snippet.text.ends_with('\n');
+            let lead = match (before, above) {
+                (true, _) => "\n\n",
+                (false, true) => "\n",
+                (false, false) => "",
+            };
+            let trail = match (after, below, closed) {
+                (true, _, false) => "\n\n",
+                (true, _, true) | (false, true, false) => "\n",
+                (false, true, true) | (false, false, _) => "",
+            };
+            (lead, trail)
+        };
         let cursor = slash + lead.len() + snippet.cursor;
-        TextEdit { range: slash..slash + 1, text: format!("{lead}{}", snippet.text), selection: cursor..cursor }
+        TextEdit { range: typed, text: format!("{lead}{}{trail}", snippet.text), selection: cursor..cursor + snippet.selected }
     }
 
     /// Ctrl+Alt+1 to Ctrl+Alt+6: the line as a heading of [level]; the same
@@ -349,6 +466,9 @@ pub struct Snippet {
     pub text: String,
     /// Where the cursor goes, in characters into [text].
     pub cursor: usize,
+    /// How many characters after the cursor are selected: a placeholder
+    /// that what is typed replaces. 0 for a caret.
+    pub selected: usize,
     /// A block (a heading, a fence, a table) starts a line of its own.
     pub block: bool,
 }
@@ -377,8 +497,17 @@ impl Snippet {
             color: color.into(),
             text: text.into(),
             cursor,
+            selected: 0,
             block,
         }
+    }
+
+    /// Whether the item is a block that stands apart from the text beside
+    /// it by a blank line: every block of the group Blocks but the quote,
+    /// whose `> ` is a mark at the start of a line as a list's is. A
+    /// heading and a list item are blocks too, and stay beside their lines.
+    pub fn stands_apart(&self) -> bool {
+        self.block && self.group == "Blocks" && self.id != "quote"
     }
 }
 
@@ -516,8 +645,10 @@ mod tests {
         assert_eq!(edit.text, "[[]]");
         assert_eq!(edit.selection.start, 6);
         assert_eq!(EditorCommands::apply(&snippet("date"), 4, text).text, "2026-10-25");
-        // After `==🔴 `: five UTF-16 units, four characters.
-        assert_eq!(EditorCommands::apply(&snippet("red"), 4, text).selection.start, 4 + 4);
+        // After `==🔴`: four UTF-16 units, three characters.
+        assert_eq!(EditorCommands::apply(&snippet("red"), 4, text).selection.start, 4 + 3);
+        // Yellow is the default colour: no circle is written.
+        assert_eq!((snippet("yellow").text.as_str(), snippet("yellow").cursor), ("====", 2));
     }
 
     #[test]
@@ -536,13 +667,364 @@ mod tests {
         for snippet in commands() {
             assert!(snippet.cursor <= snippet.text.chars().count(), "{}", snippet.id);
         }
-        // The table's cursor is in its first empty cell; the task's before its date.
+        // The table's cursor is before its first header cell; the task's before its date.
         let table = snippet("table");
-        assert_eq!(substring(&table.text, table.cursor - 2..table.cursor), "| ");
+        assert_eq!(substring(&table.text, table.cursor..table.cursor + 6), "Column");
+        assert_eq!(MarkdownTable::format(&table.text.lines().map(str::to_string).collect::<Vec<_>>()).join("\n"), table.text);
         let mermaid = snippet("mermaid");
         assert!(substring(&mermaid.text, 0..mermaid.cursor).ends_with("A --> B"));
         let task = snippet("task-today");
         assert_eq!(substring(&task.text, task.cursor..task.text.chars().count()), " 📅 2026-10-25");
+    }
+
+    // docs/specs/look.md, part 2, cases 14 to 16.
+
+    #[test]
+    fn the_slash_bar_opens_only_at_a_words_start() {
+        let opens = |text: &str| EditorCommands::slash_bar_opens(text, 0, text.chars().count(), &BlockState::Normal, false, true);
+        assert!(opens("/") && opens("a /") && opens("one\n/"));
+        assert!(!opens("a/") && !opens("https:/") && !opens("10/"));
+        // Not in a code block, inline code or the front matter.
+        assert!(!EditorCommands::slash_bar_opens("/", 4, 5, &BlockState::Fence("```".into()), false, true));
+        assert!(!EditorCommands::slash_bar_opens("a `b /` c", 0, 6, &BlockState::Normal, false, true));
+        assert!(EditorCommands::slash_bar_opens("a `b` /", 0, 7, &BlockState::Normal, false, true));
+        assert!(!EditorCommands::slash_bar_opens("---\ntitle: /", 0, 12, &BlockState::Normal, false, true));
+        assert!(!EditorCommands::slash_bar_opens("title: /", 4, 12, &BlockState::FrontMatter, false, true));
+        assert!(!EditorCommands::slash_bar_opens("$$\n/", 0, 4, &BlockState::Normal, false, true));
+        // Not in Neovim mode, and not with `editor.slash_menu = false`.
+        assert!(!EditorCommands::slash_bar_opens("/", 0, 1, &BlockState::Normal, true, true));
+        assert!(!EditorCommands::slash_bar_opens("/", 0, 1, &BlockState::Normal, false, false));
+        // In lines that start further down the note.
+        assert!(EditorCommands::slash_bar_opens("a /", 40, 43, &BlockState::Normal, false, true));
+    }
+
+    #[test]
+    fn the_slash_bar_filters_by_title_and_id() {
+        let first = |query: &str| EditorCommands::slash_matches(query, &commands()).first().map(|item| item.title.clone());
+        let titles = |query: &str| EditorCommands::slash_matches(query, &commands()).into_iter().map(|item| item.title).collect::<Vec<_>>();
+        assert_eq!(first("tab").as_deref(), Some("Table"));
+        assert_eq!(first("h2").as_deref(), Some("Heading 2"));
+        assert_eq!(first("rule").as_deref(), Some("Rule"));
+        assert_eq!(first("divider").as_deref(), Some("Rule"));
+        let callouts = titles("call");
+        // Callout, then the eleven kinds.
+        assert_eq!((callouts[0].as_str(), callouts.len()), ("Callout", 12));
+        assert!(callouts[1..].iter().all(|title| title.ends_with(" callout")));
+        assert_eq!(titles("zzz"), Vec::<String>::new());
+        // With nothing typed every item shows, in the list's order.
+        assert_eq!(first("").as_deref(), Some("Heading 1"));
+        assert_eq!(titles(""), commands().into_iter().map(|item| item.title).collect::<Vec<_>>());
+        let ids: Vec<String> = commands().into_iter().map(|item| item.id).collect();
+        assert_eq!(
+            ids.join(" "),
+            "h1 h2 h3 task task-today bullet number quote callout note info tip important warning danger example question success \
+             summary todo code mermaid math tasks table divider link embed date time red orange yellow green blue purple"
+        );
+    }
+
+    #[test]
+    fn enter_inserts_and_escape_leaves_the_slash() {
+        // The line with the `/` and what was typed after it, and the item picked: the text and the caret after.
+        let insert = |line: &str, id: &str| {
+            let slash = line.chars().position(|c| c == '/').unwrap();
+            let picked = EditorCommands::slash_matches(&substring(line, slash + 1..line.chars().count()), &commands());
+            assert_eq!(picked[0].id, id, "{line}");
+            let edit = EditorCommands::apply_over(&picked[0], slash..line.chars().count(), line);
+            (replaced(line, &edit), edit.selection.start)
+        };
+        assert_eq!(insert("/task", "task"), ("- [ ] ".to_string(), 6));
+        assert_eq!(insert("/warn", "warning"), ("> [!warning] \n> ".to_string(), 13));
+        assert_eq!(insert("/rule", "divider"), ("---\n".to_string(), 4));
+        // After other text the block starts a line of its own, a blank line over it.
+        assert_eq!(insert("text /code", "code"), ("text \n\n```\n\n```".to_string(), 11));
+        assert_eq!(insert("text /h2", "h2"), ("text \n## ".to_string(), 9));
+        assert_eq!(insert("See /link", "link"), ("See [[]]".to_string(), 6));
+        // Escape inserts nothing: the `/` and what was typed stay as they are.
+        assert_eq!(EditorCommands::slash_matches("tab", &commands())[0].id, "table");
+    }
+
+    // The slash bar's blocks and the table's keys on a whole note: the text beside them is the person's.
+
+    /// A note in the editor, for the keys: its text and its selection, in characters.
+    struct Page {
+        text: String,
+        selection: Range<usize>,
+    }
+
+    impl Page {
+        fn new(text: &str, caret: usize) -> Page {
+            Page { text: text.into(), selection: caret..caret }
+        }
+
+        fn edit(&mut self, edit: &TextEdit) {
+            self.text = replaced(&self.text, edit);
+            self.selection = edit.selection.clone();
+        }
+
+        /// Letters typed: they take the selection's place, the caret after them.
+        fn typed(&mut self, letters: &str) {
+            let at = self.selection.start + letters.chars().count();
+            self.edit(&TextEdit { range: self.selection.clone(), text: letters.into(), selection: at..at });
+        }
+
+        /// `/` and [query] typed, and Return on the first row, which is the item [id].
+        fn slash(&mut self, query: &str, id: &str) {
+            let slash = self.selection.start;
+            self.typed(&format!("/{query}"));
+            let picked = EditorCommands::slash_matches(query, &commands());
+            assert_eq!(picked[0].id, id);
+            self.edit(&EditorCommands::apply_over(&picked[0], slash..self.selection.start, &self.text.clone()));
+        }
+
+        /// Tab, or Shift+Tab: whether it was the table's key.
+        fn tab(&mut self, back: bool) -> bool {
+            let edit = MarkdownTable::tab_key(&self.text, self.selection.clone(), back);
+            edit.inspect(|edit| self.edit(edit)).is_some()
+        }
+
+        /// Return: whether it was the table's key.
+        fn enter(&mut self) -> bool {
+            let edit = MarkdownTable::return_key(&self.text, self.selection.clone());
+            edit.inspect(|edit| self.edit(edit)).is_some()
+        }
+
+        fn selected(&self) -> String {
+            substring(&self.text, self.selection.clone())
+        }
+
+        /// The lines that are no rows of a table and not blank: the person's own text.
+        fn prose(&self) -> Vec<&str> {
+            self.text.lines().filter(|line| !line.trim().is_empty() && !MarkdownTable::is_row(line)).collect()
+        }
+
+        /// The runs of table rows, each with whether a blank line (or an
+        /// end of the note) is before it and after it.
+        fn tables(&self) -> Vec<(Vec<&str>, bool, bool)> {
+            let lines: Vec<&str> = self.text.strip_suffix('\n').unwrap_or(&self.text).split('\n').collect();
+            let (mut tables, mut at) = (Vec::new(), 0);
+            while at < lines.len() {
+                if !MarkdownTable::is_row(lines[at]) {
+                    at += 1;
+                    continue;
+                }
+                let first = at;
+                while at < lines.len() && MarkdownTable::is_row(lines[at]) {
+                    at += 1;
+                }
+                let blank = |line: Option<&&str>| line.is_none_or(|line| line.trim().is_empty());
+                tables.push((lines[first..at].to_vec(), first == 0 || blank(lines.get(first - 1)), blank(lines.get(at))));
+            }
+            tables
+        }
+    }
+
+    /// The fault found on the Mac: `/tab` and Return in a note of three
+    /// paragraphs, then the table's keys. The table stands apart by a blank
+    /// line on each side, and no key takes a paragraph into it.
+    #[test]
+    fn a_table_from_the_slash_bar_and_its_keys_keep_the_text_beside_it() {
+        let note = "x\n\nA first paragraph.\n\nA second paragraph.\n";
+        let paragraphs = ["x", "A first paragraph.", "A second paragraph."];
+        // The `/` at the start of line 0, at its end after a space, and on the blank line under it.
+        for (caret, lead) in [(0, ""), (1, " "), (2, "")] {
+            let mut page = Page::new(note, caret);
+            page.typed(lead);
+            page.slash("tab", "table");
+            // After every key: the paragraphs are whole lines of their own, in their
+            // order, and one table stands with a blank line on each side.
+            let check = |page: &Page, rows: &[&str], step: &str| {
+                let said = format!("{step}, the `/` at {caret}: {:?}", page.text);
+                let prose: Vec<&str> = page.prose().into_iter().map(str::trim).collect();
+                assert_eq!(prose, paragraphs, "{said}");
+                assert_eq!(page.tables(), [(rows.to_vec(), true, true)], "{said}");
+                assert!(!page.text.contains("| A first") && !page.text.contains("paragraph. |"), "{said}");
+            };
+            let empty = ["| Column | Column |", "| ------ | ------ |", "|        |        |"];
+            check(&page, &empty, "inserted");
+            // The first header's placeholder is selected: what is typed takes its place.
+            assert_eq!(page.selected(), "Column");
+            page.typed("Name");
+            // Tab: the next placeholder, selected too.
+            assert!(page.tab(false));
+            assert_eq!(page.selected(), "Column");
+            check(&page, &["| Name | Column |", "| ---- | ------ |", "|      |        |"], "Tab");
+            page.typed("Age");
+            // Tab goes over the delimiter row to the first cell, which is empty: a caret.
+            assert!(page.tab(false));
+            assert_eq!(page.selection.len(), 0);
+            page.typed("Sara");
+            assert!(page.tab(false));
+            page.typed("7");
+            let filled = ["| Name | Age |", "| ---- | --- |", "| Sara | 7   |"];
+            // Tab past the last cell makes a row; the paragraph under the table is no row.
+            assert!(page.tab(false));
+            check(&page, &[filled[0], filled[1], filled[2], "|      |     |"], "Tab at the end");
+            // Shift+Tab goes back, and Return down again.
+            assert!(page.tab(true));
+            check(&page, &[filled[0], filled[1], filled[2], "|      |     |"], "Shift+Tab");
+            assert!(page.enter());
+            check(&page, &[filled[0], filled[1], filled[2], "|      |     |"], "Return");
+            page.typed("Ali");
+            // Return on the last row makes a row under it.
+            assert!(page.enter());
+            check(&page, &[filled[0], filled[1], filled[2], "|      | Ali |", "|      |     |"], "Return at the end");
+            // Return on the empty last row ends the table: the row goes.
+            assert!(page.enter());
+            check(&page, &[filled[0], filled[1], filled[2], "|      | Ali |"], "Return on an empty row");
+            // In a paragraph Tab and Return are not the table's keys.
+            let at = page.text.chars().count() - 5;
+            page.selection = at..at;
+            assert!(!page.tab(false) && !page.tab(true) && !page.enter());
+        }
+    }
+
+    /// Every block item of the slash bar, in every place of a note: only
+    /// line breaks are added around its text, nothing of the note goes but
+    /// the `/` and the query, and one that stands apart has a blank line
+    /// (or an end of the note) before it and after it.
+    #[test]
+    fn every_block_item_stands_apart_and_keeps_the_text() {
+        // `▮` is where the `/` is typed.
+        let notes = [
+            "▮",
+            "▮\n",
+            "one\n▮\nthree\n",
+            "one\n\n▮\n\nthree\n",
+            "one\n\n▮\nthree\n",
+            "one\n▮\n\nthree\n",
+            "▮one\n\nthree\n",
+            "▮one\nthree\n",
+            "one ▮\nthree\n",
+            "one ▮two\nthree\n",
+            "one\n▮",
+            "one\n\nthree ▮",
+            "one\n    ▮\nthree\n",
+            "| a |\n| - |\n▮\n> quote\n",
+        ];
+        let apart: Vec<Snippet> = commands().into_iter().filter(Snippet::stands_apart).collect();
+        assert_eq!(
+            apart.iter().map(|item| item.id.as_str()).collect::<Vec<_>>().join(" "),
+            "callout note info tip important warning danger example question success summary todo code mermaid math tasks table divider"
+        );
+        for item in commands() {
+            for note in notes {
+                let slash = note.chars().position(|c| c == '▮').unwrap();
+                let (head, tail) = (substring(note, 0..slash), substring(note, slash + 1..note.chars().count()));
+                for query in ["", "q"] {
+                    let typed = format!("{head}/{query}{tail}");
+                    let edit = EditorCommands::apply_over(&item, slash..slash + 1 + query.len(), &typed);
+                    let result = replaced(&typed, &edit);
+                    let said = format!("{} in {note:?}: {result:?}", item.id);
+                    // Only the `/` and the query go, and only line breaks come with the item's text.
+                    assert_eq!(edit.range, slash..slash + 1 + query.len(), "{said}");
+                    let (lead, rest) = edit.text.split_at(edit.text.find(&item.text).unwrap_or_else(|| panic!("{said}")));
+                    let trail = &rest[item.text.len()..];
+                    assert!(lead.chars().chain(trail.chars()).all(|c| c == '\n') && lead.len() <= 2 && trail.len() <= 2, "{said}");
+                    assert_eq!(result, format!("{head}{lead}{}{trail}{tail}", item.text), "{said}");
+                    // The caret is where the item says, with its placeholder selected.
+                    let caret = slash + lead.len() + item.cursor;
+                    assert_eq!(edit.selection, caret..caret + item.selected, "{said}");
+                    if !item.block {
+                        assert_eq!(edit.text, item.text, "{said}");
+                        continue;
+                    }
+                    // A block starts its line: only spaces are before it there.
+                    let lines: Vec<&str> = result.split('\n').collect();
+                    let first = result[..head.len() + lead.len()].matches('\n').count();
+                    assert!(lines[first][..lines[first].find(item.text.lines().next().unwrap()).unwrap()].trim().is_empty(), "{said}");
+                    if !item.stands_apart() {
+                        assert_eq!(
+                            (lead, trail),
+                            (
+                                if head.lines().last().is_some_and(|l| !l.trim().is_empty()) && !head.ends_with('\n') { "\n" } else { "" },
+                                ""
+                            ),
+                            "{said}"
+                        );
+                        continue;
+                    }
+                    // The lines of the item, without the rule's own last line break.
+                    let last = first + item.text.trim_end_matches('\n').matches('\n').count();
+                    let blank = |line: Option<&&str>| line.is_none_or(|line| line.trim().is_empty());
+                    assert!(first == 0 || blank(lines.get(first - 1)), "a blank line before {said}");
+                    assert!(blank(lines.get(last + 1)), "a blank line after {said}");
+                    // And no more than one blank line is added on a side.
+                    if tail.starts_with("\n\n") || tail.is_empty() || tail == "\n" {
+                        assert_eq!(trail, "", "{said}");
+                    }
+                    if head.is_empty() || head.ends_with("\n\n") {
+                        assert_eq!(lead, "", "{said}");
+                    }
+                    // What the item wrote ends where the line does.
+                    assert!(lines[last].ends_with(item.text.trim_end_matches('\n').lines().last().unwrap()), "{said}");
+                }
+            }
+        }
+        // The cases by hand: a rule under a paragraph would make it a heading,
+        // a paragraph under a callout would be its body, and one under a table a row.
+        let insert = |note: &str, id: &str| {
+            let slash = note.chars().position(|c| c == '/').unwrap();
+            let edit = EditorCommands::apply_over(&snippet(id), slash..slash + 1, note);
+            (replaced(note, &edit), edit.selection)
+        };
+        assert_eq!(insert("one\n/\nthree\n", "divider"), ("one\n\n---\n\nthree\n".to_string(), 9..9));
+        assert_eq!(insert("one\n/three\n", "divider"), ("one\n\n---\n\nthree\n".to_string(), 9..9));
+        assert_eq!(insert("/\nthree\n", "warning"), ("> [!warning] \n> \n\nthree\n".to_string(), 13..13));
+        assert_eq!(insert("one\n/\nthree\n", "code"), ("one\n\n```\n\n```\n\nthree\n".to_string(), 9..9));
+        assert_eq!(
+            insert("x\n/\nA first paragraph.\n", "table"),
+            ("x\n\n| Column | Column |\n| ------ | ------ |\n|        |        |\n\nA first paragraph.\n".to_string(), 5..11)
+        );
+        // A heading, a list item and a quote stay beside their lines.
+        assert_eq!(insert("one\n/\nthree\n", "task").0, "one\n- [ ] \nthree\n");
+        assert_eq!(insert("> one\n/\n", "quote").0, "> one\n> \n");
+        assert_eq!(insert("/three\n", "h2").0, "## three\n");
+    }
+
+    /// The table's keys never take a line with no pipe at its start, even
+    /// one glued under the table with no blank line, as an older note may
+    /// have it: the table is formatted and that line stays as it is.
+    #[test]
+    fn the_tables_keys_never_take_a_line_that_is_no_row() {
+        let note = "Intro text\n| A | B |\n| --- | --- |\n| 1 | 2 |\nA first paragraph.\nwith a | pipe in it\n";
+        let row = note.find("| 1").unwrap();
+        for key in ["Tab", "Shift+Tab", "Return"] {
+            for caret in [row + 2, row + 6] {
+                let mut page = Page::new(note, caret);
+                let used = match key {
+                    "Tab" => page.tab(false),
+                    "Shift+Tab" => page.tab(true),
+                    _ => page.enter(),
+                };
+                assert!(used, "{key} at {caret}");
+                assert_eq!(page.prose(), ["Intro text", "A first paragraph.", "with a | pipe in it"], "{key} at {caret}: {:?}", page.text);
+                assert!(page.text.starts_with("Intro text\n| A   | B   |\n| --- | --- |\n| 1   | 2   |\n"), "{key}: {:?}", page.text);
+                assert!(page.text.ends_with("\nA first paragraph.\nwith a | pipe in it\n"), "{key}: {:?}", page.text);
+            }
+        }
+        // Tab and Return make the new row inside the table, over the paragraph.
+        let mut page = Page::new(note, row + 6);
+        assert!(page.tab(false));
+        assert_eq!(
+            page.text,
+            "Intro text\n| A   | B   |\n| --- | --- |\n| 1   | 2   |\n|     |     |\nA first paragraph.\nwith a | pipe in it\n"
+        );
+        // On the lines beside the table the keys are the text's own.
+        for needle in ["Intro", "A first", "with a | pipe"] {
+            let mut page = Page::new(note, note.find(needle).unwrap() + 3);
+            assert!(!page.tab(false) && !page.tab(true) && !page.enter(), "{needle}");
+            assert_eq!(page.text, note);
+        }
+        // A selection in one cell moves as its caret would, and the text
+        // stays; one over a pipe or a line is raw text.
+        let mut page = Page::new(note, 0);
+        page.selection = row + 2..row + 3;
+        assert!(page.enter());
+        assert!(page.text.contains("| 1   | 2   |\n|     |     |\nA first paragraph.\n"));
+        page.selection = row + 2..row + 8;
+        assert!(!page.tab(false) && !page.enter());
+        page.selection = row - 4..row + 3;
+        assert!(!page.tab(false) && !page.enter());
     }
 
     // ExtractTests

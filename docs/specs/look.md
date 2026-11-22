@@ -158,6 +158,7 @@ Settings: `editor.live_preview`.
 | Text | 0.92 em, in the chip's colour. |
 | Pill | The chip's colour at 14%, corner 1 em (a full pill), 0.5 em of room at each side, no border. Its height is the text's line, not the row's. |
 | Between chips | 0.3 em. |
+| Line break | A chip never breaks between its emoji and its date: where the line wraps there, the whole chip goes to the next line. |
 | Direction | A chip reads left to right in a right-to-left line too: `2026-10-30`, never `30-10-2026`. |
 | On a closed task | The chips are drawn at 75% and are not struck through. |
 | Raw | The caret inside the chip shows the text at the full size with no pill and the ordinary colour. |
@@ -214,6 +215,8 @@ Settings: `editor.live_preview`.
 
 Each of Tab, Shift+Tab and Enter is one undo step, with its formatting. Formatting is the existing table formatter (`MarkdownTable.format`: each column as wide as its widest cell, at least three, short rows filled), so the file is a normal Markdown table after every move. Format on save (`daftar-cli fmt`) has the last word on the file, as for any text. A key in a cell styles that table again and no other line.
 
+**The table is the lines that start with a pipe.** The keys format the run of lines around the caret that each start with a pipe (after spaces only), and never a line beside it: a paragraph glued under a table with no blank line stays as it is, and a new row goes over it. A selection inside one cell moves as its caret would, and its text stays; with a selection over a pipe or a line break the keys are the text's own. A header cell that still holds the placeholder `Column` is selected whole when Tab, Shift+Tab or Enter goes to it, so what is typed takes its place (`MarkdownTable.tabKey`, `returnKey`).
+
 A click in a cell puts the caret at the nearest place in that cell's text; a click on an empty cell puts it between the cell's two padding spaces.
 
 Settings: `editor.live_preview`.
@@ -232,6 +235,7 @@ A callout is a run of `>` lines whose first is `> [!kind]`, with `+` or `-` and 
 | Title line | The kind's icon, 1.1 em square in the kind's colour, 0.4 em before the title. The title is in the kind's colour, weight 650. With no title, the kind's name is drawn with its first letter in capital (`> [!tip]` reads "Tip"); that name is drawn only, never written. |
 | Body | The text colour, with every part 1 and part 2 style inside it (a task box in a callout is drawn and can be clicked). |
 | Marks | `> ` at the start of each line and `[!kind]` on the first are drawn at no width. They show on the caret's line only, as a heading's `#` does. |
+| The line under the title | The `>` line under the title line (the line with only `>` that a callout keeps between its title and its body) is 0.4 em high while the caret is not on it, so the title and the body are not a whole line apart. |
 | `+` and `-` | Drawn as nothing. The body is always shown in the editor: a callout does not fold there. |
 | A quote | A `>` run with no `[!kind]` stays part 1's quote: the 3 px bar, nothing behind. |
 
@@ -284,7 +288,7 @@ The Mac and Linux have a slash menu today (`EditorCommands.slashCommands`, `open
 | `note`, `info`, `tip`, `important`, `warning`, `danger`, `example`, `question`, `success`, `summary`, `todo` | Note callout, Info callout, … (the kind, then "callout") | Blocks | `> [!<kind>] ▮`, then a line `> ` |
 | `code` | Code block | Blocks | a line of three backticks, the line `▮`, a line of three backticks |
 | `mermaid`, `math`, `tasks` | Mermaid diagram, Math block, Tasks query | Blocks | as today |
-| `table` | Table | Blocks | `\| ▮Column \| Column \|`, the delimiter row, one empty row, formatted |
+| `table` | Table | Blocks | `\| ▮Column \| Column \|`, the delimiter row, one empty row, formatted. The first `Column` is selected, so what is typed takes its place |
 | `divider` | Rule | Blocks | `---` and a new line, the caret under it |
 | `link` | Link to a note | Links | `[[▮]]`, and the `[[` list of notes opens |
 | `embed` | Embed a note or a file | Links | `![[▮]]` |
@@ -307,7 +311,9 @@ The callout kinds put the caret in the title, so a title can be typed at once; t
 | Left, Right, or a click in the text | Closes the list when the caret leaves the place between the `/` and the end of the query. |
 | A click on a row | Inserts that row. The focus stays in the text. |
 
-**Inserting** replaces the `/` and the query with the item's text, as one undo step (`EditorCommands.apply`). A block item (every one of group Text, Lists and Blocks) typed after other text on the line starts a line of its own. Nothing else of the line changes.
+**Inserting** replaces the `/` and the query with the item's text, as one undo step (`EditorCommands.apply`). A block item (every one of group Text, Lists and Blocks) typed after other text on the line starts a line of its own. Nothing of the note goes but the `/` and the query, and only line breaks come with the item's text.
+
+**A block that stands apart.** The items of group Blocks but `quote` (the callouts, `code`, `mermaid`, `math`, `tasks`, `table`, `divider`) stand apart from the text beside them by a blank line: one is added before the item when the line over it has text, or when there is text before the `/` on its line, and one after it when the line under it has text. Text after the query on the `/`'s line goes under the item, after a blank line. A blank line that is there already is not added to, and the rule's own new line is its blank line. With none, the reader and the formatter take the next paragraph as a row of the table, as the callout's body, or as a heading over the rule, and format on save writes that into the file. A heading, a list item and a quote stay beside their lines (`EditorCommands.apply`, `Snippet.standsApart`).
 
 Settings: `editor.slash_menu`.
 
@@ -536,6 +542,9 @@ Ported by name (snake case in Rust, camelCase in Swift and Kotlin). Each is a pu
 22. `theEditorsLineIsTheMeasure` (Linux): at size 16 and width 35 the line is 560 px; in a pane of 1000 px the room at each side is 220 px; in a pane of 500 px it is 32 px and the line 436 px; with width 0 in a pane of 1000 px the line is 936 px.
 23. `theNewSettingsHaveTheirDefaults`: with no setting, `editor.slash_menu`, `appearance.link_preview` and `appearance.section_bar` are `true` and `editor.focus` is `false`. A vault that sets each is followed, and none is listed as refused. `editor.slash_menu = "yes"` is as not there.
 24. `aSaveOnThePhoneRefusesAChangedFile` (Android): the editor opened `a`, the file is now `b`: saving `c` writes nothing and the file is `b`. With the file still `a`, the file becomes `c`.
+25. `aTableFromTheSlashBarAndItsKeysKeepTheTextBesideIt`: the note is `x`, a blank line, `A first paragraph.`, a blank line, `A second paragraph.`. With `/tab` typed at the start of line 0, at its end after a space, or on the blank line under it, Enter gives a table with a blank line on each side, `x` and both paragraphs each a line of their own, and the first `Column` selected. Typing a name, Tab (the second `Column` is selected), a name, Tab, text, Tab, text, Tab (a new row), Shift+Tab, Enter, Enter (a new row) and Enter (the empty row goes): after each key the three paragraphs are whole lines in their order and no row holds their text.
+26. `everyBlockItemStandsApartAndKeepsTheText`: for every item and the `/` on a blank line between two lines of text, alone in the note, at the note's end, before text on its line, after text on its line and between blank lines: the result is the note with only line breaks and the item's text in place of the `/` and the query. An item that stands apart has a blank line or an end of the note before it and after it, and no blank line is added where one is. `one`, `/`, `three` with the rule gives `one`, blank, `---`, blank, `three`; `/h2` before `three` gives `## three`.
+27. `theTablesKeysNeverTakeALineThatIsNoRow`: in `Intro text`, `| A | B |`, `| --- | --- |`, `| 1 | 2 |`, `A first paragraph.`, `with a | pipe in it` with no blank line, Tab, Shift+Tab and Enter in `1` and `2` format the three rows and leave the other three lines as they are; Tab in `2` puts the new row over `A first paragraph.`; on the three other lines the keys are not the table's. A selection of `1` and Enter goes down; a selection from `1` to `2`, or from the line above, is not the table's.
 
 ## Where it stands
 
@@ -543,23 +552,23 @@ Ported by name (snake case in Rust, camelCase in Swift and Kotlin). Each is a pu
 | --- | --- | --- | --- |
 | Reader in the new look | done | done | done (its own Compose reader: headings, callouts, highlights, italic and bold) |
 | `appearance.dark_palette` | done | done | done (Settings, Reading, Soft dark colours) |
-| New default size and measure | done | done (the editor has no measure yet) | not done: the phone has its own text scale and line width |
+| New default size and measure | done | done | not done: the phone has its own text scale and line width |
 | Editor: sizes, weights, italic, line height | done | done | not started |
 | Editor: highlight, callout, quote, list markers and current line in the new look | done | done (a quote and a callout are a tint behind each line, since the view draws no panel) | not started |
 | Marks of one element at a time | done | done | not started |
 | Format bar | done (not in Neovim mode) | done (not in Neovim mode) | not started |
-| Caret in the accent, with a glide | done (Neovim mode's cursor slides already) | not started (GtkTextView draws its own caret) | not started |
-| Part 2: editor, the task box | not started | not started | not started |
-| Part 2: editor, date chips | not started | not started | not started |
-| Part 2: editor, a table as a grid | not started | not started | not in part 2 |
-| Part 2: editor, callouts and code blocks as the reader draws them | not started | not started | not started (the callout; the code block's panel is not in part 2) |
-| Part 2: editor, the slash bar | not started (a menu today, not filtered) | not started (a filtered list today, with the old items) | not in part 2 |
-| Part 2: editor, focus mode (`editor.focus`) | not started (it dims today, in the faint colour, as its own key) | not started | not in part 2 |
-| Part 2: link preview, reader and editor | done in the reader; the editor's card is not started | done in the reader; the editor's card is not started | out of scope |
+| Caret in the accent, with a glide | done (Neovim mode's cursor slides already) | done (drawn by the editor over the text; GTK's own caret is clear) | not started |
+| Part 2: editor, the task box | not started | done (no status menu on a right click: the editor has none; in a Persian line whose syntax starts Latin the box is where GTK puts the marks) | not started |
+| Part 2: editor, date chips | not started | done (a date in a line with Persian before it is drawn by GTK's bidi order, `30-10-2026`: a tag cannot isolate it; a chip at a line's end can still break between its emoji and its date) | not started |
+| Part 2: editor, a table as a grid | not started | done, as near as GtkTextView goes: the cells are in the code font, lined up by the formatter's spaces, so a column is as wide as its widest cell as written (a cell's hidden marks and smaller code are given back as padding; a Persian or wide-letter cell is not exact, and a row typed in is lined up at the next Tab or Enter); a table wider than the measure is not a grid (the view cannot scroll one part sideways); the colons of the delimiter row do not set a column's side; `\|` is shown as written; Up and Down pass over the delimiter row, which Left and Right reach; a table wholly inside a selection stays drawn | not in part 2 |
+| Part 2: editor, callouts and code blocks as the reader draws them | not started | done (code in a callout keeps part 1's tint; a code line that starts Persian is left-aligned but still reads right to left; a quote is still a tint; an empty `>` line under the title keeps its full height) | not started (the callout; the code block's panel is not in part 2) |
+| Part 2: editor, the slash bar | not started (a menu today, not filtered) | done (an item with no Lucide drawing in the reader's bundle has a few letters for its icon) | not in part 2 |
+| Part 2: editor, focus mode (`editor.focus`) | not started (it dims today, in the faint colour, as its own key) | done (a veil in the page's colour at 55% over the other paragraphs, which is each colour at 45%; a picture under a dimmed line is not dimmed) | not in part 2 |
+| Part 2: link preview, reader and editor | done in the reader; the editor's card is not started | done, in the reader and the editor, with one rule for the first lines (`link_preview.rs`). In the editor the body is the editor's own view of the lines, so the head stays while it scrolls; for a heading or a block the note does not have, the editor's card shows the note's first lines and the reader's card says "The note is empty." | out of scope |
 | Part 2: reader, section bar | done | done | not started |
 | Part 2: reader, a table header that stays, and the sort | done | done | not started |
 | Part 2: reader, footnote popover | done (a card a click opened stays at its number while the note scrolls, and closes when the number leaves the view) | done (the same page) | not started |
 | Part 2: reader, the soft change | done (back to reading, a picture of the editor fades out over the page; only between two notes, not to or from a canvas, a picture or a base; a click or a plain key in the frame before the new note is drawn is dropped, since it would act on the note that leaves) | done (the same page; back to reading, a picture of the editor fades out over the page, which has the keys from the start; into the editor, the pane's stack crossfades in 120 ms) | not started |
-| Part 2: Linux, the caret in the accent and the editor's measure | does not apply | not started | does not apply |
+| Part 2: Linux, the caret in the accent and the editor's measure | does not apply | done | does not apply |
 | Part 2: Android, the editor with part 1, the task box and date chips | does not apply | does not apply | not started (the phone has no editor of a note's text yet) |
 | One palette file with generators | not started | not started | not started |

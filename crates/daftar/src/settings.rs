@@ -280,6 +280,16 @@ impl AppSettings {
         self.file.bool("editor.format_bar").unwrap_or(true)
     }
 
+    /// A `/` at a word's start shows the slash bar (`editor.slash_menu`).
+    pub fn slash_menu(&self) -> bool {
+        self.file.bool("editor.slash_menu").unwrap_or(true)
+    }
+
+    /// Focus mode: every paragraph but the cursor's is dimmed (`editor.focus`).
+    pub fn focus(&self) -> bool {
+        self.file.bool("editor.focus").unwrap_or(false)
+    }
+
     /// The reader's widest line, in em of the text size; 0 is the whole window.
     pub fn text_width(&self) -> i64 {
         self.file.int("appearance.text_width").unwrap_or(35).max(0)
@@ -303,7 +313,8 @@ impl AppSettings {
     }
 
     /// Resting the pointer on a link to a note shows its first lines in a
-    /// card (`appearance.link_preview`, docs/specs/look.md).
+    /// card, in the reader and the editor (`appearance.link_preview`,
+    /// docs/specs/look.md).
     pub fn link_preview(&self) -> bool {
         self.file.bool("appearance.link_preview").unwrap_or(true)
     }

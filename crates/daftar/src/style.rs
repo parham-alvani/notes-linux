@@ -128,6 +128,7 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-tags link { color: @daftar_pink; }\n\
          .daftar-vim-cursor { background-color: alpha(@daftar_accent, 0.45); border-radius: 2px; }\n\
          .daftar-vim-cursor.bar { background-color: @daftar_accent; border-radius: 1px; }\n\
+         textview.daftar-editor, textview.daftar-editor text { caret-color: transparent; -gtk-secondary-caret-color: transparent; }\n\
          .daftar-vim-message label { padding: 6px 10px; }\n\
          .board-card { background-color: @daftar_panel; border-radius: 11px; padding: 10px; border: 1px solid alpha(@daftar_text, 0.06); }\n\
          .board-card.is-closed .board-text { color: @daftar_muted; text-decoration: line-through; }\n\
@@ -181,6 +182,27 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-drop { background-color: alpha(@daftar_accent, 0.2); border-radius: 6px; }\n\
          .daftar-vim-float { border-radius: 6px; box-shadow: 0 4px 16px alpha(black, 0.25); }\n\
          .daftar-vim-float > label { border-radius: 6px; }\n",
+    );
+    // The editor's slash bar and link preview (docs/specs/look.md, part 2):
+    // the page's colour, a hairline, a 12 px corner and a soft shadow, with
+    // no border in the accent.
+    out.push_str(
+        "popover.daftar-slash-bar > contents { background-color: @daftar_background; border: 1px solid @daftar_rule; border-radius: 12px; padding: 4px; box-shadow: 0 6px 20px alpha(black, 0.22); }\n\
+         .daftar-slash-bar list { background: none; }\n\
+         .daftar-slash-bar row { border-radius: 6px; padding: 0 8px; min-height: 0; }\n\
+         .daftar-slash-bar row.item:hover { background-color: alpha(@daftar_text, 0.06); }\n\
+         .daftar-slash-bar row.item.chosen, .daftar-slash-bar row.item.chosen:hover { background-color: alpha(@daftar_accent, 0.14); }\n\
+         .daftar-slash-bar row.group { padding: 6px 8px 2px 8px; }\n\
+         .daftar-slash-bar row.group, .daftar-slash-bar .group-name { color: alpha(@daftar_muted, 0.8); font-size: 0.82em; }\n\
+         .daftar-slash-bar .glyph { font-weight: 700; font-size: 0.8em; }\n\
+         popover.daftar-link-card > contents { padding: 0; background-color: @daftar_background; border: 1px solid @daftar_rule; border-radius: 12px; box-shadow: 0 14px 40px alpha(black, 0.35); }\n\
+         .daftar-link-card .card-head { background-color: @daftar_panel; border-bottom: 1px solid @daftar_rule; border-radius: 11px 11px 0 0; padding: 7px 12px; }\n\
+         .daftar-link-card .card-title { font-weight: 700; color: @daftar_accent; }\n\
+         .daftar-link-card .card-title.missing { font-weight: 400; color: alpha(@daftar_muted, 0.8); }\n\
+         .daftar-link-card .card-heading { color: @daftar_blue; }\n\
+         .daftar-link-card .card-folder { color: alpha(@daftar_muted, 0.8); font-size: 0.82em; }\n\
+         .daftar-link-card .card-words { font-style: italic; color: @daftar_muted; padding: 10px 12px; }\n\
+         .daftar-link-card scrolledwindow, .daftar-link-card textview, .daftar-link-card textview text { background: none; }\n",
     );
     out
 }
