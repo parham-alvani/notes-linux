@@ -53,7 +53,7 @@ fn pair(name: &str) -> (u32, u32) {
 /// The dark colours are naz's with their strength capped (`appearance.dark_palette`).
 static SOFT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn rgba(name: &str, alpha: f32, dark: bool) -> gtk::gdk::RGBA {
+pub(crate) fn rgba(name: &str, alpha: f32, dark: bool) -> gtk::gdk::RGBA {
     rgba_in(name, alpha, dark, SOFT.load(std::sync::atomic::Ordering::Relaxed))
 }
 
@@ -290,6 +290,11 @@ impl Styler {
             apply_look(tag, look, self.dark.get(), &self.code_font.borrow());
         }
         self.line.set_paragraph_background_rgba(Some(&line_tint(self.dark.get())));
+    }
+
+    /// Whether the dark palette is in use.
+    pub fn is_dark(&self) -> bool {
+        self.dark.get()
     }
 
     pub fn set_code_font(&self, family: &str) {

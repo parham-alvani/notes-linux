@@ -128,6 +128,7 @@ fn css(palette: &[(&str, &str)]) -> String {
          .daftar-tags link { color: @daftar_pink; }\n\
          .daftar-vim-cursor { background-color: alpha(@daftar_accent, 0.45); border-radius: 2px; }\n\
          .daftar-vim-cursor.bar { background-color: @daftar_accent; border-radius: 1px; }\n\
+         textview.daftar-editor, textview.daftar-editor text { caret-color: transparent; -gtk-secondary-caret-color: transparent; }\n\
          .daftar-vim-message label { padding: 6px 10px; }\n\
          .board-card { background-color: @daftar_panel; border-radius: 11px; padding: 10px; border: 1px solid alpha(@daftar_text, 0.06); }\n\
          .board-card.is-closed .board-text { color: @daftar_muted; text-decoration: line-through; }\n\

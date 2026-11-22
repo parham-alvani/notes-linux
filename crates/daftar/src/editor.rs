@@ -39,8 +39,10 @@ pub(crate) mod media;
 #[path = "editor_problems.rs"]
 mod problems;
 
+use crate::editor_caret::Caret;
 use crate::editor_popup::{Choice, Popup};
 use crate::editor_style::Styler;
+use crate::editor_view::EditorView;
 use crate::neovim_session::{self, Event, MenuItem, NeovimSession};
 use crate::settings::AppSettings;
 use crate::store::{VaultStore, file_in};
@@ -148,6 +150,8 @@ pub struct Editor {
     long_message: gtk::Popover,
     long_text: gtk::Label,
     glide: Rc<Glide>,
+    /// The caret in the accent, in place of the view's own.
+    caret: Rc<Caret>,
     /// Over the text: Neovim's floating windows, as `vim_floats` gives them.
     stage: gtk::Overlay,
     floats: RefCell<Vec<gtk::Widget>>,
@@ -170,20 +174,20 @@ impl Editor {
         // The colors are the core highlighter's, as on the Mac.
         buffer.set_highlight_syntax(false);
         buffer.set_highlight_matching_brackets(false);
-        let view = sourceview5::View::builder()
-            .buffer(&buffer)
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .auto_indent(true)
-            .indent_width(4)
-            .tab_width(4)
-            .insert_spaces_instead_of_tabs(true)
-            .smart_backspace(true)
-            .top_margin(24)
-            .bottom_margin(240)
-            .left_margin(32)
-            .right_margin(32)
-            .css_classes(["daftar-editor"])
-            .build();
+        // A view of our own, which lets the editor draw over the text.
+        let canvas = EditorView::new(&buffer);
+        let view: sourceview5::View = canvas.clone().upcast();
+        view.set_wrap_mode(gtk::WrapMode::WordChar);
+        view.set_auto_indent(true);
+        view.set_indent_width(4);
+        view.set_tab_width(4);
+        view.set_insert_spaces_instead_of_tabs(true);
+        view.set_smart_backspace(true);
+        view.set_top_margin(24);
+        view.set_bottom_margin(240);
+        view.set_left_margin(32);
+        view.set_right_margin(32);
+        view.add_css_class("daftar-editor");
         // The view is as wide as the pane, so the margin's marks stay at the
         // pane's edge; the line's width is the view's own margins (`measure`).
         let scroller = gtk::ScrolledWindow::builder()
@@ -229,11 +233,23 @@ impl Editor {
         let font_css = gtk::CssProvider::new();
         #[expect(deprecated, reason = "GTK has no other way to give one view its own font")]
         view.style_context().add_provider(&font_css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        let styler = Styler::new(buffer.upcast_ref());
+        let caret = Caret::new(&view);
+        {
+            // The caret is drawn over the text, in the accent.
+            let (caret, styler) = (caret.clone(), styler.clone());
+            canvas.set_painter(move |_, layer, snapshot| {
+                if layer == gtk::TextViewLayer::AboveText {
+                    caret.paint(snapshot, &crate::editor_style::rgba("accent", 1.0, styler.is_dark()));
+                }
+            });
+        }
         let editor = Rc::new(Editor {
             widget,
-            styler: Styler::new(buffer.upcast_ref()),
+            styler,
             popup: Popup::new(&view),
             glide: Glide::new(&view),
+            caret,
             stage,
             floats: RefCell::new(Vec::new()),
             float_css: {
@@ -1541,6 +1557,7 @@ impl Editor {
             Some(Vim { session, mirror: None, mode: "n".into(), start_line: line, save_soon: None, wheel_top: None, command: false });
         self.glide.set_on(true);
         self.glide.set_shape(Shape::Block);
+        self.caret.set_on(false);
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
         self.set_bar("NEOVIM", "Starting Neovim…");
@@ -1566,6 +1583,7 @@ impl Editor {
         self.buffer.remove_tag(&self.block_tag, &self.buffer.start_iter(), &self.buffer.end_iter());
         self.view.set_overwrite(false);
         self.glide.set_on(false);
+        self.caret.set_on(true);
         self.draw_floats(&crate::vim_floats::Floats::default());
         self.popup.close();
         self.long_message.popdown();
@@ -1799,8 +1817,10 @@ impl Editor {
                 self.buffer.place_cursor(&self.iter(cursor));
             }
         }
-        // A block cursor in normal mode, a bar while inserting, gliding there.
+        // A block cursor in normal mode, gliding there; while inserting, the
+        // editor's own caret.
         self.glide.set_shape(Shape::of(&mode));
+        self.caret.set_on(Shape::of(&mode) == Shape::Bar);
         self.glide.cursor_moved();
         let name = neovim_session::mode_name(&mode);
         if let Some(vim) = self.vim.borrow_mut().as_mut() {
