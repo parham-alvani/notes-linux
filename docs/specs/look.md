@@ -214,6 +214,8 @@ Settings: `editor.live_preview`.
 
 Each of Tab, Shift+Tab and Enter is one undo step, with its formatting. Formatting is the existing table formatter (`MarkdownTable.format`: each column as wide as its widest cell, at least three, short rows filled), so the file is a normal Markdown table after every move. Format on save (`daftar-cli fmt`) has the last word on the file, as for any text. A key in a cell styles that table again and no other line.
 
+**The table is the lines that start with a pipe.** The keys format the run of lines around the caret that each start with a pipe (after spaces only), and never a line beside it: a paragraph glued under a table with no blank line stays as it is, and a new row goes over it. A selection inside one cell moves as its caret would, and its text stays; with a selection over a pipe or a line break the keys are the text's own. A header cell that still holds the placeholder `Column` is selected whole when Tab, Shift+Tab or Enter goes to it, so what is typed takes its place (`MarkdownTable.tabKey`, `returnKey`).
+
 A click in a cell puts the caret at the nearest place in that cell's text; a click on an empty cell puts it between the cell's two padding spaces.
 
 Settings: `editor.live_preview`.
@@ -284,7 +286,7 @@ The Mac and Linux have a slash menu today (`EditorCommands.slashCommands`, `open
 | `note`, `info`, `tip`, `important`, `warning`, `danger`, `example`, `question`, `success`, `summary`, `todo` | Note callout, Info callout, … (the kind, then "callout") | Blocks | `> [!<kind>] ▮`, then a line `> ` |
 | `code` | Code block | Blocks | a line of three backticks, the line `▮`, a line of three backticks |
 | `mermaid`, `math`, `tasks` | Mermaid diagram, Math block, Tasks query | Blocks | as today |
-| `table` | Table | Blocks | `\| ▮Column \| Column \|`, the delimiter row, one empty row, formatted |
+| `table` | Table | Blocks | `\| ▮Column \| Column \|`, the delimiter row, one empty row, formatted. The first `Column` is selected, so what is typed takes its place |
 | `divider` | Rule | Blocks | `---` and a new line, the caret under it |
 | `link` | Link to a note | Links | `[[▮]]`, and the `[[` list of notes opens |
 | `embed` | Embed a note or a file | Links | `![[▮]]` |
@@ -307,7 +309,9 @@ The callout kinds put the caret in the title, so a title can be typed at once; t
 | Left, Right, or a click in the text | Closes the list when the caret leaves the place between the `/` and the end of the query. |
 | A click on a row | Inserts that row. The focus stays in the text. |
 
-**Inserting** replaces the `/` and the query with the item's text, as one undo step (`EditorCommands.apply`). A block item (every one of group Text, Lists and Blocks) typed after other text on the line starts a line of its own. Nothing else of the line changes.
+**Inserting** replaces the `/` and the query with the item's text, as one undo step (`EditorCommands.apply`). A block item (every one of group Text, Lists and Blocks) typed after other text on the line starts a line of its own. Nothing of the note goes but the `/` and the query, and only line breaks come with the item's text.
+
+**A block that stands apart.** The items of group Blocks but `quote` (the callouts, `code`, `mermaid`, `math`, `tasks`, `table`, `divider`) stand apart from the text beside them by a blank line: one is added before the item when the line over it has text, or when there is text before the `/` on its line, and one after it when the line under it has text. Text after the query on the `/`'s line goes under the item, after a blank line. A blank line that is there already is not added to, and the rule's own new line is its blank line. With none, the reader and the formatter take the next paragraph as a row of the table, as the callout's body, or as a heading over the rule, and format on save writes that into the file. A heading, a list item and a quote stay beside their lines (`EditorCommands.apply`, `Snippet.standsApart`).
 
 Settings: `editor.slash_menu`.
 
@@ -536,6 +540,9 @@ Ported by name (snake case in Rust, camelCase in Swift and Kotlin). Each is a pu
 22. `theEditorsLineIsTheMeasure` (Linux): at size 16 and width 35 the line is 560 px; in a pane of 1000 px the room at each side is 220 px; in a pane of 500 px it is 32 px and the line 436 px; with width 0 in a pane of 1000 px the line is 936 px.
 23. `theNewSettingsHaveTheirDefaults`: with no setting, `editor.slash_menu`, `appearance.link_preview` and `appearance.section_bar` are `true` and `editor.focus` is `false`. A vault that sets each is followed, and none is listed as refused. `editor.slash_menu = "yes"` is as not there.
 24. `aSaveOnThePhoneRefusesAChangedFile` (Android): the editor opened `a`, the file is now `b`: saving `c` writes nothing and the file is `b`. With the file still `a`, the file becomes `c`.
+25. `aTableFromTheSlashBarAndItsKeysKeepTheTextBesideIt`: the note is `x`, a blank line, `A first paragraph.`, a blank line, `A second paragraph.`. With `/tab` typed at the start of line 0, at its end after a space, or on the blank line under it, Enter gives a table with a blank line on each side, `x` and both paragraphs each a line of their own, and the first `Column` selected. Typing a name, Tab (the second `Column` is selected), a name, Tab, text, Tab, text, Tab (a new row), Shift+Tab, Enter, Enter (a new row) and Enter (the empty row goes): after each key the three paragraphs are whole lines in their order and no row holds their text.
+26. `everyBlockItemStandsApartAndKeepsTheText`: for every item and the `/` on a blank line between two lines of text, alone in the note, at the note's end, before text on its line, after text on its line and between blank lines: the result is the note with only line breaks and the item's text in place of the `/` and the query. An item that stands apart has a blank line or an end of the note before it and after it, and no blank line is added where one is. `one`, `/`, `three` with the rule gives `one`, blank, `---`, blank, `three`; `/h2` before `three` gives `## three`.
+27. `theTablesKeysNeverTakeALineThatIsNoRow`: in `Intro text`, `| A | B |`, `| --- | --- |`, `| 1 | 2 |`, `A first paragraph.`, `with a | pipe in it` with no blank line, Tab, Shift+Tab and Enter in `1` and `2` format the three rows and leave the other three lines as they are; Tab in `2` puts the new row over `A first paragraph.`; on the three other lines the keys are not the table's. A selection of `1` and Enter goes down; a selection from `1` to `2`, or from the line above, is not the table's.
 
 ## Where it stands
 
