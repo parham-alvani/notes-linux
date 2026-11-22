@@ -764,11 +764,12 @@ li.task-list-item.is-checked .query-date { text-decoration: none; opacity: 0.75;
 .preview[data-kind="note"] .preview-body a { pointer-events: none; }
 
 /* The section bar: the heading path of the place being read, over the text
-   at the top of the view. The background at 92% with a hairline under it,
-   no shadow; the path starts at the measure's start edge. */
+   at the top of the view. The page's background, not see-through (the
+   note's lines pass under it and must not show through its words), with a
+   hairline under it, no shadow; the path starts at the measure's start edge. */
 #section-bar {
   position: fixed; inset: 0 0 auto 0; z-index: 46; box-sizing: border-box; height: 28px;
-  background: color-mix(in srgb, var(--background) 92%, transparent);
+  background: var(--background);
   border-bottom: 1px solid var(--table-hairline);
   opacity: 0; visibility: hidden; pointer-events: none;
   transition: opacity 0.12s, visibility 0s 0.12s;

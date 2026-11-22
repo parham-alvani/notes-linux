@@ -375,7 +375,7 @@ These are the reader's: the page (`web/src`) for the Mac and Linux, and the Comp
 | When | Only when there is such a heading and it has left the view. At the top of a note, and in a note with no heading, there is no bar. A heading folded away is not counted. |
 | Place | At the top of the reading view, over the text, as wide as the view. It stays while the note scrolls. The reading progress line is at its bottom edge. |
 | Size | 28 px high. The text is 0.8 em, on one line, at the measure's start edge. |
-| Look | The background colour at 92% with a 1 px hairline under it. No shadow. The last heading is in the text colour, weight 600; its parents are in the muted colour; `›` between them is in the faint colour with 0.4 em at each side. |
+| Look | The background colour, not see-through (the note's lines pass under it and must not show through its words), with a 1 px hairline under it. No shadow. The last heading is in the text colour, weight 600; its parents are in the muted colour; `›` between them is in the faint colour with 0.4 em at each side. |
 | Long path | One heading shows at most 24 em and ends in `…`. When the path is wider than the bar, parents are left out from the start and `…` is put there. The last heading always shows. |
 | Direction | Each heading takes its own direction. The path reads from the side the first heading reads from. |
 | A click | On a heading goes to that heading: it comes to the top of the view, under the bar, with the smooth scroll the reader has, and the reading cursor goes to it. The bar takes no keyboard focus and has no key. |

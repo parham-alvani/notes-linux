@@ -2,6 +2,7 @@
 // headings fit (`docs/specs/look.md` in notes-linux, "Section bar").
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { headingPath, pathAt, leftOut } from "../src/sectionbar.js";
 import { sectionCrumbs } from "../src/controls.js";
 
@@ -60,4 +61,43 @@ test("the bar's headings are buttons with no place in the Tab order, each in its
   // `…` is there for the parents left out, hidden until some are.
   assert.match(html, /^<span class="section-dots" aria-hidden="true" hidden>…/);
   assert.equal((html.match(/class="section-sep"/g) ?? []).length, 3);
+});
+
+// What stays at the top of the view hides the note's lines that pass under
+// it: at 92% of the background, the dark palettes showed the text through
+// the bar's words.
+const css = readFileSync(new URL("../src/reader.css", import.meta.url), "utf8");
+/** The declarations of the one rule with this selector. */
+const rule = (selector) => {
+  const found = css.split("}").filter((part) => part.slice(part.lastIndexOf("\n\n") + 1).split("{")[0].replace(/\/\*[^]*?\*\//g, "").trim() === selector);
+  assert.equal(found.length, 1, selector);
+  return found[0].slice(found[0].lastIndexOf("{") + 1);
+};
+const declared = (selector, property) => rule(selector).match(new RegExp(`(?:^|[;\\s])${property}:\\s*([^;]+);`))?.[1];
+
+test("the section bar and the table header that stays are not see-through", () => {
+  assert.equal(declared("#section-bar", "background"), "var(--background)");
+  assert.equal(declared("#section-bar", "border-bottom"), "1px solid var(--table-hairline)");
+  assert.equal(declared("#table-head", "background"), "var(--panel)");
+  assert.equal(declared("table:not(.properties) thead th", "background")?.split(";")[0], "var(--panel)");
+  // Shown, the bar is whole: nothing makes it clear again.
+  assert.match(rule("#section-bar.is-on"), /opacity: 1;/);
+  // Daylight, naz and naz-soft each set the two colours, with no alpha.
+  for (const name of ["--background", "--panel"]) {
+    const values = [...css.matchAll(new RegExp(`^\\s*${name}:\\s*([^;]+);`, "gm"))].map((match) => match[1]);
+    assert.equal(values.length, 3, name);
+    for (const value of values) assert.match(value, /^#[0-9a-f]{6}$/, `${name}: ${value}`);
+  }
+});
+
+test("the layers at the top of the view stack in one order", () => {
+  const z = (selector) => Number(declared(selector, "z-index"));
+  // The table's header goes under the bar, the progress line is on the bar's
+  // edge, and find, a card and a picture opened large are over all of them.
+  const order = ["#table-head", "#section-bar", "#progress", ".find-bar", ".preview", ".zoom"].map(z);
+  assert.ok(order.every((value) => Number.isInteger(value)), String(order));
+  assert.deepEqual(order, [...order].sort((a, b) => a - b));
+  assert.equal(new Set(order).size, order.length);
+  // The reading cursor's layer has no place in that order: it is under every one of them.
+  assert.equal(declared("#reading-layer", "z-index"), undefined);
 });
