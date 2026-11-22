@@ -1,10 +1,20 @@
-//! The link preview (`docs/specs/look.md`, part 2): resting the pointer on
-//! a `[[link]]` shows a small card with the note's title and its first
-//! lines. What the card says is one pure rule over text, the same in the
-//! reader and the editor of every app; how it is drawn is each app's.
+//! The link preview (`docs/specs/look.md`, "Link preview"): resting the
+//! pointer on a `[[link]]` shows a small card with the note's title and its
+//! first lines. The first lines are one pure rule (`LinkPreview::excerpt`),
+//! the same in the reader and the editor of every app, the port of
+//! `LinkPreview.swift`; how the card is drawn is each app's. The reader's
+//! host sends the lines to the page (`preview` in `reader.rs`); the editor
+//! draws a `LinkCard` (`editor_link_card.rs`).
+//!
+//! A length is counted in characters, as every offset of the core is.
 
-use crate::note_parser::NoteParser;
+use std::sync::LazyLock;
+
+use regex::Regex;
+
+use crate::note_parser::{FrontMatter, Heading};
 use crate::sections::Sections;
+use crate::text::{slugs, trim};
 
 /// What a `[[link]]` names: the note, and a heading or a block of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,16 +62,68 @@ impl PreviewBody {
 
 pub struct LinkPreview;
 
+static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$").unwrap());
+static FENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:>\s*)*(```+|~~~+)").unwrap());
+static BLOCK_FENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(```+|~~~+)").unwrap());
+static BLOCK_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s{0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$").unwrap());
+static TRAILING_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s\^([A-Za-z0-9-]+)\s*$").unwrap());
+static OWN_LINE_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\^([A-Za-z0-9-]+)\s*$").unwrap());
+static ITEM_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:[-*+]|\d+[.)])(?:\s+\[[^\]]\])?(?:\s+|$)").unwrap());
+
 impl LinkPreview {
     /// The pointer rests this long on a link before its card shows, and
     /// the card stays this long after the pointer left it, in ms.
     pub const REST: u64 = 350;
     pub const LINGER: u64 = 250;
-    /// The most lines and characters of a note a card shows.
-    pub const LINES: usize = 12;
-    pub const CHARACTERS: usize = 600;
-    pub const EMPTY: &'static str = "The note is empty.";
+    /// At most this many lines.
+    pub const MAX_LINES: usize = 12;
+    /// At most this many characters.
+    pub const MAX_CHARACTERS: usize = 600;
+    /// What the card says of a link to no note.
     pub const MISSING: &'static str = "No note yet.";
+    /// What the card says of a note with no text.
+    pub const EMPTY: &'static str = "The note is empty.";
+
+    /// The first lines of [text], the note named [title].
+    ///
+    /// The front matter is left out, and so is a first heading whose text is
+    /// the note's title. The lines start at the first one that is not blank
+    /// and end after 12 lines or 600 characters, whichever comes first: at a
+    /// line's end when one is in reach, with `…` when text was left out. A
+    /// code block that is cut is closed, and an embed is written as its
+    /// link, so nothing is followed.
+    ///
+    /// With [anchor] a heading (`Next`, `A#B`), the lines are those of its
+    /// section without the heading itself; with a block id (`^id`), that
+    /// block alone. An anchor that names nothing gives no lines.
+    pub fn excerpt(text: &str, title: &str, anchor: Option<&str>) -> String {
+        let lines: Vec<&str> = text.split('\n').map(|line| line.strip_suffix('\r').unwrap_or(line)).collect();
+        let mut part: &[&str] = match anchor.filter(|anchor| !anchor.is_empty()) {
+            Some(anchor) if anchor.starts_with('^') => match block(anchor, &lines) {
+                Some((start, end)) => &lines[start..=end],
+                None => return String::new(),
+            },
+            Some(anchor) => {
+                let headings = Sections::headings(text);
+                let Some(found) = resolve(anchor, &headings).and_then(|chain| chain.last().copied()) else { return String::new() };
+                let end = Sections::end(found, &headings, lines.len());
+                &lines[(headings[found].line + 1).min(end)..end]
+            }
+            None => {
+                let mut part = without_blank_start(&lines[FrontMatter::parse(&lines).line_count.min(lines.len())..]);
+                // The card's head says the title already.
+                if part.first().and_then(|first| heading(first)).is_some_and(|text| same(&text, title)) {
+                    part = &part[1..];
+                }
+                part
+            }
+        };
+        part = without_blank_start(part);
+        while part.last().is_some_and(|last| is_blank(last)) {
+            part = &part[..part.len() - 1];
+        }
+        cut(part)
+    }
 
     /// What the text of a link names: `[[Plan#Next|the plan]]`, with or
     /// without its brackets. None for an embed (`![[…]]`) and for a link
@@ -113,8 +175,20 @@ impl LinkPreview {
         None
     }
 
+    /// The heading of [text] that [anchor] names (`Next`, `A#B`), as the
+    /// note writes it. None when the note has no such heading.
+    pub fn heading(text: &str, anchor: &str) -> Option<String> {
+        let headings = Sections::headings(text);
+        let found = resolve(anchor, &headings)?.last().copied()?;
+        Some(headings[found].text.clone())
+    }
+
     /// The card of a link to [target]: [path] is the note it resolves to
     /// and [text] that note's text, both None when no note has the name.
+    ///
+    /// Its lines are `excerpt`'s: those of the heading's section or of the
+    /// block the link names, and the note's first lines when the note has
+    /// no such heading or block (the head then names no heading).
     pub fn card(target: &LinkTarget, path: Option<&str>, text: Option<&str>) -> LinkCard {
         let (Some(path), Some(text)) = (path, text) else {
             return LinkCard { title: target.name.clone(), heading: None, folder: String::new(), body: PreviewBody::Missing };
@@ -122,151 +196,318 @@ impl LinkPreview {
         let title = crate::vault::Vault::title(path);
         let folder =
             path.rsplit_once('/').map_or_default(|(folder, _)| folder.split('/').filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" › "));
-        let section = target.heading.as_deref().and_then(|heading| Self::section(text, heading));
-        let block = target.block.as_deref().and_then(|id| Self::block(text, id));
-        let heading = section.as_ref().map(|(heading, _)| heading.clone());
-        let lines = match (section, block) {
-            (Some((_, lines)), _) => lines,
-            (None, Some(block)) => block,
-            (None, None) => Self::excerpt(text, &title),
+        let heading = target.heading.as_deref().and_then(|heading| Self::heading(text, heading));
+        let lines = if heading.is_some() {
+            Self::excerpt(text, &title, target.heading.as_deref())
+        } else {
+            let block =
+                target.block.as_deref().map(|id| Self::excerpt(text, &title, Some(&format!("^{id}")))).filter(|block| !block.is_empty());
+            block.unwrap_or_else(|| Self::excerpt(text, &title, None))
         };
-        let body = if lines.trim().is_empty() { PreviewBody::Empty } else { PreviewBody::Lines(lines) };
+        let body = if is_blank(&lines) { PreviewBody::Empty } else { PreviewBody::Lines(lines) };
         LinkCard { title, heading, folder, body }
     }
+}
 
-    /// The first lines of a note: its text without its front matter and
-    /// without a first heading whose text is [title], from the first line
-    /// that is not blank, cut as `cut` cuts.
-    pub fn excerpt(text: &str, title: &str) -> String {
-        let mut lines: Vec<&str> = Self::body(text).lines().skip_while(|line| line.trim().is_empty()).collect();
-        let is_title = lines.first().is_some_and(|line| {
-            let line = line.trim();
-            let text = line.trim_start_matches('#');
-            let level = line.len() - text.len();
-            (1..=6).contains(&level) && text.starts_with([' ', '\t']) && text.trim().trim_end_matches('#').trim() == title.trim()
-        });
-        if is_title {
-            lines.remove(0);
-        }
-        Self::cut(&lines)
+fn is_blank(line: &str) -> bool {
+    line.chars().all(char::is_whitespace)
+}
+
+fn without_blank_start<'a, 'b>(lines: &'a [&'b str]) -> &'a [&'b str] {
+    &lines[lines.iter().position(|line| !is_blank(line)).unwrap_or(lines.len())..]
+}
+
+/// The text of the heading [line] is, as the parser reads one.
+fn heading(line: &str) -> Option<String> {
+    if !line.starts_with('#') {
+        return None;
     }
+    HEADING.captures(line).map(|caps| caps[2].to_string())
+}
 
-    /// [text] without its front matter: the lines from a first `---` line
-    /// to the `---` or `...` line that closes it.
-    fn body(text: &str) -> &str {
-        let mut lines = text.split_inclusive('\n');
-        let bare = |line: &str| line.trim_end_matches(['\n', '\r']).trim_matches([' ', '\t']).to_string();
-        let Some(first) = lines.next().filter(|first| bare(first) == "---") else { return text };
-        let mut at = first.len();
-        for line in lines {
-            at += line.len();
-            if matches!(bare(line).as_str(), "---" | "...") {
-                return &text[at..];
-            }
+fn same(heading: &str, title: &str) -> bool {
+    trim(heading).to_lowercase() == trim(title).to_lowercase()
+}
+
+/// The marks of a code fence that [line] opens or closes. A line that
+/// starts with inline code, ```` ```a``` b ````, is no fence.
+fn fence_mark(line: &str) -> Option<&str> {
+    if !line.contains("```") && !line.contains("~~~") {
+        return None;
+    }
+    let mark = FENCE.captures(line)?.get(1)?;
+    if mark.as_str().starts_with('`') && line[mark.end()..].contains('`') {
+        return None;
+    }
+    Some(mark.as_str())
+}
+
+/// The fence that is open after [line], given the one open before it.
+fn fence_after<'a>(open: Option<&'a str>, line: &'a str) -> Option<&'a str> {
+    let Some(mark) = fence_mark(line) else { return open };
+    match open {
+        Some(marks) if mark.chars().next() == marks.chars().next() && mark.len() >= marks.len() => None,
+        Some(marks) => Some(marks),
+        None => Some(mark),
+    }
+}
+
+/// [lines] up to the limits, with what closes them.
+fn cut(lines: &[&str]) -> String {
+    let mut kept: Vec<String> = lines.iter().take(LinkPreview::MAX_LINES).map(|line| (*line).to_string()).collect();
+    let mut more = lines.len() > kept.len();
+    // Cut inside a line: no line's end was in reach.
+    let mut in_line = false;
+    let mut count = 0;
+    for index in 0..kept.len() {
+        // A line break is a character too.
+        let length = kept[index].chars().count() + usize::from(index > 0);
+        if count + length <= LinkPreview::MAX_CHARACTERS {
+            count += length;
+            continue;
         }
+        more = true;
+        if index == 0 {
+            kept = vec![kept[0].chars().take(LinkPreview::MAX_CHARACTERS).collect()];
+            in_line = true;
+        } else {
+            kept.truncate(index);
+        }
+        break;
+    }
+    while kept.last().is_some_and(|last| is_blank(last)) {
+        kept.pop();
+    }
+    // A code block the cut left open is closed with its own marks.
+    let open = kept.iter().fold(None, |open, line| fence_after(open, line)).map(String::from);
+    let mut out = embeds_as_links(&kept);
+    let closed = open.is_some();
+    out.extend(open);
+    let text = out.join("\n");
+    if !more {
         text
+    } else if in_line && !closed {
+        text + "…"
+    } else {
+        text + "\n\n…"
     }
+}
 
-    /// The lines under the heading [heading] of [text], without the
-    /// heading itself, up to the next heading of its level or higher; with
-    /// the heading as the note writes it. None when the note has no such heading.
-    pub fn section(text: &str, heading: &str) -> Option<(String, String)> {
-        let headings = NoteParser::parse(text).headings;
-        let wanted = heading.trim().to_lowercase();
-        let index = headings.iter().position(|h| h.text.trim().to_lowercase() == wanted)?;
-        let lines: Vec<&str> = text.lines().collect();
-        let end = Sections::end(index, &headings, lines.len()).min(lines.len());
-        let under = lines.get(headings[index].line + 1..end).unwrap_or(&[]);
-        Some((headings[index].text.clone(), Self::cut(under)))
-    }
-
-    /// The block with the id [id] (`^id` at the end of its last line, or on
-    /// the line under it), alone and without the id.
-    pub fn block(text: &str, id: &str) -> Option<String> {
-        let mark = format!("^{id}");
-        let lines: Vec<&str> = text.lines().collect();
-        let at = lines.iter().position(|line| {
-            let line = line.trim_end();
-            line == mark || line.ends_with(&format!(" {mark}"))
-        })?;
-        let own = lines[at].trim_end();
-        let last = own.strip_suffix(&mark).unwrap_or(own).trim_end();
-        // An id on a line of its own names the block over it.
-        let end = if last.is_empty() { at } else { at + 1 };
-        let mut start = end.min(at);
-        while start > 0 && !lines[start - 1].trim().is_empty() {
-            start -= 1;
-        }
-        let mut block: Vec<&str> = lines[start..end].to_vec();
-        if !last.is_empty() {
-            block.pop();
-            block.push(last);
-        }
-        Some(Self::cut(&block))
-    }
-
-    /// [lines] from the first that is not blank, up to `LINES` lines or
-    /// `CHARACTERS` characters, whichever comes first: cut at a line's end
-    /// when one is in reach, with `…` when text was left out. A code block
-    /// that is cut is closed, and an embed is shown as its link.
-    pub fn cut(lines: &[&str]) -> String {
-        let lines: Vec<&str> = lines.iter().copied().skip_while(|line| line.trim().is_empty()).collect();
-        let mut end = lines.len();
-        while end > 0 && lines[end - 1].trim().is_empty() {
-            end -= 1;
-        }
-        let lines = &lines[..end];
-        let mut kept: Vec<String> = Vec::new();
-        let (mut count, mut left_out, mut whole) = (0, false, true);
-        for line in lines {
-            let length = line.chars().count();
-            // With the line break before it.
-            let needed = length + usize::from(!kept.is_empty());
-            if kept.len() == Self::LINES || count + needed > Self::CHARACTERS {
-                left_out = true;
-                if kept.is_empty() {
-                    // One line longer than the card holds: its start.
-                    kept.push(line.chars().take(Self::CHARACTERS).collect());
-                    whole = false;
-                }
-                break;
+/// `![[x]]` written as `[[x]]`, outside code blocks.
+fn embeds_as_links(lines: &[String]) -> Vec<String> {
+    let mut open: Option<&str> = None;
+    lines
+        .iter()
+        .map(|line| {
+            if fence_mark(line).is_some() {
+                open = fence_after(open, line);
+                return line.clone();
             }
-            count += needed;
-            kept.push(Self::without_embeds(line));
-        }
-        // A fence the cut left open is closed, so the code does not run on.
-        let mut open: Option<String> = None;
-        for line in &kept {
-            let rest = line.trim_start_matches([' ', '\t', '>']);
-            let mark: String = rest.chars().take_while(|c| *c == '`' || *c == '~').collect();
-            match &open {
-                None if mark.len() >= 3 => open = Some(mark),
-                Some(fence) if mark.len() >= fence.len() && mark.starts_with(fence.as_str()) && rest[mark.len()..].trim().is_empty() => {
-                    open = None;
-                }
-                _ => {}
-            }
-        }
-        let mut out = kept.join("\n");
-        if let Some(fence) = open {
-            out.push('\n');
-            out.push_str(&fence);
-        }
-        if left_out {
-            out.push_str(if whole { "\n…" } else { "…" });
-        }
-        out
-    }
+            if open.is_none() && line.contains("![[") { line.replace("![[", "[[") } else { line.clone() }
+        })
+        .collect()
+}
 
-    /// `![[note]]` as `[[note]]`: an embed in a card is shown as its link, not followed.
-    fn without_embeds(line: &str) -> String {
-        line.replace("![[", "[[")
+/// How a link's heading and a heading compare: without the marks Obsidian
+/// leaves out of a link, white space collapsed, case folded.
+fn key(text: &str) -> String {
+    slugs::heading(&text.chars().filter(|c| !"*_`=~[]#|^:%".contains(*c)).collect::<String>())
+}
+
+/// The headings an anchor `A#B#C` names, one for each part, each under the
+/// one before; none when one is not found.
+fn resolve(anchor: &str, headings: &[Heading]) -> Option<Vec<usize>> {
+    let parts: Vec<String> = anchor.split('#').map(key).collect();
+    if parts.iter().any(String::is_empty) {
+        return None;
     }
+    let (mut low, mut high) = (0, headings.len());
+    let mut chain = Vec::new();
+    for part in parts {
+        let found = (low..high).find(|&at| key(&headings[at].text) == part)?;
+        chain.push(found);
+        low = found + 1;
+        let under = headings[low..].iter().position(|h| h.level <= headings[found].level).map_or(headings.len(), |at| low + at);
+        high = high.min(under);
+    }
+    Some(chain)
+}
+
+/// The first and last line of the block [id] names: a paragraph or a list
+/// item with `^id` at its end (on its last line, or alone as its last
+/// line), or a table, a quote or a code block with `^id` on a line of its
+/// own after it, as Obsidian writes it.
+fn block(id: &str, lines: &[&str]) -> Option<(usize, usize)> {
+    let wanted = id.strip_prefix('^').unwrap_or(id).to_lowercase();
+    // Each block: its first and last line, its id, and whether a line under it may name it.
+    let mut blocks: Vec<(usize, usize, Option<String>, bool)> = Vec::new();
+    let id_of = |line: &str| TRAILING_ID.captures(line).map(|caps| caps[1].to_lowercase());
+    let starts_block = |line: &str| {
+        let trimmed = line.trim_start_matches([' ', '\t']);
+        ["|", ">", "```", "~~~", "$$"].iter().any(|mark| trimmed.starts_with(mark))
+            || ITEM_MARK.is_match(line)
+            || (trimmed.starts_with('#') && BLOCK_HEADING.is_match(line))
+    };
+    // To the last line of the paragraph or the item that starts at [from].
+    let run = |from: usize| {
+        let mut end = from;
+        while end + 1 < lines.len() && !is_blank(lines[end + 1]) && !starts_block(lines[end + 1]) {
+            end += 1;
+        }
+        end
+    };
+    let mut index = FrontMatter::parse(lines).line_count;
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = trim(line);
+        if trimmed.is_empty() {
+            index += 1;
+            continue;
+        }
+        // `^id` alone names the table, quote or code block above it.
+        if let Some(caps) = OWN_LINE_ID.captures(line)
+            && let Some(last) = blocks.last_mut()
+            && last.3
+            && last.2.is_none()
+            && (last.1 + 1..index).all(|at| is_blank(lines[at]))
+        {
+            last.2 = Some(caps[1].to_lowercase());
+            index += 1;
+            continue;
+        }
+        let mark = fence_mark(line).and_then(|_| BLOCK_FENCE.captures(line)).map(|caps| caps[1].to_string());
+        if mark.is_some() || trimmed == "$$" {
+            // To its closing line, or to the end when it never closes.
+            let closes = |other: &str| match &mark {
+                Some(mark) => BLOCK_FENCE
+                    .captures(other)
+                    .is_some_and(|caps| caps[1].chars().next() == mark.chars().next() && caps[1].len() >= mark.len()),
+                None => trim(other) == "$$",
+            };
+            let close = (index + 1..lines.len()).find(|&at| closes(lines[at])).unwrap_or(lines.len());
+            let end = close.min(lines.len() - 1);
+            blocks.push((index, end, None, true));
+            index = end + 1;
+            continue;
+        }
+        if trimmed.starts_with('#') && BLOCK_HEADING.is_match(line) {
+            blocks.push((index, index, None, false));
+            index += 1;
+            continue;
+        }
+        if trimmed.starts_with('|') || trimmed.starts_with('>') {
+            let mark = if trimmed.starts_with('|') { '|' } else { '>' };
+            let mut end = index;
+            while end + 1 < lines.len() && trim(lines[end + 1]).starts_with(mark) {
+                end += 1;
+            }
+            blocks.push((index, end, None, true));
+            index = end + 1;
+            continue;
+        }
+        // A list item is its own lines, not the items under it; any other line starts a paragraph.
+        let end = run(index);
+        // `^id` alone as the last line of a paragraph names it too.
+        let own = || OWN_LINE_ID.captures(lines[end]).filter(|_| end > index).map(|caps| caps[1].to_lowercase());
+        blocks.push((index, end, id_of(lines[end]).or_else(own), false));
+        index = end + 1;
+    }
+    blocks.into_iter().find(|found| found.2.as_deref() == Some(wanted.as_str())).map(|found| (found.0, found.1))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn numbered(count: usize) -> String {
+        (1..=count).map(|n| format!("l{n}")).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_preview_is_the_first_lines() {
+        // A front matter, the title as a heading, a blank line and 20 lines: the first 12, and `…`.
+        let plan = format!("---\ntags: [a]\n---\n# Plan\n\n{}\n", numbered(20));
+        assert_eq!(LinkPreview::excerpt(&plan, "Plan", None), numbered(12) + "\n\n…");
+        // A link to a heading: the lines under it up to the next heading of its level or higher, without it.
+        let sections = "# Plan\n\nintro\n\n## Next\n\none\n\n### Deeper\n\ntwo\n\n## Later\n\nthree\n";
+        assert_eq!(LinkPreview::excerpt(sections, "Plan", Some("Next")), "one\n\n### Deeper\n\ntwo");
+        assert_eq!(LinkPreview::excerpt(sections, "Plan", Some("Later")), "three");
+        assert_eq!(LinkPreview::excerpt(sections, "Plan", Some("Next#Deeper")), "two");
+        // One line of 900 letters: 600 of them, and `…`.
+        assert_eq!(LinkPreview::excerpt(&"a".repeat(900), "Long", None), "a".repeat(600) + "…");
+        // A note that is only a front matter is empty.
+        assert_eq!(LinkPreview::excerpt("---\ntags: [a]\n---\n", "Plan", None), "");
+        assert_eq!(LinkPreview::excerpt("", "Plan", None), "");
+        // A name with no note has its own line.
+        assert_eq!(LinkPreview::MISSING, "No note yet.");
+        assert_eq!(LinkPreview::EMPTY, "The note is empty.");
+    }
+
+    #[test]
+    fn a_short_note_is_shown_whole_with_no_dots() {
+        assert_eq!(LinkPreview::excerpt("\n\none\ntwo\n\n", "Note", None), "one\ntwo");
+        // Twelve lines are all of it.
+        assert_eq!(LinkPreview::excerpt(&numbered(12), "Note", None), numbered(12));
+        // 600 letters are all of it too.
+        assert_eq!(LinkPreview::excerpt(&"b".repeat(600), "Note", None), "b".repeat(600));
+    }
+
+    #[test]
+    fn only_a_first_heading_that_is_the_title_is_left_out() {
+        assert_eq!(LinkPreview::excerpt("# Plan\n\ntext", "Plan", None), "text");
+        assert_eq!(LinkPreview::excerpt("## plan\ntext", "Plan", None), "text");
+        // Another heading stays, and so does the title when it is not the first line.
+        assert_eq!(LinkPreview::excerpt("# Other\n\ntext", "Plan", None), "# Other\n\ntext");
+        assert_eq!(LinkPreview::excerpt("text\n\n# Plan\n\nmore", "Plan", None), "text\n\n# Plan\n\nmore");
+    }
+
+    #[test]
+    fn the_cut_is_at_a_lines_end_when_one_is_in_reach() {
+        // Two lines of 400 letters: the second does not fit, so the first is all, with `…` under it.
+        let line = "c".repeat(400);
+        assert_eq!(LinkPreview::excerpt(&format!("{line}\n{line}"), "Note", None), format!("{line}\n\n…"));
+        // The line breaks count: 300 + 1 + 299 is 600.
+        let (a, b) = ("a".repeat(300), "b".repeat(299));
+        assert_eq!(LinkPreview::excerpt(&format!("{a}\n{b}"), "Note", None), format!("{a}\n{b}"));
+        assert_eq!(LinkPreview::excerpt(&format!("{a}\n{b}b"), "Note", None), format!("{a}\n\n…"));
+        // A blank line the cut ends on is not kept.
+        assert_eq!(LinkPreview::excerpt(&format!("{a}\n\n{a}"), "Note", None), format!("{a}\n\n…"));
+    }
+
+    #[test]
+    fn a_code_block_that_is_cut_is_closed() {
+        let code = format!("```swift\n{}\n```\nafter\n", (1..=20).map(|n| format!("let x{n} = 1")).collect::<Vec<_>>().join("\n"));
+        let excerpt = LinkPreview::excerpt(&code, "Note", None);
+        let lines: Vec<&str> = excerpt.split('\n').collect();
+        assert_eq!(lines.len(), 15);
+        assert_eq!((lines[0], lines[11]), ("```swift", "let x11 = 1"));
+        assert_eq!(lines[12..], ["```", "", "…"]);
+        // A longer fence is closed with its own marks, and a block that ends in the lines needs nothing.
+        let tildes = format!("~~~~\n{}~~~~\n", "x\n".repeat(30));
+        assert!(LinkPreview::excerpt(&tildes, "Note", None).ends_with("x\n~~~~\n\n…"));
+        assert_eq!(LinkPreview::excerpt("```\na\n```\n", "Note", None), "```\na\n```");
+    }
+
+    #[test]
+    fn an_embed_is_its_link_and_is_not_followed() {
+        assert_eq!(LinkPreview::excerpt("See ![[Other]] and ![[a.png|100]].", "Note", None), "See [[Other]] and [[a.png|100]].");
+        // In a code block it is text.
+        assert_eq!(LinkPreview::excerpt("```\n![[Other]]\n```", "Note", None), "```\n![[Other]]\n```");
+    }
+
+    #[test]
+    fn a_link_to_a_block_shows_that_block_alone() {
+        let note = "# Note\n\nfirst\n\nThe second one. ^b1\n\n- item one\n- item two ^b2\n\nlast\n";
+        assert_eq!(LinkPreview::excerpt(note, "Note", Some("^b1")), "The second one. ^b1");
+        assert_eq!(LinkPreview::excerpt(note, "Note", Some("^b2")), "- item two ^b2");
+        // An anchor that names nothing gives no lines.
+        assert_eq!(LinkPreview::excerpt(note, "Note", Some("^none")), "");
+        assert_eq!(LinkPreview::excerpt(note, "Note", Some("Nowhere")), "");
+        // A table is named by the line under it, and is shown without that line.
+        let table = "| A |\n| --- |\n| 1 |\n\n^t1\n\nafter ^p\n";
+        assert_eq!(LinkPreview::excerpt(table, "Note", Some("^t1")), "| A |\n| --- |\n| 1 |");
+        assert_eq!(LinkPreview::excerpt(table, "Note", Some("^T1")), "| A |\n| --- |\n| 1 |");
+    }
 
     fn lines(body: &PreviewBody) -> &str {
         match body {
@@ -275,15 +516,14 @@ mod tests {
         }
     }
 
-    // docs/specs/look.md, part 2, case 18.
+    // docs/specs/look.md, part 2, case 18, as the editor's card shows it.
     #[test]
-    fn the_preview_is_the_first_lines() {
+    fn the_card_of_a_link_is_the_first_lines() {
         let twenty: String = (1..=20).map(|n| format!("l{n}\n")).collect();
         let plan = format!("---\ntags: [a]\n---\n# Plan\n\n{twenty}\n## Next\n\nn1\nn2\n### Deeper\nn3\n## After\nn4\n");
-        let twelve: String = (1..=12).map(|n| format!("l{n}\n")).collect();
-        assert_eq!(LinkPreview::excerpt(&plan, "Plan"), format!("{twelve}…"));
+        assert_eq!(LinkPreview::excerpt(&plan, "Plan", None), numbered(12) + "\n\n…");
         // A first heading that is not the title stays.
-        assert!(LinkPreview::excerpt("# Other\n\ntext\n", "Plan").starts_with("# Other\n"));
+        assert!(LinkPreview::excerpt("# Other\n\ntext\n", "Plan", None).starts_with("# Other\n"));
 
         // A link to a heading: the lines under it, up to the next heading of its level or higher.
         let target = LinkPreview::target("[[Plan#Next]]").unwrap();
@@ -291,13 +531,16 @@ mod tests {
         let card = LinkPreview::card(&target, Some("Work/Plans/Plan.md"), Some(&plan));
         assert_eq!((card.title.as_str(), card.heading.as_deref(), card.folder.as_str()), ("Plan", Some("Next"), "Work › Plans"));
         assert_eq!(lines(&card.body), "n1\nn2\n### Deeper\nn3");
+        // The head says the heading as the note writes it.
+        let lower = LinkPreview::card(&LinkPreview::target("[[Plan#next]]").unwrap(), Some("Plan.md"), Some(&plan));
+        assert_eq!((lower.heading.as_deref(), lower.folder.as_str()), (Some("Next"), ""));
 
         // One line of 900 letters: 600 and the mark.
         let long = "x".repeat(900);
-        assert_eq!(LinkPreview::excerpt(&long, "Long"), format!("{}…", "x".repeat(600)));
+        assert_eq!(LinkPreview::excerpt(&long, "Long", None), format!("{}…", "x".repeat(600)));
         // A line's end in reach: the cut is there.
         let two = format!("{}\n{}\n", "a".repeat(500), "b".repeat(200));
-        assert_eq!(LinkPreview::excerpt(&two, "Two"), format!("{}\n…", "a".repeat(500)));
+        assert_eq!(LinkPreview::excerpt(&two, "Two", None), format!("{}\n\n…", "a".repeat(500)));
 
         // A note that is only a front matter is empty, and a name with no note says so.
         let empty = LinkPreview::card(&LinkPreview::target("Plan").unwrap(), Some("Plan.md"), Some("---\na: 1\n---\n"));
@@ -331,23 +574,33 @@ mod tests {
 
     #[test]
     fn a_block_alone_and_a_cut_code_block_closed() {
+        // The block is shown as the note writes it, its id too, as in the reader's card.
         let text = "one\n\ntwo\nthree ^abc\n\nfour\n\nfive\nsix\n^def\n";
-        assert_eq!(LinkPreview::block(text, "abc").as_deref(), Some("two\nthree"));
-        assert_eq!(LinkPreview::block(text, "def").as_deref(), Some("five\nsix"));
-        assert_eq!(LinkPreview::block(text, "nope"), None);
+        assert_eq!(LinkPreview::excerpt(text, "N", Some("^abc")), "two\nthree ^abc");
+        assert_eq!(LinkPreview::excerpt(text, "N", Some("^def")), "five\nsix\n^def");
+        assert_eq!(LinkPreview::excerpt(text, "N", Some("^nope")), "");
         let card = LinkPreview::card(&LinkPreview::target("[[N#^abc]]").unwrap(), Some("N.md"), Some(text));
-        assert_eq!(lines(&card.body), "two\nthree");
-        // A heading the note does not have: the note's first lines, and no heading in the head.
+        assert_eq!(lines(&card.body), "two\nthree ^abc");
+        // A heading or a block the note does not have: the note's first lines, and no heading in the head.
         let lost = LinkPreview::card(&LinkPreview::target("[[N#Gone]]").unwrap(), Some("N.md"), Some(text));
         assert_eq!((lost.heading, lines(&lost.body).starts_with("one")), (None, true));
+        let lost = LinkPreview::card(&LinkPreview::target("[[N#^nope]]").unwrap(), Some("N.md"), Some(text));
+        assert!(lines(&lost.body).starts_with("one"));
 
         // A code block the cut goes through is closed before the mark.
         let code: String = (1..=20).map(|n| format!("c{n}\n")).collect();
-        let cut = LinkPreview::excerpt(&format!("intro\n```rust\n{code}```\n"), "Code");
-        assert!(cut.ends_with("c10\n```\n…"), "{cut}");
-        assert_eq!(cut.lines().count(), 14);
+        let cut = LinkPreview::excerpt(&format!("intro\n```rust\n{code}```\n"), "Code", None);
+        assert!(cut.ends_with("c10\n```\n\n…"), "{cut}");
+        assert_eq!(cut.lines().count(), 15);
         // One that fits is left as it is, and an embed is shown as its link.
-        assert_eq!(LinkPreview::excerpt("```\na\n```\n![[Other]] and ![[pic.png]]\n", "X"), "```\na\n```\n[[Other]] and [[pic.png]]");
-        assert_eq!(LinkPreview::excerpt("\n\n  \n", "X"), "");
+        assert_eq!(LinkPreview::excerpt("```\na\n```\n![[Other]] and ![[pic.png]]\n", "X", None), "```\na\n```\n[[Other]] and [[pic.png]]");
+        assert_eq!(LinkPreview::excerpt("\n\n  \n", "X", None), "");
+    }
+
+    #[test]
+    fn persian_text_is_cut_by_letters_not_bytes() {
+        let cut = LinkPreview::excerpt(&"س".repeat(700), "یادداشت", None);
+        assert_eq!(cut.chars().count(), 601);
+        assert!(cut.ends_with('…'));
     }
 }

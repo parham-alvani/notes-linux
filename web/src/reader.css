@@ -728,31 +728,99 @@ li.task-list-item.is-checked .query-date { text-decoration: none; opacity: 0.75;
 .task-priority.is-medium { --priority-color: var(--orange); }
 .task-priority.is-low, .task-priority.is-lowest { --priority-color: var(--blue); }
 
-/* A note's preview, under the link the pointer is on. */
+/* The card of a link's preview and of a footnote: the note's first lines,
+   or the footnote's text, by the link the pointer rests on. A hairline box
+   with a shadow, no ring; its head stays while its body scrolls. */
 .preview {
-  position: fixed; z-index: 70; overflow: auto;
-  padding: 0 1em 0.8em; font-size: 0.9em;
+  position: fixed; z-index: 70; box-sizing: border-box;
+  display: flex; flex-direction: column; overflow: hidden;
   background: var(--background);
-  border: 1px solid color-mix(in oklch, var(--accent) 45%, var(--table-hairline));
+  border: 1px solid var(--table-hairline);
   border-radius: 12px;
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35), 0 0 0 4px color-mix(in oklch, var(--accent) 10%, transparent);
-  opacity: 0; transform: translateY(4px) scale(0.98); pointer-events: none;
-  transition: opacity 0.14s, transform 0.14s;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.14s;
 }
-.preview.is-open { opacity: 1; transform: none; pointer-events: auto; }
+.preview.is-open { opacity: 1; pointer-events: auto; }
 .preview-head {
-  position: sticky; top: 0; z-index: 1;
+  flex: none;
   display: flex; align-items: baseline; gap: 0.5em; flex-wrap: wrap;
-  margin: 0 -1em 0.6em; padding: 0.6em 1em 0.5em;
+  padding: 0.5em 0.9em 0.45em; font-size: 0.9em;
   background: var(--panel);
   border-bottom: 1px solid var(--table-hairline);
 }
+/* A click on a note's head opens the note. */
+.preview[data-kind="note"] .preview-head { cursor: pointer; }
 .preview-title { font-weight: 700; color: var(--accent); }
+.preview-title.is-missing { color: var(--text-faint); }
 .preview-anchor { color: var(--h3-color); font-weight: 600; }
 .preview-path { margin-inline-start: auto; color: var(--text-faint); font-size: 0.82em; }
+.preview-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 0.6em 1em 0.8em; font-size: 0.9em; }
+.preview-body > :first-child { margin-top: 0; }
 .preview-body > :last-child { margin-bottom: 0; }
 .preview-body h1, .preview-body h2, .preview-body h3 { margin-top: 0.8em; }
 .preview-empty { color: var(--text-faint); font-style: italic; }
+/* The links in a note's card are not live: only its head opens something. A footnote's links work. */
+.preview[data-kind="note"] .preview-body a { pointer-events: none; }
+
+/* The section bar: the heading path of the place being read, over the text
+   at the top of the view. The page's background, not see-through (the
+   note's lines pass under it and must not show through its words), with a
+   hairline under it, no shadow; the path starts at the measure's start edge. */
+#section-bar {
+  position: fixed; inset: 0 0 auto 0; z-index: 46; box-sizing: border-box; height: 28px;
+  background: var(--background);
+  border-bottom: 1px solid var(--table-hairline);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity 0.12s, visibility 0s 0.12s;
+}
+#section-bar.is-on { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity 0.12s; }
+.section-measure { box-sizing: content-box; max-width: var(--text-width, 35em); height: 100%; margin: 0 auto; padding: 0 2.5em; }
+@media (max-width: 719.98px) {
+  .section-measure { padding-inline: 16px; }
+}
+.section-path { display: flex; align-items: center; height: 100%; font-size: 0.8em; line-height: 1.3; white-space: nowrap; overflow: hidden; }
+.section-path [hidden] { display: none; }
+.section-crumb {
+  flex: none; max-width: 24em; overflow: hidden; text-overflow: ellipsis;
+  margin: 0; padding: 0; border: 0; background: none; font: inherit; color: var(--text-muted); cursor: pointer;
+}
+.section-crumb.is-last { flex: 0 1 auto; min-width: 0; color: var(--text); font-weight: 600; }
+/* While the path is measured, the last heading is as wide as its text. */
+.section-path.is-measured .section-crumb.is-last { flex: none; }
+.section-sep, .section-dots { flex: none; color: var(--text-faint); }
+.section-sep { margin: 0 0.4em; }
+/* In a path that reads from the right, the mark points the way the path reads. */
+.section-path[dir="rtl"] .section-sep { transform: scaleX(-1); }
+/* A block that is gone to (a link's heading, the editor's line) comes to
+   rest under the bar's place: at the very top, the bar would be over its
+   first line. */
+:root.keeps-section-bar { scroll-padding-top: 36px; }
+/* The reading progress line is at the bar's bottom edge while the bar shows. */
+:root.has-section-bar #progress { top: 26px; }
+
+/* A table's header that stays: a copy of the header row at the top of the
+   view, on the panel colour, while the table's rows are read. */
+#table-head {
+  position: fixed; z-index: 44; box-sizing: border-box; overflow: hidden; direction: ltr;
+  background: var(--panel); border-inline: 1px solid var(--table-hairline);
+  visibility: hidden;
+}
+#table-head.is-on { visibility: visible; }
+#table-head table.pinned-head {
+  display: table; table-layout: fixed; position: relative; margin: 0; max-width: none;
+  border: none; border-radius: 0; border-spacing: 0;
+}
+#table-head th { box-sizing: border-box; border-radius: 0 !important; }
+
+/* A header cell sorts its table: a hand over it, and the mark of the order in the accent. */
+#note table:not(.properties):not(.base-table) thead th, #table-head th { cursor: pointer; }
+.sort-mark { margin-inline-start: 0.35em; color: var(--accent); font-size: 0.8em; font-weight: 600; user-select: none; }
+.preview .sort-mark { display: none; }
+.preview thead th { cursor: auto; }
+
+/* The soft change between two notes: the page's own crossfade, 120 ms, with no movement. */
+::view-transition-group(root) { animation-duration: 120ms; }
 
 /* The reading cursor's layer is the note's size and shows nothing outside
    it, so a cursor or a band that is off (clear, but still at its place)
@@ -831,7 +899,7 @@ body { position: relative; }
 @media print {
   :root { color-scheme: light; }
   html, body { background: #ffffff !important; }
-  #progress, #reading-cursor, #reading-line, .fold-toggle, .heading-link, .code-copy, .find-bar, .preview { display: none !important; }
+  #progress, #reading-cursor, #reading-line, .fold-toggle, .heading-link, .code-copy, .find-bar, .preview, #section-bar, #table-head, .sort-mark { display: none !important; }
   .folded-away { display: revert !important; }
   .fold-hint { display: none; }
   .is-speaking { background: none !important; box-shadow: none !important; }
@@ -950,6 +1018,9 @@ a.detected:hover { color: var(--link-color, var(--accent)); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+  /* The section bar and the cards come and go at once, and no note fades into the next. */
+  #section-bar, #section-bar.is-on, .preview { transition: none !important; }
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }
 
 /* Increase Contrast: the faint grey is the muted one, and lines are firmer. */

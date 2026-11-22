@@ -5,13 +5,25 @@
 import { render, renderInline, isClosed, hue, languageColor, vaultUrl, escapeHtml, setRemoteImages, remoteImagesShown, pictureAddress, withoutRemotePictures, loadRemoteImage } from "./render.js";
 import { renderView } from "./bases.js";
 import { renderCanvas, bounds, fit } from "./canvas.js";
-import { codeHead, findBar as findBarHtml, foldState, foldHint, taskChip, baseTabs, canvasBar, zoomLabel, imageBar, imageInfo } from "./controls.js";
+import { codeHead, findBar as findBarHtml, foldState, foldHint, taskChip, baseTabs, canvasBar, zoomLabel, imageBar, imageInfo, sectionCrumbs, previewHead, footnoteLabel } from "./controls.js";
+import { headingPath, leftOut } from "./sectionbar.js";
+import { sortOrder, nextSort, sortMark, sortWord, keptSorts } from "./tablesort.js";
 import { PanZoom, percent, svgSize } from "./viewer.js";
 
 const app = window.webkit?.messageHandlers;
 
+/**
+ * The path of the note the page has drawn. Every message to the app carries
+ * it as `note`: the app may already show another note (it has asked for it,
+ * and the page has not drawn it yet, or has not even heard), and a line or a
+ * link of the note on the page means nothing in that one. The app drops a
+ * message whose note is not the one it shows. This is state, not time: it
+ * holds however slow the page is.
+ */
+const onPage = { path: "" };
+
 function post(message) {
-  app?.daftar?.postMessage(message);
+  app?.daftar?.postMessage({ ...message, note: onPage.path });
 }
 
 let current = { path: "" };
@@ -217,16 +229,7 @@ async function fillEmbeds(root) {
       if (!note || !embed.isConnected) continue;
       const holder = document.createElement("div");
       holder.innerHTML = render(note.text, { path: embed.dataset.path, links: note.links });
-      holder.querySelectorAll(".embed").forEach((inner) => {
-        const link = Object.assign(document.createElement("a"), {
-          className: "internal-link",
-          href: "#",
-          textContent: inner.querySelector(".embed-title")?.textContent ?? "",
-        });
-        // The link still goes where the embed did.
-        Object.assign(link.dataset, { path: inner.dataset.path ?? "", target: inner.dataset.target ?? "", anchor: inner.dataset.anchor ?? "" });
-        inner.replaceWith(link);
-      });
+      holder.querySelectorAll(".embed").forEach(embedAsLink);
       // A checkbox in an embed belongs to another file; it is shown, not ticked.
       holder.querySelectorAll("input[type=checkbox]").forEach((box) => (box.disabled = true));
       body.replaceChildren(...section(holder, embed.dataset.anchor).childNodes);
@@ -342,117 +345,251 @@ async function fillBases(root) {
 }
 
 /**
- * Hover a link to a note to see it: after a moment a card shows the note,
- * or the section the link names, rendered as the reader renders it. The
- * card stays while the pointer is on it, so its links can be followed.
+ * The card of a link and of a footnote. Resting the pointer on a link to a
+ * note shows the note's title and its first lines, or the first lines of
+ * the section the link names; on a footnote's number, or with a click on
+ * it, the footnote's text, where the number is. The card never takes the
+ * keys. The rules are `docs/specs/look.md` in notes-linux, "Link preview"
+ * and "Footnote popover".
  */
-const preview = { card: null, timer: null, hide: null, link: null };
+const preview = {
+  card: null,
+  timer: null,
+  hide: null,
+  link: null,
+  /** Opened by a click on a footnote's number: it stays until Escape, a click outside or a second click. */
+  pinned: false,
+  /** `appearance.link_preview`; the footnote's card is not under it. */
+  on: true,
+};
+/** How long the pointer rests on a link before its card opens. */
+const REST = 350;
 
 function previewCard() {
   if (preview.card) return preview.card;
   const card = document.createElement("div");
   card.className = "preview";
+  card.innerHTML = `<div class="preview-head"></div><div class="preview-body"></div>`;
   card.addEventListener("mouseenter", () => clearTimeout(preview.hide));
-  card.addEventListener("mouseleave", hidePreviewSoon);
+  card.addEventListener("mouseleave", () => {
+    if (!preview.pinned) hidePreviewSoon();
+  });
+  // A press on the card moves no focus and selects nothing.
+  card.addEventListener("mousedown", (event) => event.preventDefault());
   document.body.appendChild(card);
   preview.card = card;
   return card;
 }
 
+/** The card with [head] and [body] at [link]; [kind] is "note" or "footnote". */
+function openCard(link, head, body, kind) {
+  const card = previewCard();
+  card.dataset.kind = kind;
+  // The card reads from the side its link reads from.
+  card.dir = getComputedStyle(link).direction;
+  card.querySelector(".preview-head").innerHTML = head;
+  const holder = card.querySelector(".preview-body");
+  holder.replaceChildren(...body);
+  if (kind === "note") decorate(card);
+  // Nothing in the card is a Tab stop: no key goes to it.
+  card.querySelectorAll("a, button, input, summary, [tabindex]").forEach((el) => el.setAttribute("tabindex", "-1"));
+  holder.scrollTop = 0;
+  place(card, link);
+}
+
+/** One line in the card in place of a note's text. */
+function cardLine(text) {
+  return Object.assign(document.createElement("p"), { className: "preview-empty", textContent: text });
+}
+
+/** An embed as the link it is: a card and an embedded note are one level deep. */
+function embedAsLink(embed) {
+  const link = Object.assign(document.createElement("a"), {
+    className: "internal-link",
+    href: "#",
+    textContent: embed.querySelector(".embed-title")?.textContent ?? "",
+  });
+  // The link still goes where the embed did.
+  Object.assign(link.dataset, { path: embed.dataset.path ?? "", target: embed.dataset.target ?? "", anchor: embed.dataset.anchor ?? "" });
+  embed.replaceWith(link);
+}
+
 async function showPreview(link) {
-  const path = link.dataset.path;
+  const path = link.dataset.path ?? "";
+  const anchor = link.dataset.anchor ?? "";
+  if (!path) {
+    // A link to no note: its name, and that there is none yet.
+    openCard(link, previewHead({ title: link.dataset.target || link.textContent, missing: true }), [cardLine("No note yet.")], "note");
+    return;
+  }
+  // The app gives the note's title and first lines (`preview`); a host
+  // without that message gives the whole note, and the page takes the part
+  // the link names.
+  const cut = Boolean(app?.preview);
   let note;
   try {
-    note = await app?.embed?.postMessage({ path });
+    note = cut ? await app.preview.postMessage({ path, anchor }) : await app?.embed?.postMessage({ path });
   } catch (error) {
     note = null;
   }
   if (!note || preview.link !== link) return;
-  const card = previewCard();
   const holder = document.createElement("div");
   holder.innerHTML = render(note.text, { path, links: note.links });
-  // A preview is one level deep, like an embed.
-  holder.querySelectorAll(".embed, .tasks-query, .base-query").forEach((inner) => inner.remove());
+  // The card follows nothing: an embed is its link, and a query is not run.
+  holder.querySelectorAll(".embed").forEach(embedAsLink);
+  holder.querySelectorAll(".tasks-query, .base-query").forEach((inner) => inner.remove());
   holder.querySelectorAll("input[type=checkbox]").forEach((box) => (box.disabled = true));
-  const part = section(holder, link.dataset.anchor);
-  const title = (path.split("/").pop() ?? path).replace(/\.md$/i, "");
-  card.innerHTML = `<div class="preview-head"><span class="preview-title" dir="auto">${escape(title)}</span>${link.dataset.anchor ? `<span class="preview-anchor" dir="auto">› ${escape(link.dataset.anchor)}</span>` : ""}<span class="preview-path">${escape(path.split("/").slice(0, -1).join(" › "))}</span></div><div class="preview-body"></div>`;
-  card.querySelector(".preview-body").replaceChildren(...part.childNodes);
-  if (!card.querySelector(".preview-body").childNodes.length) card.querySelector(".preview-body").innerHTML = `<p class="preview-empty">The note is empty.</p>`;
-  decorate(card);
-  place(card, link);
-  await drawDiagrams(card);
+  const part = cut ? holder : section(holder, anchor);
+  const body = part.childNodes.length > 0 ? [...part.childNodes] : [cardLine("The note is empty.")];
+  const title = note.title ?? (path.split("/").pop() ?? path).replace(/\.md$/i, "");
+  openCard(link, previewHead({ title, anchor, folder: path.split("/").slice(0, -1).join("/") }), body, "note");
+  await drawDiagrams(preview.card);
 }
 
-/** The card below [link], or above it when there is no room below. */
+/**
+ * The card under [link], 6 px away, its start edge on the link's; over the
+ * link when there is no room below. 360 px wide, at most 240 px high, and
+ * inside the view by 8 px.
+ */
 function place(card, link) {
   const box = link.getBoundingClientRect();
-  card.classList.add("is-open");
-  const width = Math.min(460, window.innerWidth - 24);
+  const view = { width: document.documentElement.clientWidth, height: window.innerHeight };
+  const width = Math.min(360, view.width - 16);
   card.style.width = `${width}px`;
-  const left = Math.min(Math.max(12, box.left), window.innerWidth - width - 12);
-  const below = window.innerHeight - box.bottom;
-  card.style.left = `${left}px`;
-  if (below > 260 || below > box.top) {
-    card.style.top = `${box.bottom + 8}px`;
+  card.style.maxHeight = "240px";
+  const start = getComputedStyle(link).direction === "rtl" ? box.right - width : box.left;
+  card.style.left = `${Math.max(8, Math.min(start, view.width - width - 8))}px`;
+  const height = card.offsetHeight;
+  const below = view.height - box.bottom - 14;
+  const above = box.top - 14;
+  if (height <= below || below >= above) {
+    card.style.top = `${box.bottom + 6}px`;
     card.style.bottom = "auto";
-    card.style.maxHeight = `${Math.min(360, below - 20)}px`;
+    card.style.maxHeight = `${Math.max(60, Math.min(240, below))}px`;
   } else {
-    card.style.bottom = `${window.innerHeight - box.top + 8}px`;
+    card.style.bottom = `${view.height - box.top + 6}px`;
     card.style.top = "auto";
-    card.style.maxHeight = `${Math.min(360, box.top - 20)}px`;
+    card.style.maxHeight = `${Math.max(60, Math.min(240, above))}px`;
   }
+  card.classList.add("is-open");
 }
 
-/** A footnote's text in the card, where its number is: no jump to the end. */
-function showFootnote(link) {
-  const item = document.getElementById(decoded(link.getAttribute("href").slice(1)));
-  if (!item || preview.link !== link) return;
-  const card = previewCard();
+/**
+ * A footnote's text in the card, where its number is: no jump to the end of
+ * the note. [pinned] when a click opened it. A number with no footnote
+ * opens nothing.
+ */
+function showFootnote(link, pinned) {
+  const item = document.getElementById(decoded((link.getAttribute("href") ?? "").slice(1)));
+  if (!item?.matches(".footnote-item")) return false;
+  if (!pinned && preview.link !== link) return false;
   const body = item.cloneNode(true);
   body.querySelectorAll(".footnote-backref").forEach((back) => back.remove());
-  card.innerHTML = `<div class="preview-head"><span class="preview-title">Footnote ${escape(link.textContent.replace(/[[\]]/g, ""))}</span></div><div class="preview-body"></div>`;
-  card.querySelector(".preview-body").replaceChildren(...body.childNodes);
-  place(card, link);
+  body.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
+  clearTimeout(preview.timer);
+  clearTimeout(preview.hide);
+  preview.link = link;
+  preview.pinned = pinned;
+  openCard(link, `<span class="preview-title">${escape(footnoteLabel(link.textContent))}</span>`, [...body.childNodes], "footnote");
+  return true;
 }
+
+/** The card goes, at once. */
+function closePreview() {
+  clearTimeout(preview.timer);
+  clearTimeout(preview.hide);
+  preview.card?.classList.remove("is-open");
+  preview.link = null;
+  preview.pinned = false;
+}
+
+const previewOpen = () => Boolean(preview.card?.classList.contains("is-open"));
 
 function hidePreviewSoon() {
   clearTimeout(preview.timer);
   clearTimeout(preview.hide);
-  preview.hide = setTimeout(() => {
-    preview.card?.classList.remove("is-open");
-    preview.link = null;
-  }, 250);
+  preview.hide = setTimeout(closePreview, 250);
 }
 
 document.addEventListener("mouseover", (event) => {
+  // Not while a mouse button is down: that is a selection or a drag.
+  if (event.buttons) return;
+  const rest = (link, show) => {
+    clearTimeout(preview.hide);
+    if (preview.link === link) return;
+    // A card a click opened stays until it is closed.
+    if (preview.pinned && previewOpen()) return;
+    clearTimeout(preview.timer);
+    preview.link = link;
+    preview.timer = setTimeout(show, REST);
+  };
   const note = event.target.closest?.("sup.footnote-ref a");
   if (note && !note.closest(".preview")) {
-    clearTimeout(preview.hide);
-    if (preview.link === note) return;
-    clearTimeout(preview.timer);
-    preview.link = note;
-    preview.timer = setTimeout(() => showFootnote(note), 250);
+    rest(note, () => showFootnote(note, false));
     return;
   }
+  if (!preview.on) return;
   const link = event.target.closest?.("a.internal-link");
-  if (!link || link.closest(".preview") || !/\.md$/i.test(link.dataset.path ?? "")) return;
-  if (link.dataset.path === current.path && !link.dataset.anchor) return;
-  clearTimeout(preview.hide);
-  if (preview.link === link) return;
-  clearTimeout(preview.timer);
-  preview.link = link;
-  preview.timer = setTimeout(() => showPreview(link), 450);
+  // Not inside another card, and not for a file that is no note.
+  if (!link || link.closest(".preview") || link.classList.contains("attachment")) return;
+  const path = link.dataset.path ?? "";
+  if (path ? !/\.md$/i.test(path) : !link.dataset.target) return;
+  if (path === current.path && !link.dataset.anchor) return;
+  rest(link, () => showPreview(link));
 });
 // Leaving the link hides the card, each time: a listener on the link
 // itself would be spent by a quick leave and come back.
 document.addEventListener("mouseout", (event) => {
   const link = event.target.closest?.("a.internal-link, sup.footnote-ref a");
-  if (link && link === preview.link && !link.contains(event.relatedTarget)) hidePreviewSoon();
+  if (!link || link !== preview.link || link.contains(event.relatedTarget) || preview.pinned) return;
+  hidePreviewSoon();
 });
-window.addEventListener("scroll", () => {
-  if (preview.card?.classList.contains("is-open")) hidePreviewSoon();
-}, { passive: true });
+// A press outside the card closes it, and a press anywhere ends a rest.
+document.addEventListener(
+  "mousedown",
+  (event) => {
+    if (event.target.closest?.(".preview")) return;
+    if (!previewOpen()) {
+      clearTimeout(preview.timer);
+      if (!preview.pinned) preview.link = null;
+      return;
+    }
+    // A press on the number that opened the card is the click that closes it.
+    if (preview.pinned && event.target.closest?.("sup.footnote-ref a") === preview.link) return;
+    closePreview();
+  },
+  true,
+);
+// Any key closes a card the pointer opened, and the key still does what it
+// does. A card a click opened closes on Escape, which then does nothing else.
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (!previewOpen()) {
+      clearTimeout(preview.timer);
+      return;
+    }
+    if (!preview.pinned) return closePreview();
+    if (event.key !== "Escape") return;
+    closePreview();
+    event.preventDefault();
+    event.stopPropagation();
+  },
+  true,
+);
+// A scroll of the note closes the card the pointer opened; the one a click
+// opened stays at its number, and goes when its number leaves the view.
+window.addEventListener(
+  "scroll",
+  () => {
+    if (!previewOpen()) return;
+    const box = preview.pinned && preview.link?.isConnected ? preview.link.getBoundingClientRect() : null;
+    if (box && box.bottom > 0 && box.top < window.innerHeight) place(preview.card, preview.link);
+    else closePreview();
+  },
+  { passive: true },
+);
+window.addEventListener("blur", closePreview);
 
 /**
  * Click an image or a diagram to see it as large as the window allows, then
@@ -647,6 +784,7 @@ const folds = {
   /** Hides what each folded heading holds: everything after it up to a heading as big or bigger. */
   apply() {
     sections.list = null;
+    sections.tables = null;
     let shutLevel = Infinity;
     for (const child of document.getElementById("note").children) {
       const level = /^H[1-6]$/.test(child.tagName) && child.dataset.heading !== undefined ? Number(child.tagName[1]) : null;
@@ -678,6 +816,8 @@ const folds = {
     }
     reading.redraw();
     progress();
+    // What stays at the top follows the fold: the section bar's path, a table's header.
+    onScroll();
   },
 
   toggle(heading, save = true) {
@@ -856,10 +996,11 @@ function decorate(root) {
  * The section at the top of the window, told to the app when it changes,
  * for the outline. The headings are listed once a drawing (`sections.list`
  * is cleared when the note or its folds change) and the one at the top is
- * found by halves: a scroll reads a few boxes, not every heading's.
+ * found by halves: a scroll reads a few boxes, not every heading's. The
+ * note's tables are listed the same way, for the header that stays.
  */
 let lastSection = null;
-const sections = { list: null };
+const sections = { list: null, tables: null, at: -1 };
 function reportSection() {
   sections.list ??= [...document.querySelectorAll("#note > [data-heading]")].filter((h) => !h.classList.contains("folded-away"));
   const headings = sections.list;
@@ -869,11 +1010,264 @@ function reportSection() {
     if (headings[mid].getBoundingClientRect().top > 90) high = mid;
     else low = mid + 1;
   }
+  sections.at = low - 1;
   const at = low > 0 ? Number(headings[low - 1].dataset.line) : null;
   if (at === lastSection) return;
   lastSection = at;
   post({ kind: "section", line: at ?? -1 });
 }
+
+/** A heading's text as it reads: not its buttons, and not what a folded one says it holds. */
+function headingText(heading) {
+  return [...heading.childNodes].filter((node) => node.tagName !== "BUTTON" && !node.classList?.contains("fold-hint")).map((node) => node.textContent).join("").trim();
+}
+
+/**
+ * The section bar: the heading path of the place being read, at the top of
+ * the view, once that heading has left the view. A click on a heading goes
+ * to it. It takes no keys. `docs/specs/look.md` in notes-linux, "Section bar".
+ */
+const sectionBar = {
+  /** As high as the bar is, in px: what stays under it starts there. */
+  height: 28,
+  /** `appearance.section_bar`. */
+  on: true,
+  el: null,
+  shown: false,
+  /** The heading the bar was drawn for, and its path's headings. */
+  heading: null,
+  path: [],
+
+  element() {
+    if (this.el) return this.el;
+    const bar = Object.assign(document.createElement("nav"), { id: "section-bar" });
+    bar.setAttribute("aria-label", "Section");
+    bar.innerHTML = `<div class="section-measure"><div class="section-path"></div></div>`;
+    // A press on the bar moves no focus: the keys stay with the note.
+    bar.addEventListener("mousedown", (event) => event.preventDefault());
+    bar.addEventListener("click", (event) => {
+      const crumb = event.target.closest(".section-crumb");
+      const heading = crumb ? this.path[Number(crumb.dataset.at)] : null;
+      if (!heading?.isConnected) return;
+      event.stopPropagation();
+      // The heading comes to the top of the view, under the bar, and the reading cursor with it.
+      window.scrollTo({ top: heading.getBoundingClientRect().top + window.scrollY - this.height - 8, behavior: motion() });
+      reading.place(heading, false);
+    });
+    document.body.appendChild(bar);
+    this.el = bar;
+    return bar;
+  },
+
+  /** The heading whose path the bar shows now, or null for no bar. Reads only. */
+  measure() {
+    if (!this.on || !drawn.path) return null;
+    const heading = sections.list?.[sections.at];
+    return heading && heading.getBoundingClientRect().bottom <= 0 ? heading : null;
+  },
+
+  apply(heading) {
+    if (!heading) {
+      if (!this.shown) return;
+      this.shown = false;
+      this.el.classList.remove("is-on");
+      document.documentElement.classList.remove("has-section-bar");
+      return;
+    }
+    const bar = this.element();
+    if (heading !== this.heading) {
+      this.heading = heading;
+      const list = sections.list;
+      this.path = headingPath(list.map((h) => Number(h.tagName[1])), list.indexOf(heading)).map((index) => list[index]);
+      const texts = this.path.map(headingText);
+      const line = bar.querySelector(".section-path");
+      // The path reads from the side its first heading reads from.
+      line.dir = RTL_FIRST.test(texts[0] ?? "") ? "rtl" : "ltr";
+      line.innerHTML = sectionCrumbs(texts);
+      this.fit(line);
+    }
+    if (this.shown) return;
+    this.shown = true;
+    bar.classList.add("is-on");
+    document.documentElement.classList.add("has-section-bar");
+  },
+
+  /** Leaves parents out from the start, with `…` there, until the path fits the bar. */
+  fit(line) {
+    const crumbs = [...line.querySelectorAll(".section-crumb")];
+    if (crumbs.length < 2) return;
+    // Measured with the last heading as wide as its text (at most 24 em):
+    // on the line it gives way first, and the parents would squeeze it out.
+    line.classList.add("is-measured");
+    const widths = crumbs.map((crumb) => crumb.getBoundingClientRect().width);
+    const dots = line.querySelector(".section-dots");
+    const mark = crumbs[0].nextElementSibling;
+    const style = getComputedStyle(mark);
+    const separator = mark.getBoundingClientRect().width + parseFloat(style.marginLeft) + parseFloat(style.marginRight);
+    dots.hidden = false;
+    const dotsWidth = dots.getBoundingClientRect().width - separator;
+    line.classList.remove("is-measured");
+    const from = leftOut(widths, separator, dotsWidth, line.clientWidth);
+    dots.hidden = from === 0;
+    crumbs.slice(0, from).forEach((crumb) => {
+      crumb.nextElementSibling.hidden = true;
+      crumb.hidden = true;
+    });
+  },
+
+  /** The bar is drawn again at its next showing: the window's width, or the note, changed. */
+  forget() {
+    this.heading = null;
+  },
+};
+
+/** The text of a cell as it is drawn, without the spaces at its ends and without the sort's mark. */
+function cellText(cell) {
+  if (!cell) return "";
+  return [...cell.childNodes].filter((node) => !node.classList?.contains("sort-mark")).map((node) => node.textContent).join("").trim();
+}
+
+/**
+ * A table sorted by a click on a header cell: small to large, large to
+ * small, then the file's order again. Only the rows on the page move: the
+ * file is not changed and nothing is told to the app. The properties table,
+ * a base and a table in a preview card have no sort.
+ */
+const tableSort = {
+  /** The note's tables, from its start: each with a header row. */
+  tables() {
+    if (current.canvas || current.image) return [];
+    return [...document.querySelectorAll("#note table")].filter((table) => this.sortable(table));
+  },
+
+  sortable(table) {
+    return Boolean(table.tHead?.rows[0]) && !table.matches(".properties, .base-table") && !table.closest(".base-view, .base-query, .base-file, .canvas-board");
+  },
+
+  headers(table) {
+    return [...table.tHead.rows[0].cells].map(cellText);
+  },
+
+  /** Orders [table]'s rows by [sort], `{ column, direction }`, or as the file has them with null. */
+  apply(table, sort) {
+    const body = table.tBodies[0];
+    if (!body) return;
+    const rows = [...body.rows];
+    // Each row remembers its place in the file the first time the table is sorted.
+    rows.forEach((row, index) => (row.fileOrder ??= index));
+    rows.sort((a, b) => a.fileOrder - b.fileOrder);
+    const order = sortOrder(rows.map((row) => cellText(row.cells[sort?.column ?? 0])), sort?.direction ?? 0);
+    body.append(...order.map((index) => rows[index]));
+    table.sort = sort;
+    [...table.tHead.rows[0].cells].forEach((cell, column) => {
+      const direction = sort?.column === column ? sort.direction : 0;
+      cell.querySelector(".sort-mark")?.remove();
+      cell.setAttribute("aria-sort", sortWord(direction));
+      if (!direction) return;
+      const mark = Object.assign(document.createElement("span"), { className: "sort-mark", textContent: sortMark(direction) });
+      mark.setAttribute("aria-hidden", "true");
+      cell.append(mark);
+    });
+  },
+
+  /** A click on the header cell [cell] of [table]. */
+  click(table, column) {
+    // The reading cursor stays on the row it is on, wherever the sort puts it.
+    const at = reading.block === table ? reading.line : null;
+    this.apply(table, nextSort(table.sort, column));
+    tableHead.forget();
+    if (at != null) reading.restore(at);
+    else reading.redraw();
+    onScroll();
+    // The matches of a find are places in the rows that moved.
+    if (finder.bar?.classList.contains("is-open")) search(finder.input.value);
+  },
+
+  /** The sorts on the page, to put back when the same note is drawn again. */
+  kept() {
+    return this.tables().map((table, at) => (table.sort ? { at, headers: this.headers(table), sort: table.sort } : null)).filter(Boolean);
+  },
+
+  /** Puts [kept] back on the tables that are at the same place with the same header texts. */
+  restore(kept) {
+    if (kept.length === 0) return;
+    const tables = this.tables();
+    for (const { at, sort } of keptSorts(kept, tables.map((table) => this.headers(table)))) {
+      if (!tables[at].sort) this.apply(tables[at], sort);
+    }
+  },
+};
+
+/**
+ * A table's header row, drawn at the top of the view while the table's rows
+ * are read and its own header is above the view. It is a copy in a layer of
+ * its own: a table scrolls sideways in its own box, so its header cannot
+ * stick to the window by itself. The copy moves sideways with the table and
+ * leaves with the table's last row.
+ */
+const tableHead = {
+  el: null,
+  table: null,
+  width: 0,
+  border: 0,
+
+  /** The table whose header stays now, and where; null for none. Reads only. */
+  measure(offset) {
+    if (!drawn.path) return null;
+    sections.tables ??= tableSort.tables();
+    for (const table of sections.tables) {
+      const box = table.getBoundingClientRect();
+      // Above the view, or not laid out (in a folded section).
+      if (box.bottom <= offset) continue;
+      if (box.top >= offset) return null;
+      const head = table.tHead.getBoundingClientRect();
+      const body = table.tBodies[0];
+      const last = body?.rows[body.rows.length - 1]?.getBoundingClientRect();
+      if (!last || head.top >= offset || last.bottom <= offset) return null;
+      return { table, box, head, top: Math.min(offset, last.bottom - head.height) };
+    }
+    return null;
+  },
+
+  apply(pin) {
+    if (!pin) {
+      this.el?.classList.remove("is-on");
+      return;
+    }
+    if (!this.el) {
+      this.el = Object.assign(document.createElement("div"), { id: "table-head" });
+      // The table itself has the header for a screen reader.
+      this.el.setAttribute("aria-hidden", "true");
+      this.el.addEventListener("mousedown", (event) => event.preventDefault());
+      document.body.appendChild(this.el);
+    }
+    const holder = this.el;
+    if (pin.table !== this.table || Math.abs(pin.head.width - this.width) > 0.5) {
+      this.table = pin.table;
+      this.width = pin.head.width;
+      this.border = pin.table.clientLeft;
+      const copy = Object.assign(document.createElement("table"), { className: "pinned-head" });
+      const style = getComputedStyle(pin.table);
+      copy.dir = style.direction;
+      copy.style.width = `${pin.head.width}px`;
+      const head = pin.table.tHead.cloneNode(true);
+      const cells = pin.table.tHead.rows[0].cells;
+      [...head.rows[0].cells].forEach((cell, index) => (cell.style.width = `${cells[index].getBoundingClientRect().width}px`));
+      copy.append(head);
+      holder.style.fontSize = style.fontSize;
+      holder.replaceChildren(copy);
+    }
+    Object.assign(holder.style, { top: `${pin.top}px`, left: `${pin.box.left}px`, width: `${pin.box.width}px` });
+    // A table wider than the view scrolls sideways, and its header with it.
+    holder.firstElementChild.style.left = `${pin.head.left - pin.box.left - this.border}px`;
+    holder.classList.add("is-on");
+  },
+
+  /** The copy is made again at its next showing: the table was sorted, or the note drawn. */
+  forget() {
+    this.table = null;
+  },
+};
 
 /** The thin bar at the top that fills as the note is read. */
 function progress() {
@@ -885,22 +1279,51 @@ function progress() {
   bar.setAttribute("aria-valuenow", String(Math.round(part * 100)));
 }
 
+/** What stays at the top of the view: the section bar, and a table's header under it. Its reads come before its writes. */
+function pinTop() {
+  const heading = sectionBar.measure();
+  const pin = tableHead.measure(heading ? sectionBar.height : 0);
+  sectionBar.apply(heading);
+  tableHead.apply(pin);
+}
+
 /**
  * A scroll is handled once a frame, its reads before its writes: the
- * section's boxes are read, then the bar is set, so no box is read after a
- * style was changed in the same frame.
+ * section's and the tables' boxes are read, then the bars are set, so no
+ * box is read after a style was changed in the same frame. A page that
+ * draws no frame (its window is behind another) is handled a moment later
+ * all the same, so it is right when it is seen again.
  */
 let scrollFrame = 0;
+let scrollLate = 0;
 function onScroll() {
   if (scrollFrame) return;
-  scrollFrame = requestAnimationFrame(() => {
+  const run = () => {
+    if (!scrollFrame) return;
+    cancelAnimationFrame(scrollFrame);
+    clearTimeout(scrollLate);
     scrollFrame = 0;
     reportSection();
+    pinTop();
     progress();
-  });
+  };
+  scrollFrame = requestAnimationFrame(run);
+  scrollLate = setTimeout(run, 200);
 }
 window.addEventListener("scroll", onScroll, { passive: true });
-window.addEventListener("resize", onScroll);
+window.addEventListener("resize", () => {
+  sectionBar.forget();
+  onScroll();
+});
+// A table scrolled sideways moves its header that stays. A scroll does not
+// bubble, so it is heard on its way down.
+document.addEventListener(
+  "scroll",
+  (event) => {
+    if (event.target === tableHead.table) onScroll();
+  },
+  { capture: true, passive: true },
+);
 
 /**
  * Find in the note: a bar at the top, every match marked, the current one
@@ -1118,6 +1541,71 @@ function patch(main, html) {
   return true;
 }
 
+/** What was measured of the page is measured again: its headings, its tables and what stays at its top. */
+function forgetPage() {
+  sections.list = null;
+  sections.tables = null;
+  sectionBar.forget();
+  tableHead.forget();
+}
+
+/**
+ * The soft change that has not drawn its note yet, or null. Until it has,
+ * the page still shows the note that leaves, and the app already has the
+ * one that comes: a click or a key there would name a line of the wrong
+ * note (a task's box sends its line and no path). So the note that leaves
+ * takes none. It is a frame, and never more than `softly` waits.
+ */
+let leaving = null;
+for (const kind of ["click", "auxclick", "keydown"]) {
+  window.addEventListener(
+    kind,
+    (event) => {
+      // A key with Command or Control is the app's, not the note's.
+      if (!leaving || event.metaKey || event.ctrlKey) return;
+      event.stopImmediatePropagation();
+      event.preventDefault();
+    },
+    true,
+  );
+}
+
+/**
+ * Makes the change [change] softly: the note that leaves fades out as the new
+ * one fades in, with no movement. The new note is drawn at its place first
+ * (the page's view transition takes a picture of the old one, runs [change],
+ * and fades between the two, in the 120 ms `reader.css` gives it). With Reduce Motion, or on a page that has no
+ * view transitions, the change is made at once. A page that draws no frame
+ * (a window behind another) would wait for ever: after 400 ms the change is
+ * made at once. The keys are the page's all along, so none is lost.
+ */
+async function softly(change) {
+  if (motion() !== "smooth" || !document.startViewTransition || document.visibilityState !== "visible") return change();
+  const mine = {};
+  const draw = () => {
+    if (leaving === mine) leaving = null;
+    return change();
+  };
+  let transition;
+  try {
+    transition = document.startViewTransition(draw);
+  } catch (error) {
+    return change();
+  }
+  leaving = mine;
+  // A transition that is skipped rejects these; that is no error here.
+  transition.ready.catch(() => {});
+  transition.finished.catch(() => {});
+  let timer;
+  const late = new Promise((resolve) => (timer = setTimeout(resolve, 400, "late")));
+  const first = await Promise.race([transition.updateCallbackDone.catch(() => {}), late]);
+  clearTimeout(timer);
+  if (first === "late") transition.skipTransition();
+  // Drawn by now in every case: [change] draws once, so this is for a
+  // transition that was late, or that ended without running it.
+  draw();
+}
+
 window.daftar = {
   /**
    * Shows a note: `{ path, title, text, links, properties }`, then scrolls
@@ -1127,9 +1615,16 @@ window.daftar = {
   async show(note) {
     timing.start();
     const generation = ++shows;
-    sections.list = null;
     const keep = note.keepScroll ? window.scrollY : null;
+    // The sorts of the note on the page, when it is this note that is drawn again.
+    const sorts = drawn.path && drawn.path === note.path ? tableSort.kept() : [];
     current = note;
+    // The card of a link belongs to the note that is leaving.
+    closePreview();
+    preview.on = note.linkPreview !== false;
+    sectionBar.on = note.sectionBar !== false;
+    // A line or a heading that is gone to stops under where the bar is, not under the bar.
+    document.documentElement.classList.toggle("keeps-section-bar", sectionBar.on && !note.canvas && !note.image && !note.base);
     const root = document.documentElement.style;
     if (note.palette) document.documentElement.dataset.palette = note.palette;
     if (note.textSize) root.setProperty("--text-size", `${note.textSize}px`);
@@ -1146,8 +1641,13 @@ window.daftar = {
     const main = document.getElementById("note");
     main.classList.toggle("is-canvas", Boolean(note.canvas));
     main.classList.toggle("is-image", Boolean(note.image));
-    // A board or a picture is no note drawn block by block.
-    if (note.canvas || note.image) drawn.path = "";
+    // A board or a picture is no note drawn block by block, and has nothing that stays at its top.
+    if (note.canvas || note.image) {
+      drawn.path = "";
+      onPage.path = note.path ?? "";
+      forgetPage();
+      pinTop();
+    }
     if (note.canvas) {
       await showCanvas(main, note);
       return;
@@ -1167,63 +1667,88 @@ window.daftar = {
       renderProperties(note.properties, note) +
       render(note.text, { path: note.path, links: note.links });
     timing.mark("rendered");
-    // The same note again after a change on disk: only the blocks that
-    // changed are drawn again; the rest keep their diagrams, pictures and
-    // decorations.
-    const patched = keep !== null && !note.base && drawn.path === note.path && patch(main, html);
-    if (!patched) {
-      main.innerHTML = html;
-      remember(main);
-    }
-    drawn.path = note.base ? "" : note.path;
-    timing.mark("inserted");
-    // A base is a wide table: it gets the whole window.
-    main.classList.toggle("is-base", Boolean(note.base));
-    if (note.base) {
-      const holder = Object.assign(document.createElement("div"), { className: "base-file" });
-      main.appendChild(holder);
-      renderBase(holder, note.base, note.path, "");
-    }
-    // A kept place, a heading and a line are scrolled to below, once the
-    // page is laid out as it will be seen.
-    if (keep === null && !note.heading && note.line == null) window.scrollTo(0, 0);
-    // The reading cursor: on the line the editor was at, on the same block
-    // when the note is shown again, or at the top in a note just opened.
-    folds.shut = new Set(note.folds ?? []);
-    linkDetected(main, note.detected);
-    timing.mark("detected");
-    decorate(main);
-    timing.mark("decorate");
-    // The person's own folds for this note, when they set any; else every
-    // section shut when the vault or the app says notes open folded.
-    if (note.folds == null && note.folded) folds.shutAll();
-    folds.apply();
-    timing.mark("folds");
-    // A note shown again after it changed on disk (a format on leaving the
-    // editor, a pull) stays where it was, and a heading or a line (back
-    // from the editor) is scrolled to. The code blocks' heads and the folds
-    // above the place change the page's height, so the scroll comes after
-    // them: before, the page slid by their height. A link to a heading
-    // inside a folded section opens the section.
-    if (keep !== null) {
-      window.scrollTo(0, keep);
-      const anchor = patchAnchor.block;
-      patchAnchor.block = null;
-      if (anchor?.el.isConnected) window.scrollBy(0, anchor.el.getBoundingClientRect().top - anchor.top);
-    } else if (note.heading) this.scrollTo(note.heading);
-    else if (note.line != null) this.scrollToLine(note.line);
-    reading.restore(note.line ?? (keep !== null ? reading.line : null));
-    progress();
-    timing.mark("decorated");
-    timing.painted();
+    // Another note than the one on the page comes with a soft change; the
+    // same note drawn again (a change on disk, a tick, a setting) and a
+    // first note do not.
+    const soft = Boolean(drawn.path) && drawn.path !== note.path && !note.base;
+    let done = false;
+    const draw = () => {
+      // Once, and not over a note shown since.
+      if (done || generation !== shows) return;
+      done = true;
+      forgetPage();
+      // The same note again after a change on disk: only the blocks that
+      // changed are drawn again; the rest keep their diagrams, pictures and
+      // decorations.
+      const patched = keep !== null && !note.base && drawn.path === note.path && patch(main, html);
+      if (!patched) {
+        main.innerHTML = html;
+        remember(main);
+      }
+      drawn.path = note.base ? "" : note.path;
+      onPage.path = note.path ?? "";
+      timing.mark("inserted");
+      // A base is a wide table: it gets the whole window.
+      main.classList.toggle("is-base", Boolean(note.base));
+      if (note.base) {
+        const holder = Object.assign(document.createElement("div"), { className: "base-file" });
+        main.appendChild(holder);
+        renderBase(holder, note.base, note.path, "");
+      }
+      // A kept place, a heading and a line are scrolled to below, once the
+      // page is laid out as it will be seen.
+      if (keep === null && !note.heading && note.line == null) window.scrollTo(0, 0);
+      // The reading cursor: on the line the editor was at, on the same block
+      // when the note is shown again, or at the top in a note just opened.
+      folds.shut = new Set(note.folds ?? []);
+      linkDetected(main, note.detected);
+      timing.mark("detected");
+      decorate(main);
+      timing.mark("decorate");
+      // The person's own folds for this note, when they set any; else every
+      // section shut when the vault or the app says notes open folded.
+      if (note.folds == null && note.folded) folds.shutAll();
+      folds.apply();
+      timing.mark("folds");
+      // A table drawn again gets its sort back. With an embed still to fill,
+      // not yet: an embed's tables are counted too, so until they are there
+      // a table's number is another table's.
+      if (!main.querySelector(".embed")) tableSort.restore(sorts);
+      // A note shown again after it changed on disk (a format on leaving the
+      // editor, a pull) stays where it was, and a heading or a line (back
+      // from the editor) is scrolled to. The code blocks' heads and the folds
+      // above the place change the page's height, so the scroll comes after
+      // them: before, the page slid by their height. A link to a heading
+      // inside a folded section opens the section.
+      if (keep !== null) {
+        window.scrollTo(0, keep);
+        const anchor = patchAnchor.block;
+        patchAnchor.block = null;
+        if (anchor?.el.isConnected) window.scrollBy(0, anchor.el.getBoundingClientRect().top - anchor.top);
+      } else if (note.heading) window.daftar.scrollTo(note.heading);
+      else if (note.line != null) window.daftar.scrollToLine(note.line);
+      reading.restore(note.line ?? (keep !== null ? reading.line : null));
+      reportSection();
+      pinTop();
+      progress();
+      timing.mark("decorated");
+      timing.painted();
+    };
+    if (soft) await softly(draw);
+    else draw();
+    if (generation !== shows) return;
     await Promise.all([drawDiagrams(main).then(() => timing.mark("diagrams")), fillEmbeds(main), fillQueries(main), fillBases(main)]);
     if (generation !== shows) return;
     decorate(main);
+    // An embed's table is one of the note's tables: its sort comes back too.
+    forgetPage();
+    tableSort.restore(sorts);
     // Embeds, queries and pictures made the page longer.
     progress();
     reading.redraw();
     lastSection = undefined;
     reportSection();
+    pinTop();
     if (finder.bar?.classList.contains("is-open")) search(finder.input.value);
     timing.mark("done");
   },
@@ -1519,6 +2044,33 @@ document.addEventListener("click", (event) => {
     post({ kind: "toggleTask", line: Number(box.dataset.line), status: box.dataset.status, path: box.dataset.path ?? "" });
     return;
   }
+  // A link's card: its head opens the note as the link does, and its body does nothing.
+  const card = event.target.closest('.preview[data-kind="note"]');
+  if (card) {
+    event.preventDefault();
+    const opener = preview.link;
+    if (!event.target.closest(".preview-head") || !opener?.isConnected) return;
+    closePreview();
+    opener.click();
+    return;
+  }
+  // A footnote's number shows the footnote where it is: a second click on it closes the card.
+  const footnote = event.target.closest("sup.footnote-ref a");
+  if (footnote && !footnote.closest(".preview")) {
+    event.preventDefault();
+    if (preview.pinned && preview.link === footnote && previewOpen()) closePreview();
+    else showFootnote(footnote, true);
+    return;
+  }
+  // A header cell sorts its table by its column; the header that stays is the same header.
+  const cell = event.target.closest("th");
+  if (cell && cell.closest("thead") && !event.target.closest("a, button, input")) {
+    const table = cell.closest("#table-head") ? tableHead.table : cell.closest("#note table");
+    if (table?.isConnected && tableSort.sortable(table) && !table.closest(".preview")) {
+      tableSort.click(table, cell.cellIndex);
+      return;
+    }
+  }
   const link = event.target.closest("a");
   if (link?.classList.contains("detected")) {
     event.preventDefault();
@@ -1537,8 +2089,7 @@ document.addEventListener("click", (event) => {
   }
   if (link.classList.contains("internal-link")) {
     event.preventDefault();
-    preview.card?.classList.remove("is-open");
-    preview.link = null;
+    closePreview();
     const path = link.dataset.path;
     if (path === current.path && link.dataset.anchor) {
       window.daftar.scrollTo(link.dataset.anchor);
@@ -1569,16 +2120,17 @@ document.addEventListener("click", (event) => {
 });
 
 // A middle click on a note's link opens it in a new tab, as a browser does;
-// its press would paste the selection or start scrolling.
+// its press would paste the selection or start scrolling. A link in a note's
+// card is not live.
+const middle = (event) => (event.button === 1 && !event.target.closest?.('.preview[data-kind="note"]') ? event.target.closest?.("a.internal-link") : null);
 document.addEventListener("mousedown", (event) => {
-  if (event.button === 1 && event.target.closest?.("a.internal-link")) event.preventDefault();
+  if (middle(event)) event.preventDefault();
 });
 document.addEventListener("auxclick", (event) => {
-  const link = event.button === 1 && event.target.closest?.("a.internal-link");
+  const link = middle(event);
   if (!link) return;
   event.preventDefault();
-  preview.card?.classList.remove("is-open");
-  preview.link = null;
+  closePreview();
   post({ kind: "open", path: link.dataset.path, target: link.dataset.target ?? "", anchor: link.dataset.anchor ?? "", newTab: true });
 });
 
@@ -1669,6 +2221,12 @@ const reading = {
     const y = (row.top + row.bottom) / 2 - window.scrollY;
     const caret = document.caretRangeFromPoint?.(x, y);
     if (!caret || !block.contains(caret.startContainer)) return null;
+    // A table's row is a line of the file: the header, the line of dashes,
+    // then each row. A sorted row has the line it has in the file.
+    if (block.tagName === "TABLE") {
+      const cells = caret.startContainer.parentElement?.closest("tr");
+      if (cells && cells.closest("table") === block) return line + (cells.parentElement.tagName === "THEAD" ? 0 : 2 + (cells.fileOrder ?? cells.sectionRowIndex));
+    }
     const before = document.createRange();
     before.setStart(block, 0);
     before.setEnd(caret.startContainer, caret.startOffset);
@@ -1757,8 +2315,11 @@ const reading = {
     this.line = block ? Number(block.dataset.line) : null;
     const rows = block ? this.rows(block) : [];
     if (rows.length > 1 && line > this.line) {
+      // A sorted table's rows are not in the file's order: every row is asked.
+      const sorted = block.tagName === "TABLE" && Boolean(block.sort);
       for (let index = 1; index < rows.length; index++) {
         const at = this.sourceLine(block, rows, index);
+        if (sorted && (at == null || at > line || at <= this.line)) continue;
         if (at == null || at > line) break;
         this.row = index;
         this.line = at;

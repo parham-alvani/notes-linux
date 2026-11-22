@@ -158,6 +158,7 @@ Settings: `editor.live_preview`.
 | Text | 0.92 em, in the chip's colour. |
 | Pill | The chip's colour at 14%, corner 1 em (a full pill), 0.5 em of room at each side, no border. Its height is the text's line, not the row's. |
 | Between chips | 0.3 em. |
+| Line break | A chip never breaks between its emoji and its date: where the line wraps there, the whole chip goes to the next line. |
 | Direction | A chip reads left to right in a right-to-left line too: `2026-10-30`, never `30-10-2026`. |
 | On a closed task | The chips are drawn at 75% and are not struck through. |
 | Raw | The caret inside the chip shows the text at the full size with no pill and the ordinary colour. |
@@ -234,6 +235,7 @@ A callout is a run of `>` lines whose first is `> [!kind]`, with `+` or `-` and 
 | Title line | The kind's icon, 1.1 em square in the kind's colour, 0.4 em before the title. The title is in the kind's colour, weight 650. With no title, the kind's name is drawn with its first letter in capital (`> [!tip]` reads "Tip"); that name is drawn only, never written. |
 | Body | The text colour, with every part 1 and part 2 style inside it (a task box in a callout is drawn and can be clicked). |
 | Marks | `> ` at the start of each line and `[!kind]` on the first are drawn at no width. They show on the caret's line only, as a heading's `#` does. |
+| The line under the title | The `>` line under the title line (the line with only `>` that a callout keeps between its title and its body) is 0.4 em high while the caret is not on it, so the title and the body are not a whole line apart. |
 | `+` and `-` | Drawn as nothing. The body is always shown in the editor: a callout does not fold there. |
 | A quote | A `>` run with no `[!kind]` stays part 1's quote: the 3 px bar, nothing behind. |
 
@@ -379,7 +381,7 @@ These are the reader's: the page (`web/src`) for the Mac and Linux, and the Comp
 | When | Only when there is such a heading and it has left the view. At the top of a note, and in a note with no heading, there is no bar. A heading folded away is not counted. |
 | Place | At the top of the reading view, over the text, as wide as the view. It stays while the note scrolls. The reading progress line is at its bottom edge. |
 | Size | 28 px high. The text is 0.8 em, on one line, at the measure's start edge. |
-| Look | The background colour at 92% with a 1 px hairline under it. No shadow. The last heading is in the text colour, weight 600; its parents are in the muted colour; `›` between them is in the faint colour with 0.4 em at each side. |
+| Look | The background colour, not see-through (the note's lines pass under it and must not show through its words), with a 1 px hairline under it. No shadow. The last heading is in the text colour, weight 600; its parents are in the muted colour; `›` between them is in the faint colour with 0.4 em at each side. |
 | Long path | One heading shows at most 24 em and ends in `…`. When the path is wider than the bar, parents are left out from the start and `…` is put there. The last heading always shows. |
 | Direction | Each heading takes its own direction. The path reads from the side the first heading reads from. |
 | A click | On a heading goes to that heading: it comes to the top of the view, under the bar, with the smooth scroll the reader has, and the reading cursor goes to it. The bar takes no keyboard focus and has no key. |
@@ -557,16 +559,16 @@ Ported by name (snake case in Rust, camelCase in Swift and Kotlin). Each is a pu
 | Format bar | done (not in Neovim mode) | done (not in Neovim mode) | not started |
 | Caret in the accent, with a glide | done (Neovim mode's cursor slides already) | done (drawn by the editor over the text; GTK's own caret is clear) | not started |
 | Part 2: editor, the task box | not started | done (no status menu on a right click: the editor has none; in a Persian line whose syntax starts Latin the box is where GTK puts the marks) | not started |
-| Part 2: editor, date chips | not started | done (a date in a line with Persian before it is drawn by GTK's bidi order, `30-10-2026`: a tag cannot isolate it) | not started |
+| Part 2: editor, date chips | not started | done (a date in a line with Persian before it is drawn by GTK's bidi order, `30-10-2026`: a tag cannot isolate it; a chip at a line's end can still break between its emoji and its date) | not started |
 | Part 2: editor, a table as a grid | not started | done, as near as GtkTextView goes: the cells are in the code font, lined up by the formatter's spaces, so a column is as wide as its widest cell as written (a cell's hidden marks and smaller code are given back as padding; a Persian or wide-letter cell is not exact, and a row typed in is lined up at the next Tab or Enter); a table wider than the measure is not a grid (the view cannot scroll one part sideways); the colons of the delimiter row do not set a column's side; `\|` is shown as written; Up and Down pass over the delimiter row, which Left and Right reach; a table wholly inside a selection stays drawn | not in part 2 |
-| Part 2: editor, callouts and code blocks as the reader draws them | not started | done (code in a callout keeps part 1's tint; a code line that starts Persian is left-aligned but still reads right to left; a quote is still a tint) | not started (the callout; the code block's panel is not in part 2) |
+| Part 2: editor, callouts and code blocks as the reader draws them | not started | done (code in a callout keeps part 1's tint; a code line that starts Persian is left-aligned but still reads right to left; a quote is still a tint; an empty `>` line under the title keeps its full height) | not started (the callout; the code block's panel is not in part 2) |
 | Part 2: editor, the slash bar | not started (a menu today, not filtered) | done (an item with no Lucide drawing in the reader's bundle has a few letters for its icon) | not in part 2 |
 | Part 2: editor, focus mode (`editor.focus`) | not started (it dims today, in the faint colour, as its own key) | done (a veil in the page's colour at 55% over the other paragraphs, which is each colour at 45%; a picture under a dimmed line is not dimmed) | not in part 2 |
-| Part 2: link preview, reader and editor | not started (the reader has a card after 450 ms) | editor: done (the body is the editor's own view of the lines, so the head stays while it scrolls); reader: not started (a card after 450 ms) | out of scope |
-| Part 2: reader, section bar | not started | not started | not started |
-| Part 2: reader, a table header that stays, and the sort | not started | not started | not started |
-| Part 2: reader, footnote popover | not started (a card on hover today) | not started (a card on hover today) | not started |
-| Part 2: reader, the soft change | not started | not started (reading and editing crossfade today) | not started |
+| Part 2: link preview, reader and editor | done in the reader; the editor's card is not started | done, in the reader and the editor, with one rule for the first lines (`link_preview.rs`). In the editor the body is the editor's own view of the lines, so the head stays while it scrolls; for a heading or a block the note does not have, the editor's card shows the note's first lines and the reader's card says "The note is empty." | out of scope |
+| Part 2: reader, section bar | done | done | not started |
+| Part 2: reader, a table header that stays, and the sort | done | done | not started |
+| Part 2: reader, footnote popover | done (a card a click opened stays at its number while the note scrolls, and closes when the number leaves the view) | done (the same page) | not started |
+| Part 2: reader, the soft change | done (back to reading, a picture of the editor fades out over the page; only between two notes, not to or from a canvas, a picture or a base; a click or a plain key in the frame before the new note is drawn is dropped, since it would act on the note that leaves) | done (the same page; back to reading, a picture of the editor fades out over the page, which has the keys from the start; into the editor, the pane's stack crossfades in 120 ms) | not started |
 | Part 2: Linux, the caret in the accent and the editor's measure | does not apply | done | does not apply |
 | Part 2: Android, the editor with part 1, the task box and date chips | does not apply | does not apply | not started (the phone has no editor of a note's text yet) |
 | One palette file with generators | not started | not started | not started |

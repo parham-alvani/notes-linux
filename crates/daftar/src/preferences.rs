@@ -190,17 +190,6 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     }
     looks.add(&band);
     from_vault(&settings, "appearance.reading_line", &band);
-    let preview = adw::SwitchRow::builder()
-        .title("Link preview")
-        .subtitle("Resting the pointer on a link in the editor shows the note's first lines")
-        .active(settings.borrow().link_preview())
-        .build();
-    {
-        let write = write.clone();
-        preview.connect_active_notify(move |row| write("appearance.link_preview", Value::Bool(row.is_active())));
-    }
-    looks.add(&preview);
-    from_vault(&settings, "appearance.link_preview", &preview);
     for (key, title) in [("appearance.font", "Font"), ("appearance.code_font", "Code font")] {
         let row = adw::EntryRow::builder().title(title).show_apply_button(true).build();
         row.set_text(&settings.borrow().file.string(key).unwrap_or_default());
@@ -256,6 +245,34 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     }
     looks.add(&folds);
     from_vault(&settings, "appearance.fold_sections", &folds);
+    let card = adw::SwitchRow::builder()
+        .title("Link preview")
+        .subtitle("Resting the pointer on a link to a note shows the note's first lines in a small card")
+        .active(settings.borrow().link_preview())
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        card.connect_active_notify(move |row| {
+            write("appearance.link_preview", Value::Bool(row.is_active()));
+            (hooks.reader)();
+        });
+    }
+    looks.add(&card);
+    from_vault(&settings, "appearance.link_preview", &card);
+    let bar = adw::SwitchRow::builder()
+        .title("Section bar")
+        .subtitle("The heading path of the place being read, at the top of the note")
+        .active(settings.borrow().section_bar())
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        bar.connect_active_notify(move |row| {
+            write("appearance.section_bar", Value::Bool(row.is_active()));
+            (hooks.reader)();
+        });
+    }
+    looks.add(&bar);
+    from_vault(&settings, "appearance.section_bar", &bar);
     let place = adw::ComboRow::builder()
         .title("Holidays")
         .subtitle("The public holidays and feasts of where you live, on Today, home and the day picker")

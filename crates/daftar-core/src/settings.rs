@@ -146,9 +146,10 @@ const ALLOWED: &[(&str, Rule)] = &[
     ("appearance.text_width", Rule::Int(0, 400)),
     ("appearance.reading_line", Rule::Int(0, 100)),
     ("appearance.fold_sections", Rule::Choice(&["vault", "always", "never"])),
+    ("appearance.link_preview", Rule::Bool),
+    ("appearance.section_bar", Rule::Bool),
     ("appearance.persian_calendar", Rule::Bool),
     ("appearance.remote_images", Rule::OnlyFalse),
-    ("appearance.link_preview", Rule::Bool),
     ("calendar.place", Rule::Place),
     ("editor.live_preview", Rule::Bool),
     ("editor.format_bar", Rule::Bool),
@@ -668,7 +669,7 @@ mod tests {
     }
 
     /// docs/specs/look.md, part 2, case 23, for the keys this app has: the
-    /// slash bar, focus mode and the link preview.
+    /// slash bar, focus mode, the link preview and the section bar.
     #[test]
     fn the_new_settings_have_their_defaults() {
         let template = ConfigFile::new(ConfigFile::TEMPLATE);
@@ -692,6 +693,27 @@ mod tests {
         let wrong = Settings::resolved("[editor]\nslash_menu = \"yes\"\n", "[editor]\nslash_menu = false\n");
         assert_eq!(wrong.bool("editor.slash_menu"), Some(false));
         assert!(!wrong.is_from_vault("editor.slash_menu") && wrong.refused().is_empty());
+        // The reader's two keys: the link preview and the section bar.
+        {
+            let keys = ["appearance.link_preview", "appearance.section_bar"];
+            let entry = |settings: &Settings, key: &str| settings.entries().into_iter().find(|e| e.key == key).unwrap();
+            let none = Settings::resolved("", "");
+            for key in keys {
+                let found = entry(&none, key);
+                assert_eq!((found.value, found.from), (Some(Value::Bool(true)), Origin::Default), "{key}");
+            }
+            // A vault that sets each is followed, and none is listed as refused.
+            let vault = Settings::resolved("[appearance]\nlink_preview = false\nsection_bar = false\n", "");
+            for key in keys {
+                assert_eq!(vault.bool(key), Some(false), "{key}");
+                assert!(vault.is_from_vault(key), "{key}");
+            }
+            assert!(vault.refused().is_empty());
+            // A value that is no boolean is as not there.
+            let wrong = Settings::resolved("[appearance]\nsection_bar = \"yes\"\n", "[appearance]\nsection_bar = false\n");
+            assert_eq!(wrong.bool("appearance.section_bar"), Some(false));
+            assert!(!wrong.is_from_vault("appearance.section_bar") && wrong.refused().is_empty());
+        }
     }
 
     #[test]

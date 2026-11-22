@@ -522,7 +522,11 @@ impl Window {
             };
             // As wide as the page on screen needs, not as the widest page
             // (the board): a split pane may be narrow.
-            let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).hhomogeneous(false).build();
+            let stack = gtk::Stack::builder()
+                .transition_type(gtk::StackTransitionType::Crossfade)
+                .transition_duration(crate::reader::SoftChange::FADE)
+                .hhomogeneous(false)
+                .build();
             stack.add_named(&home.widget, Some("empty"));
             stack.add_named(
                 &gtk::Spinner::builder()
@@ -537,9 +541,8 @@ impl Window {
             // The reader, under the one line a deprecated or stale concept has.
             let concept_line = adw::Banner::new("");
             let reading = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
-            reader.view.set_vexpand(true);
             reading.append(&concept_line);
-            reading.append(&reader.view);
+            reading.append(&reader.page);
             stack.add_named(&reading, Some("reader"));
             stack.add_named(&today.widget, Some("today"));
             stack.add_named(&board.widget, Some("board"));
@@ -1040,29 +1043,23 @@ impl Window {
         if tab.editing() {
             let line = tab.editor.line();
             let Some(path) = tab.editor.path() else { return };
+            // The editor as it is seen now, before it lets its note go.
+            let leaving = crate::reader::SoftChange::picture(&tab.editor.widget);
             if !self.leave_editor_in(&tab) {
                 return;
             }
             // The editor's line is where the person reads now: New Task, Sort
             // Headings and the next Ctrl+E go by it, as by the reading cursor.
             store.places.set(&path, line);
-            // The page draws the note at the editor's line first, under the
-            // editor, and comes on screen when it has: shown first, it
-            // crossfaded in at the place it was read before the editor and
-            // then jumped. A page that does not answer comes on screen anyway.
-            let switch = {
-                let tab = tab.clone();
-                let done = Rc::new(Cell::new(false));
-                move || {
-                    if !done.replace(true) && tab.stack.visible_child_name().as_deref() == Some("editor") && tab.editor.path().is_none() {
-                        tab.stack.set_visible_child_name("reader");
-                        tab.reader.view.grab_focus();
-                    }
-                }
-            };
-            let fallback = switch.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(400), fallback);
-            tab.reader.show_then(Request { path, heading: None, line: Some(line) }, false, switch);
+            // The soft change (docs/specs/look.md): the reader is on screen
+            // and has the keys at once, under a picture of the editor, and
+            // the picture fades out when the page has drawn the note at the
+            // editor's line. Seen before that, the page was at the place it
+            // was read before the editor, and then jumped. A page that does
+            // not answer is seen anyway, after `SoftChange::PATIENCE`.
+            tab.reader.show_under(leaving, Request { path, heading: None, line: Some(line) });
+            tab.stack.set_visible_child_full("reader", gtk::StackTransitionType::None);
+            tab.reader.view.grab_focus();
             return;
         }
         let Some(shown) = tab.reader.shown().filter(|_| tab.showing().as_deref() == Some("reader")) else { return };
