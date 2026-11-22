@@ -29,6 +29,11 @@ use crate::store::{VaultStore, file_in};
 /// `web/src`, bundled by `just web`.
 static READER: Dir = include_dir!("$CARGO_MANIFEST_DIR/reader");
 
+/// A text file of the bundle, as `tasks.css`: the editor draws the reader's icons.
+pub(crate) fn asset(name: &str) -> Option<&'static str> {
+    READER.get_file(name)?.contents_utf8()
+}
+
 /// Front matter the reader does not print: the plugins' own keys.
 const HIDDEN: [&str; 5] = ["cssclasses", "cssclass", "icon", "iconColor", "position"];
 

@@ -16,7 +16,9 @@ use adw::prelude::*;
 use gtk::{glib, pango};
 
 use daftar_core::text::direction;
-use daftar_core::{BlockState, HighlightKind, HighlightSpan, MarkdownHighlighter};
+use daftar_core::{
+    BlockState, CodeRole, Day, HighlightKind, HighlightSpan, LivePreview, MarkdownHighlighter, PreviewAbove, PreviewBlock, PreviewParts,
+};
 
 /// A color of the palette by name: (dark, light), as `NSPalette.pairs`.
 fn pair(name: &str) -> (u32, u32) {
@@ -91,6 +93,87 @@ struct Look {
     persian: bool,
     /// A mark live preview hides.
     hidden: bool,
+    /// Clear, at its own size: an empty `>` line of a callout keeps its height.
+    clear: bool,
+    /// Room after each character, in em of the text size: the width a
+    /// hidden mark keeps for what is drawn over it, and the room around a chip.
+    spacing: Option<f64>,
+    /// The room is the em given less the width of a `[`, which stays at its
+    /// size so its line keeps its height: a callout's icon stands there.
+    bracket: bool,
+    /// A panel's lines: the room at the left and at the right of the text,
+    /// in em, inside the measure.
+    inset: Option<(f64, f64)>,
+    /// Room above the line, in em: a panel's first line.
+    above: Option<f64>,
+    /// Room under the line beyond the line gap, in em: a panel's last line.
+    below: Option<f64>,
+    /// In small letters, as a code block's language is drawn.
+    lower: bool,
+    /// Never struck through: a date chip and a reason on a done task.
+    unstruck: bool,
+    /// Starts at the left whatever its letters: code.
+    left: bool,
+    /// Which tags win where two meet: 0 the text's styles, then a task's
+    /// fields, the chips, the marks, and what is hidden over all.
+    rank: u8,
+}
+
+/// The sizes a tag's look is worked out from: the text size in px, the room
+/// at each side of the measure, and the width of a `[` in the note's font.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Metrics {
+    pub size: f64,
+    pub room: i32,
+    pub bracket: f64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Metrics { size: 16.0, room: 32, bracket: 5.0 }
+    }
+}
+
+impl Metrics {
+    /// The space under every line: the line height 1.65 less the text's own.
+    pub fn gap(&self) -> i32 {
+        (self.size * 0.65).round() as i32
+    }
+}
+
+/// What the view draws where a tag is, beside the text (`editor_draw.rs`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Drawn {
+    /// A task's box over its hidden marks.
+    TaskBox,
+    /// A date chip's pill, in this colour of the palette at this strength.
+    Chip(&'static str, f32),
+    /// A callout's icon, and the kind's name when no title is written.
+    CalloutIcon,
+    /// A callout's panel behind its lines, in the kind's colour.
+    CalloutPanel(&'static str),
+    CodePanel,
+    /// The first line of a panel: two panels with no line between them are two.
+    PanelTop,
+}
+
+/// A colour by the name the reader's CSS has for it, as the palette here names it.
+pub fn palette_name(reader: &str) -> &'static str {
+    match reader {
+        "list-marker" | "accent" => "accent",
+        "done-color" | "text-faint" => "faint",
+        "text-muted" => "muted",
+        "blue" => "blue",
+        "red" => "red",
+        "yellow" => "yellow",
+        "vivid-yellow" => "vividYellow",
+        "warm-grey" => "warmGrey",
+        "orange" => "orange",
+        "spring-green" => "green",
+        "purple" => "purple",
+        "pink" => "pink",
+        _ => "accent",
+    }
 }
 
 fn fg(name: &'static str) -> Look {
@@ -188,6 +271,12 @@ pub struct Styler {
     elements: RefCell<Vec<Range<usize>>>,
     open: RefCell<Vec<Range<usize>>>,
     elements_for: std::cell::Cell<Option<(usize, usize)>>,
+    /// The text size and the measure's room, which some looks are worked out from.
+    metrics: std::cell::Cell<Metrics>,
+    /// The tags the view draws something for, in the order they were made.
+    drawn: RefCell<Vec<(gtk::TextTag, Drawn)>>,
+    /// The day the late chips were worked out for.
+    day: std::cell::Cell<Day>,
 }
 
 /// The tint of the cursor's line: neutral, weaker than the reader's block.
@@ -231,6 +320,9 @@ impl Styler {
             elements: RefCell::new(Vec::new()),
             open: RefCell::new(Vec::new()),
             elements_for: std::cell::Cell::new(None),
+            metrics: std::cell::Cell::new(Metrics::default()),
+            drawn: RefCell::new(Vec::new()),
+            day: std::cell::Cell::new(Day::today()),
         });
         styler.line.set_paragraph_background_rgba(Some(&line_tint(manager.is_dark())));
         buffer.tag_table().add(&styler.line);
@@ -273,9 +365,7 @@ impl Styler {
         manager.connect_dark_notify(move |manager| {
             if let Some(this) = this.upgrade() {
                 this.dark.set(manager.is_dark());
-                for (tag, look) in this.tags.borrow().values() {
-                    apply_look(tag, look, manager.is_dark(), &this.code_font.borrow());
-                }
+                this.dress();
                 this.line.set_paragraph_background_rgba(Some(&line_tint(manager.is_dark())));
             }
         });
@@ -286,10 +376,35 @@ impl Styler {
     pub fn set_soft(&self, soft: bool) {
         // Set for every editor; each one's tags take their colours again here.
         SOFT.store(soft, std::sync::atomic::Ordering::Relaxed);
-        for (tag, look) in self.tags.borrow().values() {
-            apply_look(tag, look, self.dark.get(), &self.code_font.borrow());
-        }
+        self.dress();
         self.line.set_paragraph_background_rgba(Some(&line_tint(self.dark.get())));
+    }
+
+    pub fn set_code_font(&self, family: &str) {
+        if *self.code_font.borrow() == family {
+            return;
+        }
+        *self.code_font.borrow_mut() = family.to_string();
+        self.dress();
+    }
+
+    /// Every tag takes its look again: the scheme, the palette, a font or a size changed.
+    fn dress(&self) {
+        for (tag, look) in self.tags.borrow().values() {
+            apply_look(tag, look, self.dark.get(), &self.code_font.borrow(), self.metrics.get());
+        }
+    }
+
+    /// The text size and the measure's room changed: the looks that are
+    /// worked out from them follow. Never while the view lays itself out.
+    pub fn set_metrics(&self, metrics: Metrics) {
+        if self.metrics.replace(metrics) != metrics {
+            self.dress();
+        }
+    }
+
+    pub fn metrics(&self) -> Metrics {
+        self.metrics.get()
     }
 
     /// Whether the dark palette is in use.
@@ -297,10 +412,16 @@ impl Styler {
         self.dark.get()
     }
 
-    pub fn set_code_font(&self, family: &str) {
-        *self.code_font.borrow_mut() = family.to_string();
-        for (tag, look) in self.tags.borrow().values() {
-            apply_look(tag, look, self.dark.get(), family);
+    /// The tags the view draws something for.
+    pub fn drawn(&self) -> Vec<(gtk::TextTag, Drawn)> {
+        self.drawn.borrow().clone()
+    }
+
+    /// A new day: the lines are styled again, since a due date may be late now.
+    pub fn follow_day(self: &Rc<Self>) {
+        let today = Day::today();
+        if self.day.replace(today) != today && self.live.get() {
+            self.restyle_all();
         }
     }
 
@@ -310,15 +431,28 @@ impl Styler {
         }
         let look = look();
         let tag = gtk::TextTag::new(Some(&format!("daftar:{name}")));
-        apply_look(&tag, &look, self.dark.get(), &self.code_font.borrow());
+        apply_look(&tag, &look, self.dark.get(), &self.code_font.borrow(), self.metrics.get());
         self.buffer.tag_table().add(&tag);
         self.tags.borrow_mut().insert(name.to_string(), (tag.clone(), look));
-        // Marks always win: they are the top tags, and a hidden mark over them.
+        // Marks always win: they are the top tags, and a hidden mark over
+        // them. Each ranked tag goes to the top in the order of its rank.
         let top = self.buffer.tag_table().size() - 1;
-        for raised in ["highlight-mark", "markup", "hidden"] {
-            if let Some((tag, _)) = self.tags.borrow().get(raised) {
-                tag.set_priority(top);
-            }
+        let tags = self.tags.borrow();
+        let mut ranked: Vec<(u8, &gtk::TextTag)> =
+            tags.values().filter(|(_, look)| look.rank > 0).map(|(tag, look)| (look.rank, tag)).collect();
+        ranked.sort_by_key(|(rank, _)| *rank);
+        for (_, raised) in ranked {
+            raised.set_priority(top);
+        }
+        tag
+    }
+
+    /// A tag the view draws something for.
+    fn drawn_tag(&self, name: &str, drawn: Drawn, look: impl FnOnce() -> Look) -> gtk::TextTag {
+        let known = self.tags.borrow().contains_key(name);
+        let tag = self.tag(name, look);
+        if !known {
+            self.drawn.borrow_mut().push((tag.clone(), drawn));
         }
         tag
     }
@@ -491,6 +625,13 @@ impl Styler {
         let state = state.unwrap_or_else(|| MarkdownHighlighter::block_state(range.start, &self.text()));
         let (from, to) = (self.buffer.iter_at_offset(range.start as i32), self.buffer.iter_at_offset(range.end as i32));
         let lines = self.buffer.text(&from, &to, true).to_string();
+        // What live preview draws on these lines: the boxes, the chips and the panels.
+        let parts = if self.live.get() {
+            let (above, below) = self.around(&from, &to, &lines);
+            LivePreview::parts(&lines, base, &state, &above, below, self.day.get())
+        } else {
+            PreviewParts::default()
+        };
         let (mut spans, next) = MarkdownHighlighter::spans_of_lines(&lines, range.start, state);
         for span in &mut spans {
             span.range = span.range.start - base..span.range.end - base;
@@ -501,19 +642,198 @@ impl Styler {
         let chars: Vec<char> = lines.chars().collect();
         let local = 0..chars.len();
         let highlights: Vec<Range<usize>> = spans.iter().filter(|s| s.kind == HighlightKind::Highlight).map(|s| s.range.clone()).collect();
+        let panels = Panels::of(&parts, base);
         for span in &spans {
             if span.range.end > chars.len() || span.range.is_empty() {
                 continue;
             }
-            for tag in self.tags_for(span, &chars, &highlights) {
+            for tag in self.tags_for(span, &chars, &highlights, &panels) {
                 self.buffer.apply_tag(&tag, &iter(span.range.start), &iter(span.range.end));
             }
         }
         self.style_script(&chars, local.clone(), base);
         if self.live.get() {
-            self.hide_marks(&spans, &chars, local, base);
+            let elements = self.draw_parts(&parts, &chars, base);
+            self.hide_marks(&spans, &chars, local, base, elements);
         }
         next
+    }
+
+    /// What is around the lines from [from] to [to], whose text is [lines]:
+    /// the quote or the callout the first of them continues, found by the
+    /// buffer's lines above it (at most `PARAGRAPH_LINES`), and whether the
+    /// line after the last is a quote's.
+    fn around(&self, from: &gtk::TextIter, to: &gtk::TextIter, lines: &str) -> (PreviewAbove, bool) {
+        let quoted = |text: &str| text.trim_start_matches([' ', '\t']).starts_with('>');
+        let line_at = |line: i32| -> Option<String> {
+            let start = self.buffer.iter_at_line(line)?;
+            let mut end = start;
+            if !end.ends_line() {
+                end.forward_to_line_end();
+            }
+            Some(self.buffer.text(&start, &end, true).to_string())
+        };
+        let mut above = PreviewAbove::Nothing;
+        if quoted(lines) {
+            let mut line = from.line() - 1;
+            let mut walked = 0;
+            while line >= 0 && walked < PARAGRAPH_LINES {
+                let Some(text) = line_at(line).filter(|text| quoted(text)) else { break };
+                above = LivePreview::callout_head(&text).map_or(PreviewAbove::Quote, |head| PreviewAbove::Callout(head.kind));
+                line -= 1;
+                walked += 1;
+            }
+        }
+        let below = !to.is_end() && to.starts_line() && line_at(to.line()).is_some_and(|text| quoted(&text));
+        (above, below)
+    }
+
+    /// The tags of what live preview draws on the lines styled, whose
+    /// characters are [chars] from [base]: a task's box and a callout's icon
+    /// over their hidden marks, the chips, and the lines of each panel. A
+    /// box and a chip are raw while the cursor is in them, and a callout's
+    /// and a fence's marks show on the cursor's lines. The boxes and chips
+    /// of the cursor's lines are returned, as `reveal` compares them with
+    /// the cursor.
+    fn draw_parts(&self, parts: &PreviewParts, chars: &[char], base: usize) -> Vec<Range<usize>> {
+        let total = self.buffer.char_count().max(0) as usize;
+        let iter = |offset: usize| self.buffer.iter_at_offset(offset.min(total) as i32);
+        let apply = |tag: &gtk::TextTag, range: Range<usize>| {
+            if range.start < range.end {
+                self.buffer.apply_tag(tag, &iter(range.start), &iter(range.end));
+            }
+        };
+        let (shown_from, shown_to) = self.revealed.get();
+        let on_cursor_lines = |range: &Range<usize>| !(range.end <= shown_from || range.start >= shown_to);
+        let cursor = self.cursor.get();
+        let mut elements = Vec::new();
+        // True when the part is drawn: the cursor is not in it.
+        let mut drawn = |range: &Range<usize>| {
+            if on_cursor_lines(range) {
+                elements.push(range.start - base..range.end - base);
+                return !is_open(range, cursor);
+            }
+            true
+        };
+        for task in &parts.boxes {
+            if drawn(&task.range) {
+                // The marks take the box's width, 1.1 em, and no more.
+                let count = task.range.len();
+                let tag = self.drawn_tag(&format!("box:{count}"), Drawn::TaskBox, || Look {
+                    hidden: true,
+                    spacing: Some(1.1 / count as f64),
+                    unstruck: true,
+                    rank: 5,
+                    ..Look::default()
+                });
+                apply(&tag, task.range.clone());
+            }
+        }
+        let chips: Vec<_> = parts.chips.iter().filter(|chip| drawn(&chip.range)).collect();
+        for (at, chip) in chips.iter().enumerate() {
+            let color = palette_name(chip.kind.color(chip.late));
+            let strength: f32 = if chip.closed { 0.75 } else { 1.0 };
+            let name = format!("chip:{color}{}{}", if chip.late { ":late" } else { "" }, if chip.closed { ":closed" } else { "" });
+            let tag = self.drawn_tag(&name, Drawn::Chip(color, 0.14 * strength), || Look {
+                fg: Some((color, strength)),
+                scale: Some(0.92),
+                semibold: chip.late,
+                unstruck: true,
+                rank: 2,
+                ..Look::default()
+            });
+            apply(&tag, chip.range.clone());
+            // The room around the pill is in the spaces beside it: 0.5 em
+            // inside the pill and 0.3 em to the text, or to the next chip's pill.
+            let space = |at: usize| at >= base && chars.get(at - base) == Some(&' ');
+            if chip.range.start > 0 && space(chip.range.start - 1) {
+                let follows = at > 0 && chips[at - 1].range.end + 1 == chip.range.start;
+                let (name, room) = if follows { ("chip-gap:between", 1.05) } else { ("chip-gap", 0.55) };
+                let gap = self.tag(name, || Look { spacing: Some(room), unstruck: true, rank: 4, ..Look::default() });
+                apply(&gap, chip.range.start - 1..chip.range.start);
+            }
+            let next_follows = chips.get(at + 1).is_some_and(|next| next.range.start == chip.range.end + 1);
+            if space(chip.range.end) && !next_follows {
+                let gap = self.tag("chip-gap", || Look { spacing: Some(0.55), unstruck: true, rank: 4, ..Look::default() });
+                apply(&gap, chip.range.end..chip.range.end + 1);
+            }
+        }
+        let hidden = || self.tag("hidden", || Look { hidden: true, rank: 5, ..Look::default() });
+        let top = || self.drawn_tag("panel-top", Drawn::PanelTop, || Look { above: Some(0.6), ..Look::default() });
+        for line in &parts.lines {
+            // The panel's tag is on the line's ending too, so its lines are one run.
+            let whole = line.range.start..line.range.end + 1;
+            let raw = on_cursor_lines(&line.range);
+            match &line.block {
+                PreviewBlock::Callout { kind, head, quote, last } => {
+                    let color = callout_color(kind);
+                    let panel = self.drawn_tag(&format!("panel:callout:{color}"), Drawn::CalloutPanel(color), || Look {
+                        inset: Some((1.0, 1.0)),
+                        ..Look::default()
+                    });
+                    apply(&panel, whole);
+                    if head.is_some() {
+                        apply(&top(), line.range.start..line.range.end.max(line.range.start + 1));
+                    }
+                    if *last {
+                        let bottom = self.tag("panel-bottom", || Look { below: Some(0.6), ..Look::default() });
+                        apply(&bottom, line.range.start..line.range.end.max(line.range.start + 1));
+                    }
+                    if raw {
+                        continue;
+                    }
+                    // `> ` at no width; alone on its line it is clear at its
+                    // own size, so an empty line of the callout keeps its height.
+                    if quote.end >= line.range.end && head.is_none() {
+                        apply(&self.tag("clear", || Look { clear: true, rank: 5, ..Look::default() }), quote.clone());
+                    } else {
+                        apply(&hidden(), quote.clone());
+                    }
+                    if let Some(head) = head {
+                        // The icon stands where `[` is, 1.1 em and 0.4 em to the title.
+                        let icon = self.drawn_tag("callout-icon", Drawn::CalloutIcon, || Look {
+                            clear: true,
+                            spacing: Some(1.5),
+                            bracket: true,
+                            rank: 5,
+                            ..Look::default()
+                        });
+                        apply(&icon, head.mark.start..head.mark.start + 1);
+                        apply(&hidden(), head.mark.start + 1..head.mark.end);
+                    }
+                }
+                PreviewBlock::Code { role, fence } => {
+                    let panel =
+                        self.drawn_tag("panel:code", Drawn::CodePanel, || Look { inset: Some((1.1, 0.6)), left: true, ..Look::default() });
+                    apply(&panel, whole);
+                    match role {
+                        CodeRole::Open => apply(&top(), line.range.start..line.range.end.max(line.range.start + 1)),
+                        CodeRole::Close => {
+                            // The closing fence's line is 0.4 em high.
+                            let bottom = self.tag("panel-bottom:code", || Look { below: Some(0.4), ..Look::default() });
+                            apply(&bottom, line.range.start..line.range.end.max(line.range.start + 1));
+                        }
+                        CodeRole::Body => {}
+                    }
+                    let Some(fence) = fence.as_ref().filter(|_| !raw) else { continue };
+                    apply(&hidden(), fence.marks.clone());
+                    if let Some(word) = &fence.word {
+                        let language: String = chars[word.start - base..word.end - base].iter().collect();
+                        let color = language_color(&language);
+                        let tag = self.tag(&format!("language:{color}"), || Look {
+                            mono: true,
+                            scale: Some(0.72),
+                            semibold: true,
+                            lower: true,
+                            rank: 2,
+                            ..fg(color)
+                        });
+                        apply(&tag, word.clone());
+                    }
+                }
+            }
+        }
+        elements
     }
 
     /// Live preview on or off; the note is styled again for it.
@@ -584,10 +904,10 @@ impl Styler {
     /// Away from the cursor's lines the marks go -- `**`, `==`, `[[` and a
     /// link's target, a heading's `#` -- as the Mac's `hideMarks`. A quote's
     /// `>` and a callout's type stay: they say what the line is.
-    fn hide_marks(&self, spans: &[HighlightSpan], chars: &[char], range: Range<usize>, base: usize) {
+    fn hide_marks(&self, spans: &[HighlightSpan], chars: &[char], range: Range<usize>, base: usize, mut elements: Vec<Range<usize>>) {
         let (shown_from, shown_to) = self.revealed.get();
         let (shown_from, shown_to) = (shown_from.saturating_sub(base), shown_to.saturating_sub(base));
-        let hidden = self.tag("hidden", || Look { hidden: true, ..Look::default() });
+        let hidden = self.tag("hidden", || Look { hidden: true, rank: 5, ..Look::default() });
         let iter = |offset: usize| self.buffer.iter_at_offset((base + offset) as i32);
         let hide = |from: usize, to: usize| {
             if from < to && to <= chars.len() && (to <= shown_from || from >= shown_to) && from >= range.start && to <= range.end {
@@ -599,7 +919,6 @@ impl Styler {
         let cursor = self.cursor.get();
         let cursor = (cursor.0.saturating_sub(base), cursor.1.saturating_sub(base));
         let on_cursor_lines = |from: usize, to: usize| !(to <= shown_from || from >= shown_to);
-        let mut elements: Vec<Range<usize>> = Vec::new();
         let mut hide_in = |marks: &[(usize, usize)], element: Range<usize>| {
             let open = is_open(&element, cursor);
             elements.push(element);
@@ -713,7 +1032,7 @@ impl Styler {
         }
     }
 
-    fn tags_for(&self, span: &HighlightSpan, chars: &[char], highlights: &[Range<usize>]) -> Vec<gtk::TextTag> {
+    fn tags_for(&self, span: &HighlightSpan, chars: &[char], highlights: &[Range<usize>], panels: &Panels) -> Vec<gtk::TextTag> {
         let piece = || chars[span.range.clone()].iter().collect::<String>();
         let one = |name: &str, look: Look| vec![self.tag(name, || look)];
         match span.kind {
@@ -727,9 +1046,9 @@ impl Styler {
             HighlightKind::Markup | HighlightKind::BlockId => {
                 // On a highlight the marks dim in the highlight's own text color.
                 if highlights.iter().any(|h| h.start <= span.range.start && span.range.end <= h.end) {
-                    one("highlight-mark", Look { fg: Some(("text", 0.4)), ..Look::default() })
+                    one("highlight-mark", Look { fg: Some(("text", 0.4)), rank: 3, ..Look::default() })
                 } else {
-                    one("markup", fg("faint"))
+                    one("markup", Look { rank: 3, ..fg("faint") })
                 }
             }
             HighlightKind::Bold => one("bold", Look { semibold: true, ..fg("strong") }),
@@ -740,6 +1059,10 @@ impl Styler {
                 one(&format!("highlight:{color}"), Look { bg: Some((color, 0.32)), ..Look::default() })
             }
             HighlightKind::Code => one("code", Look { mono: true, bg: Some(("panel", 1.0)), scale: Some(0.86), ..fg("raw") }),
+            // In a drawn panel the panel is the background, and the body is 0.85 em.
+            HighlightKind::CodeBlock if panels.code(span.range.start) => {
+                one("code-body", Look { mono: true, scale: Some(0.85), ..Look::default() })
+            }
             HighlightKind::CodeBlock => {
                 one("code-block", Look { mono: true, bg: Some(("panel", 1.0)), scale: Some(0.86), ..Look::default() })
             }
@@ -747,7 +1070,11 @@ impl Styler {
                 let text = piece();
                 let language = text.trim_matches(|c: char| "`~> \t\n".contains(c)).split(' ').next().unwrap_or("").to_string();
                 let color = language_color(&language);
-                one(&format!("fence:{color}"), Look { mono: true, bg: Some(("panel", 1.0)), scale: Some(0.86), ..fg(color) })
+                if panels.code(span.range.start) {
+                    one(&format!("fence-line:{color}"), Look { mono: true, scale: Some(0.85), ..fg(color) })
+                } else {
+                    one(&format!("fence:{color}"), Look { mono: true, bg: Some(("panel", 1.0)), scale: Some(0.86), ..fg(color) })
+                }
             }
             HighlightKind::FrontMatter => one("front-matter", Look { mono: true, scale: Some(0.86), ..fg("muted") }),
             HighlightKind::Link => one("link", Look { underline: true, ..fg("link") }),
@@ -765,21 +1092,63 @@ impl Styler {
                 one("list", Look { semibold: true, ..fg("accent") })
             }
             // The text keeps its own colour, as in the reader; the tint stands for the bar.
+            // A callout that is drawn has its panel behind it: no tint on its lines.
+            HighlightKind::Quote if panels.callout(span.range.start) => Vec::new(),
             HighlightKind::Quote => one("quote", Look { bg: Some(("orange", 0.07)), ..Look::default() }),
             HighlightKind::CalloutTitle => {
                 let text = piece();
                 let kind = text.split_once("[!").and_then(|(_, rest)| rest.split_once(']')).map_or("note", |(kind, _)| kind);
                 let color = callout_color(kind);
-                one(&format!("callout:{color}"), Look { semibold: true, bg: Some((color, 0.1)), ..fg(color) })
+                if panels.callout(span.range.start) {
+                    one(&format!("callout-title:{color}"), Look { semibold: true, ..fg(color) })
+                } else {
+                    one(&format!("callout:{color}"), Look { semibold: true, bg: Some((color, 0.1)), ..fg(color) })
+                }
             }
             HighlightKind::Comment | HighlightKind::Rule => one("faint", fg("faint")),
             HighlightKind::Math => one("math", Look { mono: true, bg: Some(("purple", 0.08)), ..fg("purple") }),
-            HighlightKind::Metadata => one("metadata", Look { scale: Some(0.85), ..fg("muted") }),
+            HighlightKind::Metadata => one("metadata", Look { scale: Some(0.85), unstruck: true, rank: 1, ..fg("muted") }),
         }
     }
 }
 
-fn apply_look(tag: &gtk::TextTag, look: &Look, dark: bool, code_font: &str) {
+/// The lines of the panels drawn in a part being styled, in its own
+/// characters: a span on one of them takes the panel's look.
+#[derive(Default)]
+struct Panels {
+    code: Vec<Range<usize>>,
+    callouts: Vec<Range<usize>>,
+}
+
+impl Panels {
+    fn of(parts: &PreviewParts, base: usize) -> Panels {
+        let mut panels = Panels::default();
+        for line in &parts.lines {
+            let range = line.range.start - base..line.range.end - base;
+            match line.block {
+                PreviewBlock::Code { .. } => panels.code.push(range),
+                PreviewBlock::Callout { .. } => panels.callouts.push(range),
+            }
+        }
+        panels
+    }
+
+    /// Whether the character [at] is on one of [lines], which are in order.
+    fn holds(lines: &[Range<usize>], at: usize) -> bool {
+        let next = lines.partition_point(|line| line.start <= at);
+        next > 0 && at <= lines[next - 1].end
+    }
+
+    fn code(&self, at: usize) -> bool {
+        Self::holds(&self.code, at)
+    }
+
+    fn callout(&self, at: usize) -> bool {
+        Self::holds(&self.callouts, at)
+    }
+}
+
+fn apply_look(tag: &gtk::TextTag, look: &Look, dark: bool, code_font: &str, metrics: Metrics) {
     if let Some((name, alpha)) = look.fg {
         tag.set_foreground_rgba(Some(&rgba(name, alpha, dark)));
     }
@@ -820,10 +1189,40 @@ fn apply_look(tag: &gtk::TextTag, look: &Look, dark: bool, code_font: &str) {
         // line") when it lays out a long note whose lines end in hidden
         // marks, so the marks stay text, too small to see.
         tag.set_scale(0.01);
-        tag.set_foreground_rgba(Some(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0)));
+        tag.set_foreground_rgba(Some(&CLEAR));
         tag.set_letter_spacing(0);
     }
+    if look.clear {
+        tag.set_foreground_rgba(Some(&CLEAR));
+    }
+    if let Some(em) = look.spacing {
+        // Pango's units: 1024 to a px.
+        let room = em * metrics.size - if look.bracket { metrics.bracket } else { 0.0 };
+        tag.set_letter_spacing((room.max(0.0) * f64::from(pango::SCALE)).round() as i32);
+    }
+    if let Some((left, right)) = look.inset {
+        tag.set_left_margin(metrics.room + (left * metrics.size).round() as i32);
+        tag.set_right_margin(metrics.room + (right * metrics.size).round() as i32);
+    }
+    if let Some(above) = look.above {
+        tag.set_pixels_above_lines((above * metrics.size).round() as i32);
+    }
+    if let Some(below) = look.below {
+        tag.set_pixels_below_lines(metrics.gap() + (below * metrics.size).round() as i32);
+    }
+    if look.lower {
+        tag.set_text_transform(pango::TextTransform::Lowercase);
+    }
+    if look.unstruck {
+        tag.set_strikethrough(false);
+    }
+    if look.left {
+        tag.set_justification(gtk::Justification::Left);
+    }
 }
+
+/// Next to clear: GTK draws a colour with no alpha at all as a solid one.
+const CLEAR: gtk::gdk::RGBA = gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.002);
 
 /// The face Persian is drawn in wherever it appears; the reader's
 /// `Persian Fallback` is the same.
@@ -881,6 +1280,31 @@ mod tests {
         let byte = |c: f32| (c * 255.0).round() as u32;
         assert_eq!((byte(dark.red()), byte(dark.green()), byte(dark.blue())), (0xE9, 0xB8, 0x7D));
         assert_eq!((byte(light.red()), byte(light.green()), byte(light.blue())), (0xA8, 0x52, 0x00));
+    }
+
+    /// A span on a line of a drawn panel takes the panel's look; the lines are in order.
+    #[test]
+    fn a_span_knows_the_panel_its_line_is_in() {
+        let text = "a\n> [!tip]\n> b\n\n```\nc\n```\nd\n";
+        let parts = LivePreview::parts(text, 100, &BlockState::Normal, &PreviewAbove::Nothing, false, Day::today());
+        let panels = Panels::of(&parts, 100);
+        assert_eq!(panels.callouts, [2..10, 11..14]);
+        assert_eq!(panels.code, [16..19, 20..21, 22..25]);
+        assert!(panels.callout(2) && panels.callout(10) && panels.callout(12) && !panels.callout(0) && !panels.callout(15));
+        assert!(panels.code(16) && panels.code(20) && panels.code(25) && !panels.code(26) && !panels.code(12));
+    }
+
+    #[test]
+    fn the_looks_follow_the_text_size() {
+        let metrics = Metrics { size: 20.0, room: 100, bracket: 6.0 };
+        assert_eq!(metrics.gap(), 13);
+        assert_eq!(Metrics::default().gap(), 10);
+        // The reader's names for a status's and a chip's colour, in this palette.
+        assert_eq!(palette_name("list-marker"), "accent");
+        assert_eq!(palette_name("done-color"), "faint");
+        assert_eq!(palette_name("spring-green"), "green");
+        assert_eq!(palette_name("text-muted"), "muted");
+        assert_eq!(palette_name("vivid-yellow"), "vividYellow");
     }
 
     #[test]

@@ -30,8 +30,8 @@ use gtk::{gdk, glib};
 use sourceview5::prelude::*;
 
 use daftar_core::{
-    BufferMirror, Candidate, Day, EditorCommands, Fuzzy, HtmlMarkdown, LivePreview, MarkdownTable, QuickSwitcher, Return, Sections,
-    Snippet, TaskSorter, Vault, VaultMoves,
+    BufferMirror, Candidate, Day, EditorCommands, Fuzzy, HtmlMarkdown, LivePreview, MarkdownTable, NoteFormat, QuickSwitcher, Return,
+    Sections, Snippet, TaskSorter, Vault, VaultMoves,
 };
 
 #[path = "editor_media.rs"]
@@ -40,8 +40,9 @@ pub(crate) mod media;
 mod problems;
 
 use crate::editor_caret::Caret;
+use crate::editor_draw::Draw;
 use crate::editor_popup::{Choice, Popup};
-use crate::editor_style::Styler;
+use crate::editor_style::{Metrics, Styler};
 use crate::editor_view::EditorView;
 use crate::neovim_session::{self, Event, MenuItem, NeovimSession};
 use crate::settings::AppSettings;
@@ -128,6 +129,8 @@ pub struct Editor {
     restyle_soon: Cell<bool>,
     /// A cursor move waiting for the idle that tints its line.
     reveal_soon: Cell<bool>,
+    /// The pointer is over a task's box, where it is a hand.
+    over_box: Cell<bool>,
     /// The format bar over a selection, once one was shown (docs/specs/look.md).
     format_bar: RefCell<Option<gtk::Popover>>,
     /// Edits so far, and the counts of words and characters at one of them.
@@ -152,6 +155,8 @@ pub struct Editor {
     glide: Rc<Glide>,
     /// The caret in the accent, in place of the view's own.
     caret: Rc<Caret>,
+    /// What is drawn beside the text: panels, pills, boxes and icons.
+    draw: Rc<Draw>,
     /// Over the text: Neovim's floating windows, as `vim_floats` gives them.
     stage: gtk::Overlay,
     floats: RefCell<Vec<gtk::Widget>>,
@@ -174,7 +179,8 @@ impl Editor {
         // The colors are the core highlighter's, as on the Mac.
         buffer.set_highlight_syntax(false);
         buffer.set_highlight_matching_brackets(false);
-        // A view of our own, which lets the editor draw over the text.
+        // A view of our own, which draws the panels, the pills and the boxes
+        // under and over the text (`editor_draw.rs`).
         let canvas = EditorView::new(&buffer);
         let view: sourceview5::View = canvas.clone().upcast();
         view.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -234,11 +240,13 @@ impl Editor {
         #[expect(deprecated, reason = "GTK has no other way to give one view its own font")]
         view.style_context().add_provider(&font_css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         let styler = Styler::new(buffer.upcast_ref());
+        let draw = Draw::new(&styler);
         let caret = Caret::new(&view);
         {
-            // The caret is drawn over the text, in the accent.
-            let (caret, styler) = (caret.clone(), styler.clone());
-            canvas.set_painter(move |_, layer, snapshot| {
+            // Over the text, the caret last: nothing is drawn on it.
+            let (draw, caret, styler) = (draw.clone(), caret.clone(), styler.clone());
+            canvas.set_painter(move |view, layer, snapshot| {
+                draw.paint(view, layer, snapshot);
                 if layer == gtk::TextViewLayer::AboveText {
                     caret.paint(snapshot, &crate::editor_style::rgba("accent", 1.0, styler.is_dark()));
                 }
@@ -247,6 +255,7 @@ impl Editor {
         let editor = Rc::new(Editor {
             widget,
             styler,
+            draw,
             popup: Popup::new(&view),
             glide: Glide::new(&view),
             caret,
@@ -267,6 +276,7 @@ impl Editor {
             dirty: Cell::new(None),
             restyle_soon: Cell::new(false),
             reveal_soon: Cell::new(false),
+            over_box: Cell::new(false),
             format_bar: RefCell::new(None),
             text_version: Cell::new(0),
             counted: Cell::new(None),
@@ -629,7 +639,7 @@ impl Editor {
 
     /// The editor's line is the reader's measure (`appearance.text_width` em
     /// of the text size) in the middle of the pane: the view's margins are
-    /// the room at each side. Worked out
+    /// the room at each side, and the panels' looks follow them. Worked out
     /// when the pane's width, the text size or the setting changes, never on
     /// a key, and never while the view lays itself out.
     fn measure(&self) {
@@ -644,9 +654,11 @@ impl Editor {
             self.view.set_left_margin(room);
             self.view.set_right_margin(room);
         }
+        let bracket = f64::from(self.view.create_pango_layout(Some("[")).pixel_size().0);
+        self.styler.set_metrics(Metrics { size, room, bracket });
     }
 
-    /// The measure follows the pane's width.
+    /// The measure follows the pane's width, and the late chips the day.
     fn connect_measure(self: &Rc<Self>) {
         if let Some(h) = self.view.hadjustment() {
             let this = Rc::downgrade(self);
@@ -659,6 +671,50 @@ impl Editor {
                 });
             });
         }
+        // "Today" is looked at once a minute, never on a key.
+        let this = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(60, move || match this.upgrade() {
+            Some(this) => {
+                this.styler.follow_day();
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        });
+    }
+
+    /// A click on the box of the task whose marks start at [offset]: the
+    /// line becomes what the task toggle makes of it (Ctrl+Return), as one
+    /// step to undo. The caret stays on its text and the page where it is;
+    /// in Neovim mode the change of those lines is sent to Neovim, and a
+    /// read-only vault's text is not changed.
+    fn click_box(&self, offset: usize) {
+        let read_only = self.store.borrow().as_ref().is_some_and(|store| daftar_core::VaultEdits::writable(&store.root).is_err());
+        if read_only {
+            return;
+        }
+        let at = self.iter(offset);
+        let mut start = at;
+        start.set_line_offset(0);
+        let mut end = at;
+        if !end.ends_line() {
+            end.forward_to_line_end();
+        }
+        let range = start.offset() as usize..end.offset() as usize;
+        let Some(lines) = LivePreview::click(&self.slice(range.clone()), Day::today()) else { return };
+        if let Some(vim) = self.vim.borrow().as_ref() {
+            let (line, expected) = (at.line().max(0) as usize, NoteFormat::lines(&self.text()).join("\n"));
+            // Neovim answers with its own lines event; nothing waits for it here.
+            drop(vim.session.replace_lines(&expected, line..line + 1, lines));
+            return;
+        }
+        let place =
+            |mark: &gtk::TextMark| LivePreview::caret_after_click(self.buffer.iter_at_mark(mark).offset().max(0) as usize, &range, &lines);
+        let (insert, bound) = (place(&self.buffer.get_insert()), place(&self.buffer.selection_bound()));
+        self.buffer.begin_user_action();
+        self.buffer.delete(&mut start, &mut end);
+        self.buffer.insert(&mut self.iter(range.start), &lines.join("\n"));
+        self.buffer.end_user_action();
+        self.buffer.select_range(&self.iter(insert), &self.iter(bound));
     }
 
     fn connect_buffer(self: &Rc<Self>) {
@@ -1957,8 +2013,52 @@ impl Editor {
         if daftar_core::text::direction::first_strong(&line) == Some(true) { swapped } else { key }
     }
 
-    /// A click moves Neovim's cursor where it landed.
+    /// A click on a task's box changes its status, and never moves the
+    /// caret or the focus: the gesture is before the view's own and keeps
+    /// the click from it. With Shift, Ctrl, Alt or Super it is a click in
+    /// the text. The pointer is a hand over a box. Any other click moves
+    /// Neovim's cursor where it landed.
     fn connect_clicks(self: &Rc<Self>) {
+        let on_box = gtk::GestureClick::builder().button(gdk::BUTTON_PRIMARY).propagation_phase(gtk::PropagationPhase::Capture).build();
+        let this = Rc::downgrade(self);
+        on_box.connect_pressed(move |gesture, _, x, y| {
+            let Some(this) = this.upgrade() else { return };
+            let keys = gdk::ModifierType::SHIFT_MASK
+                | gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::ALT_MASK
+                | gdk::ModifierType::SUPER_MASK;
+            if gesture.current_event_state().intersects(keys) {
+                return;
+            }
+            let (bx, by) = this.view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+            if let Some(offset) = this.draw.box_at(this.view.upcast_ref(), bx, by) {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                this.click_box(offset.max(0) as usize);
+            }
+        });
+        self.view.add_controller(on_box);
+        let pointer = gtk::EventControllerMotion::new();
+        let this = Rc::downgrade(self);
+        let over = move |place: Option<(f64, f64)>| {
+            let Some(this) = this.upgrade() else { return };
+            let on = place.and_then(|(x, y)| {
+                let (bx, by) = this.view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+                this.draw.box_at(this.view.upcast_ref(), bx, by)
+            });
+            if this.draw.set_hover(on) {
+                this.view.queue_draw();
+            }
+            if this.over_box.replace(on.is_some()) != on.is_some() {
+                this.view.set_cursor_from_name(Some(if on.is_some() { "pointer" } else { "text" }));
+            }
+        };
+        let over = Rc::new(over);
+        {
+            let over = over.clone();
+            pointer.connect_motion(move |_, x, y| over(Some((x, y))));
+        }
+        pointer.connect_leave(move |_| over(None));
+        self.view.add_controller(pointer);
         let click = gtk::GestureClick::new();
         let this = Rc::downgrade(self);
         click.connect_released(move |_, _, _, _| {
@@ -2148,6 +2248,82 @@ mod tests {
         assert_eq!(write_if_unchanged(&file, "two\n", "mine\n"), Saved::ChangedOnDisk);
         assert_eq!(fs::read_to_string(&file).unwrap(), "three\n");
         assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
+    }
+
+    /// Live preview's drawn parts in a real view (docs/specs/look.md, part
+    /// 2): the tags the drawing follows, a part raw with the cursor in it,
+    /// the click on a box, and the measure. Needs a display: `xvfb-run -a
+    /// cargo test -p daftar -- --ignored live_preview_draws`, alone, as GTK
+    /// keeps to the thread that started it.
+    #[test]
+    #[ignore = "needs a display"]
+    fn live_preview_draws_the_parts_and_a_click_is_the_toggle() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            crate::style::install();
+            let vault = tempfile::tempdir().unwrap();
+            // The task's line starts at 5, the callout at 29, the code block at 46.
+            let text = "# T\n\n- [ ] Buy 📅 2001-01-01\n\n> [!tip]\n> body\n\n```Rust\nlet a;\n```\n";
+            fs::write(vault.path().join("Note.md"), text).unwrap();
+            let settings = AppSettings::of(vault.path().join("config.toml"), daftar_core::ConfigFile::TEMPLATE);
+            let editor = Editor::new(Rc::new(RefCell::new(settings)), |_| {}, |_| {});
+            let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
+            window.present();
+            assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            let tagged =
+                |name: &str, at: usize| editor.iter(at).tags().iter().any(|tag| tag.name().is_some_and(|n| n == format!("daftar:{name}")));
+
+            // Each part has its tag: the box over `- [ ]`, the late chip, the
+            // callout's panel with its icon where `[` is, the code block's
+            // panel with its fence hidden and its language word.
+            assert!(wait(context, || tagged("box:5", 5)), "the box is drawn");
+            assert!(tagged("box:5", 9) && !tagged("box:5", 10), "over the five marks and no more");
+            assert!(tagged("chip:red:late", 15) && tagged("chip:red:late", 26) && !tagged("chip:red:late", 27));
+            assert!(tagged("chip-gap", 14), "the room before the pill is in the space");
+            assert!(
+                tagged("panel:callout:chartreuse", 29) && tagged("panel:callout:chartreuse", 40) && !tagged("panel:callout:chartreuse", 45)
+            );
+            assert!(tagged("panel-top", 29) && tagged("panel-bottom", 38) && !tagged("panel-bottom", 29));
+            assert!(tagged("hidden", 29) && tagged("callout-icon", 31) && tagged("hidden", 32));
+            assert!(tagged("panel:code", 46) && tagged("panel:code", 60) && tagged("panel-top", 46) && tagged("panel-bottom:code", 61));
+            assert!(tagged("hidden", 46) && tagged("language:orange", 49) && tagged("code-body", 54) && tagged("hidden", 61));
+            assert_eq!(editor.styler.drawn().len(), 6, "a box, a chip, a callout's icon and panel, a code panel, a first line");
+
+            // The cursor in the box shows it raw, and drawn again when it leaves;
+            // on the callout's first line its marks show.
+            editor.buffer.place_cursor(&editor.iter(7));
+            assert!(wait(context, || !tagged("box:5", 5)), "raw with the cursor inside");
+            assert!(tagged("chip:red:late", 15), "the chip of the same line stays drawn");
+            editor.buffer.place_cursor(&editor.iter(20));
+            assert!(wait(context, || tagged("box:5", 5) && !tagged("chip:red:late", 15)));
+            editor.buffer.place_cursor(&editor.iter(33));
+            assert!(wait(context, || !tagged("callout-icon", 31) && !tagged("hidden", 29) && tagged("chip:red:late", 15)));
+            assert!(tagged("panel:callout:chartreuse", 29), "the panel stays");
+
+            // A click on the box is the task toggle: one step to undo, the
+            // cursor and the selection where they were, the file not written.
+            editor.buffer.select_range(&editor.iter(13), &editor.iter(11));
+            editor.click_box(5);
+            let done = format!("- [x] Buy 📅 2001-01-01 ✅ {}", Day::today());
+            assert_eq!(editor.text().lines().nth(2), Some(done.as_str()));
+            assert_eq!(editor.selection(), 11..13);
+            assert_eq!(editor.cursor(), 13);
+            assert_eq!(fs::read_to_string(vault.path().join("Note.md")).unwrap(), text, "the save is the editor's ordinary one");
+            assert!(wait(context, || tagged("chip:green:closed", 28)), "the done date is a chip, weaker on a closed task");
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text, "one undo takes the click back");
+
+            // The line is the measure, 35 em of 16 px, in the middle of the pane.
+            let pane = editor.view.hadjustment().unwrap().page_size();
+            assert!(wait(context, || editor.view.left_margin() > 32));
+            assert!((pane - 2.0 * f64::from(editor.view.left_margin()) - 560.0).abs() <= 1.0, "{pane}");
+            assert_eq!(editor.view.left_margin(), editor.view.right_margin());
+            assert!(editor.view.is_cursor_visible(), "the arrow keys move the cursor of a view that has one");
+            editor.discard();
+            window.destroy();
+        });
     }
 
     #[test]

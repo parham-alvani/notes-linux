@@ -1,7 +1,8 @@
 //! The editor's text view: a GtkSourceView that lets the editor draw under
 //! and over the text, in the buffer's coordinates. GtkTextView draws only
-//! text and the backgrounds of its tags, and its own caret in the text's
-//! colour, so what the editor draws itself is drawn here.
+//! text and the backgrounds of its tags, so a callout's panel, a chip's pill
+//! and a task's box are drawn here (`editor_draw.rs`): they are a way to see
+//! the text, never characters of the buffer.
 
 use gtk::glib;
 use gtk::subclass::prelude::*;

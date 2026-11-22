@@ -8,6 +8,7 @@ mod daftar_cli;
 mod day_picker;
 mod editor;
 mod editor_caret;
+mod editor_draw;
 mod editor_popup;
 mod editor_style;
 mod editor_view;
