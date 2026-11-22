@@ -121,7 +121,7 @@ pub use live_preview::{
 pub use markdown_format::{FormatConfig, MarkdownFormat, ProseWrap};
 pub use markdown_highlighter::{BlockState, Kind as HighlightKind, MarkdownHighlighter, Span as HighlightSpan};
 pub use markdown_lint::{LintConfig, MarkdownLint, Problem as LintProblem};
-pub use markdown_table::{MarkdownTable, TableReturn, TableTab};
+pub use markdown_table::{MarkdownTable, TableBlock, TableReturn, TableTab};
 pub use message_pack::{MessagePack, MsgFailure, MsgStream, MsgValue};
 pub use month_grid::{Calendar, Month};
 pub use neovim::{BufferMirror, MirrorEdit, NeovimClient, NeovimFailure, NeovimNotification, VimKeys, VimModifiers};

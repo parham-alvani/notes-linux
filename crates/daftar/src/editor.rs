@@ -33,8 +33,8 @@ use gtk::{gdk, glib};
 use sourceview5::prelude::*;
 
 use daftar_core::{
-    BlockState, BufferMirror, Candidate, Day, EditorCommands, HtmlMarkdown, LivePreview, MarkdownHighlighter, MarkdownTable, NoteFormat,
-    QuickSwitcher, Return, Sections, Snippet, TableReturn, TableTab, TaskSorter, Vault, VaultMoves,
+    BufferMirror, Candidate, Day, EditorCommands, HtmlMarkdown, LivePreview, MarkdownTable, NoteFormat, QuickSwitcher, Return, Sections,
+    Snippet, TaskSorter, Vault, VaultMoves,
 };
 
 #[path = "editor_link_card.rs"]
@@ -981,7 +981,7 @@ impl Editor {
             }
             gdk::Key::Return | gdk::Key::KP_Enter if plain && !shift => stop(self.on_return()),
             // In a table Shift+Return is Return: a cell never holds a line break.
-            gdk::Key::Return | gdk::Key::KP_Enter if plain && shift => stop(self.table_block().is_some() && self.on_return()),
+            gdk::Key::Return | gdk::Key::KP_Enter if plain && shift => stop(self.table_key(TableKey::Return)),
             gdk::Key::Left | gdk::Key::Right if plain && !shift => stop(self.table_arrow(key == gdk::Key::Right)),
             gdk::Key::Tab if plain && !shift => stop(self.on_tab(false)),
             gdk::Key::ISO_Left_Tab | gdk::Key::Tab if plain && shift => stop(self.on_tab(true)),
@@ -1059,22 +1059,16 @@ impl Editor {
     /// last, and on an empty last row it ends the table
     /// (`MarkdownTable::enter`): one step to undo, with the formatting.
     fn on_return(&self) -> bool {
+        // A selection in one cell does not become a line break: a cell holds none.
+        if self.table_key(TableKey::Return) {
+            return true;
+        }
         let line = self.current_line();
         let cursor = self.selection();
         if !cursor.is_empty() {
             return false;
         }
         let text = self.slice(line.clone());
-        if let Some((range, lines, row)) = self.table_block() {
-            let column = MarkdownTable::column(cursor.start - line.start, &text);
-            match MarkdownTable::enter(&lines, row, column) {
-                TableReturn::Cell(moved) => self.place_in_table(range, &moved),
-                // The row goes, and a blank line follows the table, or the
-                // next line would be a row too.
-                TableReturn::End(_) => self.replace(line.clone(), "\n", Some(line.start + 1..line.start + 1)),
-            }
-            return true;
-        }
         if cursor.start != line.end {
             return false;
         }
@@ -1095,7 +1089,7 @@ impl Editor {
     /// Tab: the next cell of a table, else list items in by four spaces.
     /// Shift+Tab: the cell before, else out.
     fn on_tab(&self, back: bool) -> bool {
-        if self.selection().is_empty() && self.table_tab(back) {
+        if self.table_key(TableKey::Tab { back }) {
             return true;
         }
         let lines = self.selected_lines();
@@ -1131,60 +1125,25 @@ impl Editor {
         self.replace(lines, &changed, Some(select));
     }
 
-    /// The rows of the table the cursor is in: their characters, their
-    /// lines, and which of them holds the cursor.
-    fn table_block(&self) -> Option<(Range<usize>, Vec<String>, usize)> {
-        let line = self.current_line();
-        if !MarkdownTable::is_row(&self.slice(line.clone())) {
-            return None;
+    /// Tab, Shift+Tab or Return in a table (`MarkdownTable::tab_key`,
+    /// `return_key`): the table formatted and the caret in the cell the
+    /// key goes to, as one step to undo. Only the lines that start with a
+    /// pipe are the table's, so the text beside it stays as it is. False
+    /// where the key is the text's own: on a line that is no row, in a
+    /// code block or the front matter, and with a selection over a pipe or
+    /// a line. The note is read only on a key in a line that starts with a pipe.
+    fn table_key(&self, key: TableKey) -> bool {
+        if !MarkdownTable::is_row(&self.slice(self.current_line())) {
+            return false;
         }
-        // A `|` line in a code block, the front matter, math or a comment is
-        // no table: its keys are the text's own, and nothing formats it.
-        // Read from the note on a key in such a line only.
-        if MarkdownHighlighter::block_state(line.start, &self.text()) != BlockState::Normal {
-            return None;
-        }
-        let at = self.buffer.iter_at_mark(&self.buffer.get_insert()).line();
-        let row_text = |line: i32| -> Option<String> {
-            let start = self.buffer.iter_at_line(line)?;
-            let mut end = start;
-            if !end.ends_line() {
-                end.forward_to_line_end();
-            }
-            Some(self.buffer.text(&start, &end, true).to_string())
+        let (text, selection) = (self.text(), self.selection());
+        let edit = match key {
+            TableKey::Tab { back } => MarkdownTable::tab_key(&text, selection, back),
+            TableKey::Return => MarkdownTable::return_key(&text, selection),
         };
-        let mut first = at;
-        while first > 0 && row_text(first - 1).is_some_and(|t| MarkdownTable::is_row(&t)) {
-            first -= 1;
-        }
-        let mut last = at;
-        while row_text(last + 1).is_some_and(|t| MarkdownTable::is_row(&t)) {
-            last += 1;
-        }
-        let lines: Vec<String> = (first..=last).filter_map(row_text).collect();
-        let start = self.buffer.iter_at_line(first)?.offset() as usize;
-        let mut end = self.buffer.iter_at_line(last)?;
-        if !end.ends_line() {
-            end.forward_to_line_end();
-        }
-        Some((start..end.offset() as usize, lines, (at - first) as usize))
-    }
-
-    fn table_tab(&self, back: bool) -> bool {
-        let Some((range, lines, row)) = self.table_block() else { return false };
-        let line = self.current_line();
-        let column = MarkdownTable::column(self.cursor() - line.start, &self.slice(line));
-        self.place_in_table(range, &MarkdownTable::tab(&lines, row, column, back));
+        let Some(edit) = edit else { return false };
+        self.replace(edit.range, &edit.text, Some(edit.selection));
         true
-    }
-
-    /// The table at characters [range] becomes [moved]'s formatted rows,
-    /// as one step to undo, with the caret at the start of the text of the
-    /// cell it names.
-    fn place_in_table(&self, range: Range<usize>, moved: &TableTab) {
-        let start = range.start + moved.lines[..moved.row].iter().map(|l| l.chars().count() + 1).sum::<usize>();
-        let cell = start + MarkdownTable::cell_start(&moved.lines[moved.row], moved.column);
-        self.replace(range, &moved.lines.join("\n"), Some(cell..cell));
     }
 
     /// Left and Right in a table drawn as a grid: at the edge of a cell's
@@ -2170,6 +2129,13 @@ fn plural(count: usize, noun: &str) -> String {
     if count == 1 { noun.to_string() } else { format!("{noun}s") }
 }
 
+/// A key that is the table's with the caret in one.
+#[derive(Debug, Clone, Copy)]
+enum TableKey {
+    Tab { back: bool },
+    Return,
+}
+
 /// The snippets of the slash menu, with today's date and this minute in them.
 /// The heading level a digit key with Ctrl+Alt asks for: 0 for plain text.
 fn heading_level(key: gdk::Key) -> Option<usize> {
@@ -2847,6 +2813,115 @@ mod tests {
             editor.click_box(persian);
             assert_eq!(editor.text(), text, "a read-only vault's text is not changed by a click");
             assert!(tagged("box", at("- [ ] Water")), "and the box is still drawn");
+            editor.discard();
+            window.destroy();
+        });
+    }
+
+    /// The fault found on the Mac, in a real view: `/tab` and Return in a
+    /// note of three paragraphs, then Tab, Shift+Tab and Return in the
+    /// cells. The table stands apart by a blank line on each side, the
+    /// placeholders are selected so typing replaces them, no paragraph
+    /// becomes a row, and one undo takes the insert back. Needs a display:
+    /// `xvfb-run -a cargo test -p daftar -- --ignored
+    /// a_table_from_the_slash_bar_keeps_the_text_beside_it`, alone.
+    #[test]
+    #[ignore = "needs a display"]
+    fn a_table_from_the_slash_bar_keeps_the_text_beside_it() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            crate::style::install();
+            let vault = tempfile::tempdir().unwrap();
+            let text = "x\n\nA first paragraph.\n\nA second paragraph.\n";
+            fs::write(vault.path().join("Note.md"), text).unwrap();
+            let index = Vault::index(vault.path(), None);
+            let store = Rc::new(VaultStore::new(vault.path().to_path_buf(), index, std::sync::Arc::new(daftar_core::SearchIndex::new())));
+            let settings = Rc::new(RefCell::new(AppSettings::of(vault.path().join("config.toml"), daftar_core::ConfigFile::TEMPLATE)));
+            let editor = Editor::new(settings, |_| {}, |_| {});
+            editor.set_store(store);
+            let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
+            window.present();
+            assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            let none = gdk::ModifierType::empty();
+            let key = |key: gdk::Key, state: gdk::ModifierType| editor.key(key, 0, state) == glib::Propagation::Stop;
+            // Keys as the view gets them: one the editor leaves alone goes
+            // into the text in place of the selection, as the view types it.
+            let typed = |letters: &str| {
+                for letter in letters.chars() {
+                    let name = match letter {
+                        '/' => "slash".to_string(),
+                        ' ' => "space".to_string(),
+                        letter => letter.to_string(),
+                    };
+                    if !key(gdk::Key::from_name(name).unwrap(), none) {
+                        editor.buffer.delete_selection(true, true);
+                        editor.buffer.insert_at_cursor(&letter.to_string());
+                    }
+                }
+            };
+            let selected = || editor.slice(editor.selection());
+            let table = "| Column | Column |\n| ------ | ------ |\n|        |        |";
+            // The `/` at the start of line 0, at its end after a space, and on the blank line under it.
+            let rest = "A first paragraph.\n\nA second paragraph.\n";
+            for (caret, lead, slashed, inserted) in [
+                (0, "", format!("/tabx\n\n{rest}"), format!("{table}\n\nx\n\n{rest}")),
+                (1, " ", format!("x /tab\n\n{rest}"), format!("x \n\n{table}\n\n{rest}")),
+                (2, "", format!("x\n/tab\n{rest}"), format!("x\n\n{table}\n\n{rest}")),
+            ] {
+                assert_eq!(editor.text(), text);
+                editor.buffer.place_cursor(&editor.iter(caret));
+                typed(lead);
+                typed("/tab");
+                assert!(
+                    wait(context, || editor.slash.is_open() && editor.slash.shown().0.as_deref() == Some("table")),
+                    "the `/` at {caret}"
+                );
+                assert!(key(gdk::Key::Return, none));
+                assert_eq!(editor.text(), inserted, "the `/` at {caret}");
+                assert_eq!(selected(), "Column", "the first header is selected");
+                // One undo takes the table and its blank lines back.
+                editor.buffer.undo();
+                assert_eq!(editor.text(), slashed, "one undo");
+                editor.buffer.redo();
+                assert_eq!(editor.text(), inserted);
+                let start = inserted.find(table).unwrap();
+                editor.buffer.select_range(&editor.iter(start + 8), &editor.iter(start + 2));
+                // What is typed takes the placeholder's place, and Tab selects the next.
+                typed("Name");
+                assert!(key(gdk::Key::Tab, none));
+                assert_eq!(selected(), "Column", "Tab selects the next placeholder");
+                typed("Age");
+                assert!(key(gdk::Key::Tab, none));
+                assert!(editor.selection().is_empty(), "an empty cell has a caret");
+                typed("Sara");
+                assert!(key(gdk::Key::Tab, none));
+                typed("7");
+                let rows = |more: &str| inserted.replace(table, &format!("| Name | Age |\n| ---- | --- |\n| Sara | 7   |{more}"));
+                // Tab past the last cell makes a row: the paragraph under the table is no row.
+                assert!(key(gdk::Key::Tab, none));
+                assert_eq!(editor.text(), rows("\n|      |     |"));
+                assert!(key(gdk::Key::ISO_Left_Tab, gdk::ModifierType::SHIFT_MASK));
+                assert_eq!(editor.text(), rows("\n|      |     |"));
+                // Return with a selection in a cell goes down and keeps the text.
+                let seven = editor.cursor();
+                editor.buffer.select_range(&editor.iter(seven + 1), &editor.iter(seven));
+                assert_eq!(selected(), "7");
+                assert!(key(gdk::Key::Return, none));
+                assert_eq!(editor.text(), rows("\n|      |     |"));
+                // Return on the last row, which is empty, ends the table: the row goes.
+                assert!(key(gdk::Key::Return, none));
+                assert_eq!(editor.text(), rows("\n\n"));
+                // In the paragraphs the keys are the text's own.
+                let paragraph = editor.text().find("A first").unwrap();
+                editor.buffer.place_cursor(&editor.iter(paragraph + 3));
+                assert!(!key(gdk::Key::Return, none) && !key(gdk::Key::Return, gdk::ModifierType::SHIFT_MASK));
+                assert_eq!(editor.text(), rows("\n\n"));
+                while editor.buffer.can_undo() {
+                    editor.buffer.undo();
+                }
+            }
             editor.discard();
             window.destroy();
         });

@@ -10,6 +10,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::editor_commands::TextEdit;
+use crate::markdown_highlighter::{BlockState, MarkdownHighlighter};
+
 static SEPARATOR_CELL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^:?-+:?$").unwrap());
 
 /// Where Tab leaves the table and the cursor.
@@ -30,9 +33,119 @@ pub enum TableReturn {
     End(Vec<String>),
 }
 
+/// The table a caret is in, in a note's text. Offsets are characters of the note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableBlock {
+    /// The table's rows, from the start of the first to the end of the
+    /// last, without the last one's line break.
+    pub range: Range<usize>,
+    /// The rows, each without its line break.
+    pub lines: Vec<String>,
+    /// Which row holds the caret, and where that row's line is.
+    pub row: usize,
+    pub line: Range<usize>,
+    /// The cell of that row the caret is in.
+    pub column: usize,
+}
+
 pub struct MarkdownTable;
 
 impl MarkdownTable {
+    /// What a header cell of a new table holds until the person types its
+    /// name: the slash bar's Table item selects the first, and Tab the next.
+    pub const PLACEHOLDER: &'static str = "Column";
+
+    /// The table [selection] is in, in the note [text]: the run of lines
+    /// that start with a pipe around the caret's line. A line with no pipe
+    /// at its start is never a row, so the text beside a table is never
+    /// taken into it. None on a line that is no row; in a code block, the
+    /// front matter, math or a comment, where a `|` line is text; and with
+    /// a selection that is not inside one cell, which is raw text.
+    pub fn block(text: &str, selection: Range<usize>) -> Option<TableBlock> {
+        let chars: Vec<char> = text.chars().collect();
+        if selection.start > selection.end || selection.end > chars.len() {
+            return None;
+        }
+        // The line that holds [at], without its line break.
+        let line_of = |at: usize| {
+            let start = chars[..at].iter().rposition(|&c| c == '\n').map_or(0, |found| found + 1);
+            let end = chars[at..].iter().position(|&c| c == '\n').map_or(chars.len(), |found| at + found);
+            start..end
+        };
+        let row_text = |line: &Range<usize>| chars[line.clone()].iter().collect::<String>();
+        let line = line_of(selection.end);
+        let current = row_text(&line);
+        if !Self::is_row(&current) || selection.start < line.start {
+            return None;
+        }
+        let inside = selection.start - line.start..selection.end - line.start;
+        if !inside.is_empty() && Self::pipes(&current).iter().any(|pipe| inside.contains(pipe)) {
+            return None;
+        }
+        if MarkdownHighlighter::block_state(line.start, text) != BlockState::Normal {
+            return None;
+        }
+        let (mut first, mut row, mut lines) = (line.start, 0, vec![current.clone()]);
+        while first > 0 {
+            let above = line_of(first - 1);
+            let above_text = row_text(&above);
+            if !Self::is_row(&above_text) {
+                break;
+            }
+            lines.insert(0, above_text);
+            first = above.start;
+            row += 1;
+        }
+        let mut last = line.end;
+        while last < chars.len() {
+            let below = line_of(last + 1);
+            let below_text = row_text(&below);
+            if !Self::is_row(&below_text) {
+                break;
+            }
+            lines.push(below_text);
+            last = below.end;
+        }
+        let column = Self::column(inside.start, &current);
+        Some(TableBlock { range: first..last, lines, row, line, column })
+    }
+
+    /// Tab, or Shift+Tab with [back], with [selection] in the note [text]:
+    /// the edit that formats the caret's table and goes to the next cell or
+    /// the one before, with a new row past the last cell. None where Tab is
+    /// not the table's key (`block`).
+    pub fn tab_key(text: &str, selection: Range<usize>, back: bool) -> Option<TextEdit> {
+        let table = Self::block(text, selection)?;
+        Some(Self::placed(&table.range, &Self::tab(&table.lines, table.row, table.column, back)))
+    }
+
+    /// Return with [selection] in the note [text]: the edit that goes to
+    /// the row below, with a new row after the last (`enter`). On an empty
+    /// last row the row goes and a blank line follows the table, or the
+    /// next line would be a row too. None where Return is not the table's key.
+    pub fn return_key(text: &str, selection: Range<usize>) -> Option<TextEdit> {
+        let table = Self::block(text, selection)?;
+        Some(match Self::enter(&table.lines, table.row, table.column) {
+            TableReturn::Cell(moved) => Self::placed(&table.range, &moved),
+            TableReturn::End(_) => {
+                TextEdit { range: table.line.clone(), text: "\n".into(), selection: table.line.start + 1..table.line.start + 1 }
+            }
+        })
+    }
+
+    /// The table at characters [range] becomes [moved]'s formatted rows,
+    /// with the caret at the start of the text of the cell it names. A
+    /// header cell that still holds the placeholder is selected whole, so
+    /// what is typed takes its place.
+    fn placed(range: &Range<usize>, moved: &TableTab) -> TextEdit {
+        let line = &moved.lines[moved.row];
+        let start = range.start + moved.lines[..moved.row].iter().map(|l| l.chars().count() + 1).sum::<usize>();
+        let cell = start + Self::cell_start(line, moved.column);
+        let placeholder = moved.row == 0 && Self::cells(line).get(moved.column).is_some_and(|text| text == Self::PLACEHOLDER);
+        let selected = if placeholder { Self::PLACEHOLDER.chars().count() } else { 0 };
+        TextEdit { range: range.clone(), text: moved.lines.join("\n"), selection: cell..cell + selected }
+    }
+
     /// The most rows under the delimiter row that are still drawn as a grid.
     pub const GRID_ROWS: usize = 200;
 

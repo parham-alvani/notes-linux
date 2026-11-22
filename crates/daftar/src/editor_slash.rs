@@ -381,16 +381,19 @@ impl Editor {
     }
 
     /// The item picked for the `/` at [slash]: its text in place of the
-    /// `/` and of what was typed after it, as one step to undo.
+    /// `/` and of what was typed after it, as one step to undo. A block
+    /// that stands apart gets a blank line between it and the text beside
+    /// it (`EditorCommands::apply_over`, which reads the note for the
+    /// lines around the `/`), and the Table item's first header is
+    /// selected, so what is typed takes its place.
     pub(super) fn apply_slash(self: &Rc<Self>, snippet: &Snippet, slash: usize) {
         let line = self.current_line();
         let at = self.cursor();
         if slash < line.start || at <= slash || at > line.end || self.slice(slash..slash + 1) != "/" {
             return;
         }
-        let edit = EditorCommands::apply_over(snippet, slash - line.start..at - line.start, &self.slice(line.clone()));
-        let shift = |range: std::ops::Range<usize>| line.start + range.start..line.start + range.end;
-        self.replace(shift(edit.range), &edit.text, Some(shift(edit.selection)));
+        let edit = EditorCommands::apply_over(snippet, slash..at, &self.text());
+        self.replace(edit.range, &edit.text, Some(edit.selection));
         self.view.grab_focus();
         if snippet.id == "link" || snippet.id == "embed" {
             self.complete_links();
