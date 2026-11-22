@@ -190,6 +190,17 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     }
     looks.add(&band);
     from_vault(&settings, "appearance.reading_line", &band);
+    let preview = adw::SwitchRow::builder()
+        .title("Link preview")
+        .subtitle("Resting the pointer on a link in the editor shows the note's first lines")
+        .active(settings.borrow().link_preview())
+        .build();
+    {
+        let write = write.clone();
+        preview.connect_active_notify(move |row| write("appearance.link_preview", Value::Bool(row.is_active())));
+    }
+    looks.add(&preview);
+    from_vault(&settings, "appearance.link_preview", &preview);
     for (key, title) in [("appearance.font", "Font"), ("appearance.code_font", "Code font")] {
         let row = adw::EntryRow::builder().title(title).show_apply_button(true).build();
         row.set_text(&settings.borrow().file.string(key).unwrap_or_default());
@@ -403,6 +414,34 @@ fn editor_group(
     }
     group.add(&bar);
     from_vault(settings, "editor.format_bar", &bar);
+    let slash = adw::SwitchRow::builder()
+        .title("Slash bar")
+        .subtitle("A / at the start of a line or after a space lists things to insert, filtered as you type")
+        .active(settings.borrow().slash_menu())
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        slash.connect_active_notify(move |row| {
+            write("editor.slash_menu", Value::Bool(row.is_active()));
+            (hooks.editor)();
+        });
+    }
+    group.add(&slash);
+    from_vault(settings, "editor.slash_menu", &slash);
+    let focus = adw::SwitchRow::builder()
+        .title("Focus mode")
+        .subtitle("Every paragraph but the cursor's is dimmed")
+        .active(settings.borrow().focus())
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        focus.connect_active_notify(move |row| {
+            write("editor.focus", Value::Bool(row.is_active()));
+            (hooks.editor)();
+        });
+    }
+    group.add(&focus);
+    from_vault(settings, "editor.focus", &focus);
     let format = adw::SwitchRow::builder()
         .title("Format on leaving")
         .subtitle("A note you typed in is formatted with daftar-cli fmt when you leave the editor, never while you type")

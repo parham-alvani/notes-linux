@@ -236,6 +236,9 @@ text_width = 35
 # many lines with a band: its strength, in percent of the accent
 # colour. 0 leaves it out, and j and k go a paragraph at a time.
 reading_line = 18
+# Resting the pointer on a [[link]] shows a small card with the note's
+# title and its first lines, in the editor.
+link_preview = true
 # Pictures from the web in a note: true shows them; false asks no site
 # for one until you click it, so opening a note tells no one.
 remote_images = true
@@ -262,6 +265,12 @@ live_preview = true
 # A bar of formats (bold, italic, highlight, code, strike, link) shows
 # over the selected text.
 format_bar = true
+# A / at the start of a line or after a space shows a list of things to
+# insert (a heading, a task, a callout, a table, today's date), filtered
+# as you type. false: a / is only a /.
+slash_menu = true
+# Focus mode: every paragraph but the cursor's is dimmed.
+focus = false
 # Ctrl+E opens the note in Neovide's own window instead of the editor.
 neovide = false
 # Format a note you typed in with daftar-cli fmt (the vault's
@@ -479,6 +488,8 @@ mod tests {
         assert_eq!(file.int("appearance.text_size"), Some(16));
         assert_eq!(file.string("appearance.code_font").as_deref(), Some("JetBrains Mono"));
         assert_eq!(file.int("appearance.reading_line"), Some(18));
+        assert_eq!(file.bool("appearance.link_preview"), Some(true));
+        assert_eq!((file.bool("editor.slash_menu"), file.bool("editor.focus")), (Some(true), Some(false)));
         assert_eq!(file.bool("git.pull_on_launch"), Some(true));
         assert_eq!(file.string("notifications.digest_time").as_deref(), Some("09:00"));
     }

@@ -156,7 +156,8 @@ impl MarkdownHighlighter {
         state
     }
 
-    fn next(line: &str, state: &BlockState, first_line: bool) -> BlockState {
+    /// The state after [line], which begins in [state]; [first_line] is the note's first.
+    pub(crate) fn next(line: &str, state: &BlockState, first_line: bool) -> BlockState {
         let trimmed = line.trim_matches([' ', '\t']);
         match state {
             BlockState::FrontMatter => {
@@ -244,6 +245,12 @@ fn fence_marker(line: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The inline code of [line], ticks and all, in characters of the line.
+pub(crate) fn inline_code(line: &str) -> Vec<Range<usize>> {
+    let l = Line { text: line, start: 0 };
+    INLINE_CODE.find_iter(line).flatten().map(|found| l.at(found.range())).collect()
 }
 
 /// Byte ranges in one line, turned into character ranges in the text.

@@ -39,6 +39,12 @@ impl Shape {
             _ => Shape::Block,
         }
     }
+
+    /// Whether the glide draws this shape itself: not the command line's,
+    /// and not insert mode's bar, which is the editor's caret.
+    pub fn drawn(self) -> bool {
+        !matches!(self, Shape::Hidden | Shape::Bar)
+    }
 }
 
 /// Hears the top line once the wheel stops.
@@ -99,11 +105,11 @@ impl Glide {
         glide
     }
 
-    /// Neovim mode began or ended: the view's own caret comes back without it.
+    /// Neovim mode began or ended. The view's own caret never shows: the
+    /// editor draws its caret (`editor_caret.rs`), which insert mode has too.
     pub fn set_on(self: &Rc<Self>, on: bool) {
         self.on.set(on);
-        self.view.set_cursor_visible(!on);
-        self.cursor.set_visible(on && self.shape.get() != Shape::Hidden);
+        self.cursor.set_visible(on && self.shape.get().drawn());
         self.drawn.set(None);
         self.scroll_to.set(None);
         if on {
@@ -124,7 +130,7 @@ impl Glide {
             if shape != Shape::Block {
                 self.cursor.add_css_class("bar");
             }
-            self.cursor.set_visible(self.on.get() && shape != Shape::Hidden);
+            self.cursor.set_visible(self.on.get() && shape.drawn());
         }
         self.follow();
     }

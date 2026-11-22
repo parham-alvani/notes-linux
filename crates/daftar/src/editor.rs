@@ -4,8 +4,11 @@
 //! go to the next cell of a table, Ctrl+B, Ctrl+I and Ctrl+Shift+H mark the
 //! selection, Ctrl+K links it, Ctrl+Return ticks the task on the line,
 //! Alt+Up and Alt+Down move lines and Ctrl+Alt+Up and Down the section, `[[`
-//! offers notes and `/` snippets, and a pasted picture is saved in the
-//! vault's attachment folder. The pictures a
+//! offers notes and `/` the slash bar (`editor_slash.rs`), a table is a grid
+//! with Tab, Shift+Tab and Return on its cells, and a pasted picture is
+//! saved in the vault's attachment folder. Focus mode dims every paragraph
+//! but the cursor's (`editor_focus.rs`), and resting the pointer on a link
+//! shows the note's first lines (`editor_link_card.rs`). The pictures a
 //! line embeds are drawn under it, and a dropped file becomes a link
 //! (`editor_media.rs`); Ctrl+Alt+X extracts the selection to a new note.
 //!
@@ -30,17 +33,25 @@ use gtk::{gdk, glib};
 use sourceview5::prelude::*;
 
 use daftar_core::{
-    BufferMirror, Candidate, Day, EditorCommands, Fuzzy, HtmlMarkdown, MarkdownTable, QuickSwitcher, Return, Sections, Snippet, TaskSorter,
-    Vault, VaultMoves,
+    BufferMirror, Candidate, Day, EditorCommands, HtmlMarkdown, LivePreview, MarkdownTable, NoteFormat, QuickSwitcher, Return, Sections,
+    Snippet, TaskSorter, Vault, VaultMoves,
 };
 
+#[path = "editor_link_card.rs"]
+mod link_card;
 #[path = "editor_media.rs"]
 pub(crate) mod media;
 #[path = "editor_problems.rs"]
 mod problems;
+#[path = "editor_slash.rs"]
+mod slash;
 
+use crate::editor_caret::Caret;
+use crate::editor_draw::Draw;
+use crate::editor_focus::Focus;
 use crate::editor_popup::{Choice, Popup};
-use crate::editor_style::Styler;
+use crate::editor_style::{Metrics, Styler};
+use crate::editor_view::EditorView;
 use crate::neovim_session::{self, Event, MenuItem, NeovimSession};
 use crate::settings::AppSettings;
 use crate::store::{VaultStore, file_in};
@@ -116,6 +127,14 @@ pub struct Editor {
     buffer: sourceview5::Buffer,
     styler: Rc<Styler>,
     popup: Rc<Popup>,
+    /// The slash bar, and where a `/` was typed since the text was last styled.
+    slash: Rc<slash::SlashBar>,
+    slash_typed: Cell<Option<usize>>,
+    /// The card of the link the pointer rests on, and what the pointer does.
+    card: Rc<link_card::Card>,
+    hover: link_card::Hover,
+    /// Focus mode's veil over every paragraph but the cursor's.
+    focus: Rc<Focus>,
     completing: Cell<Completing>,
     candidates: RefCell<Vec<Candidate>>,
     /// Where a closing bracket was put that the person did not type, so
@@ -126,6 +145,8 @@ pub struct Editor {
     restyle_soon: Cell<bool>,
     /// A cursor move waiting for the idle that tints its line.
     reveal_soon: Cell<bool>,
+    /// The pointer is over a task's box, where it is a hand.
+    over_box: Cell<bool>,
     /// The format bar over a selection, once one was shown (docs/specs/look.md).
     format_bar: RefCell<Option<gtk::Popover>>,
     /// Edits so far, and the counts of words and characters at one of them.
@@ -148,6 +169,10 @@ pub struct Editor {
     long_message: gtk::Popover,
     long_text: gtk::Label,
     glide: Rc<Glide>,
+    /// The caret in the accent, in place of the view's own.
+    caret: Rc<Caret>,
+    /// What is drawn beside the text: panels, pills, boxes and icons.
+    draw: Rc<Draw>,
     /// Over the text: Neovim's floating windows, as `vim_floats` gives them.
     stage: gtk::Overlay,
     floats: RefCell<Vec<gtk::Widget>>,
@@ -170,26 +195,27 @@ impl Editor {
         // The colors are the core highlighter's, as on the Mac.
         buffer.set_highlight_syntax(false);
         buffer.set_highlight_matching_brackets(false);
-        let view = sourceview5::View::builder()
-            .buffer(&buffer)
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .auto_indent(true)
-            .indent_width(4)
-            .tab_width(4)
-            .insert_spaces_instead_of_tabs(true)
-            .smart_backspace(true)
-            .top_margin(24)
-            .bottom_margin(240)
-            .left_margin(32)
-            .right_margin(32)
-            .css_classes(["daftar-editor"])
-            .build();
-        // A clamp that scrolls its child, so the view can keep the cursor in sight.
-        let clamp = adw::ClampScrollable::builder().maximum_size(860).tightening_threshold(860).child(&view).build();
+        // A view of our own, which draws the panels, the pills and the boxes
+        // under and over the text (`editor_draw.rs`).
+        let canvas = EditorView::new(&buffer);
+        let view: sourceview5::View = canvas.clone().upcast();
+        view.set_wrap_mode(gtk::WrapMode::WordChar);
+        view.set_auto_indent(true);
+        view.set_indent_width(4);
+        view.set_tab_width(4);
+        view.set_insert_spaces_instead_of_tabs(true);
+        view.set_smart_backspace(true);
+        view.set_top_margin(24);
+        view.set_bottom_margin(240);
+        view.set_left_margin(32);
+        view.set_right_margin(32);
+        view.add_css_class("daftar-editor");
+        // The view is as wide as the pane, so the margin's marks stay at the
+        // pane's edge; the line's width is the view's own margins (`measure`).
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
-            .child(&clamp)
+            .child(&view)
             .css_classes(["daftar-page"])
             .build();
         let mode_label = gtk::Label::builder().use_markup(true).visible(false).build();
@@ -229,11 +255,34 @@ impl Editor {
         let font_css = gtk::CssProvider::new();
         #[expect(deprecated, reason = "GTK has no other way to give one view its own font")]
         view.style_context().add_provider(&font_css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        let styler = Styler::new(buffer.upcast_ref());
+        let draw = Draw::new(&styler);
+        let caret = Caret::new(&view);
+        let focus = Focus::new(view.upcast_ref());
+        {
+            // Over the text: focus mode's veil over all that is drawn, then
+            // the caret last, with nothing on it.
+            let (draw, caret, styler, focus) = (draw.clone(), caret.clone(), styler.clone(), focus.clone());
+            canvas.set_painter(move |view, layer, snapshot| {
+                draw.paint(view, layer, snapshot);
+                if layer == gtk::TextViewLayer::AboveText {
+                    focus.paint(view, snapshot, &crate::editor_style::rgba("background", 1.0, styler.is_dark()));
+                    caret.paint(snapshot, &crate::editor_style::rgba("accent", 1.0, styler.is_dark()));
+                }
+            });
+        }
         let editor = Rc::new(Editor {
             widget,
-            styler: Styler::new(buffer.upcast_ref()),
+            styler,
+            draw,
             popup: Popup::new(&view),
+            slash: slash::SlashBar::new(&view),
+            slash_typed: Cell::new(None),
+            card: link_card::Card::new(&view),
+            hover: link_card::Hover::default(),
+            focus,
             glide: Glide::new(&view),
+            caret,
             stage,
             floats: RefCell::new(Vec::new()),
             float_css: {
@@ -251,6 +300,7 @@ impl Editor {
             dirty: Cell::new(None),
             restyle_soon: Cell::new(false),
             reveal_soon: Cell::new(false),
+            over_box: Cell::new(false),
             format_bar: RefCell::new(None),
             text_version: Cell::new(0),
             counted: Cell::new(None),
@@ -280,8 +330,10 @@ impl Editor {
         editor.connect_buffer();
         editor.connect_keys();
         editor.connect_clicks();
+        editor.connect_card();
         editor.connect_drop();
         editor.styler.attach(editor.view.upcast_ref());
+        editor.connect_measure();
         editor.connect_pictures();
         let this = Rc::downgrade(&editor);
         editor.glide.connect_wheel_stopped(move |top| {
@@ -312,8 +364,9 @@ impl Editor {
         let Some(file) = file_in(path, root) else { return false };
         let Ok(text) = fs::read_to_string(&file) else { return false };
         self.cancel_pending();
-        self.popup.close();
-        self.completing.set(Completing::Nothing);
+        self.stop_completion();
+        self.slash_typed.set(None);
+        self.close_card();
         self.auto_closed.set(None);
         self.apply_fonts();
         self.buffer.begin_irreversible_action();
@@ -321,11 +374,14 @@ impl Editor {
         self.buffer.end_irreversible_action();
         self.buffer.set_modified(false);
         self.dirty.set(None);
+        // Another text: focus mode's paragraph is found anew, once the cursor is placed.
+        self.focus.forget();
         self.styler.restyle_all();
         *self.open.borrow_mut() = Some(Open { path: path.to_string(), file, on_disk: text.clone(), loaded: text });
         self.refresh_marks();
         let line = line.unwrap_or(0);
         self.go_to_line(line);
+        self.focus.follow(None);
         self.update_counts();
         let vim = self.settings.borrow().file.bool("editor.vim_mode").unwrap_or(false);
         if vim {
@@ -498,9 +554,11 @@ impl Editor {
             open.on_disk.clone_from(&text);
             open.loaded = text;
         }
+        self.focus.forget();
         if let Some(at) = self.buffer.iter_at_line(line as i32) {
             self.buffer.place_cursor(&at);
         }
+        self.focus.follow(None);
         self.refresh_marks();
     }
 
@@ -594,10 +652,108 @@ impl Editor {
         self.styler.set_code_font(&code);
         self.styler.set_live(settings.file.bool("editor.live_preview").unwrap_or(true));
         self.styler.set_soft(settings.soft_palette());
+        self.focus.set_on(settings.focus());
         // Line height 1.65, as the reader's: the space between lines and between wrapped rows.
         let gap = (size as f64 * 0.65).round() as i32;
         self.view.set_pixels_below_lines(gap);
         self.view.set_pixels_inside_wrap(gap / 2);
+        drop(settings);
+        self.measure();
+    }
+
+    /// The settings changed (the text size, the measure, a font, live
+    /// preview): the note open follows them now, not at the next one.
+    pub fn settings_changed(&self) {
+        if self.open.borrow().is_some() {
+            self.apply_fonts();
+        }
+    }
+
+    /// The editor's line is the reader's measure (`appearance.text_width` em
+    /// of the text size) in the middle of the pane: the view's margins are
+    /// the room at each side, and the panels' looks follow them. Worked out
+    /// when the pane's width, the text size or the setting changes, never on
+    /// a key, and never while the view lays itself out.
+    fn measure(&self) {
+        let (size, width) = {
+            let settings = self.settings.borrow();
+            (settings.text_size() as f64, settings.text_width() as f64)
+        };
+        // The pane without the margin's marks: the room for text.
+        let pane = self.view.hadjustment().map_or(0.0, |h| h.page_size());
+        let room = if pane > 1.0 { LivePreview::measure(pane, size, width).room.floor() as i32 } else { 32 };
+        if self.view.left_margin() != room {
+            self.view.set_left_margin(room);
+            self.view.set_right_margin(room);
+        }
+        let bracket = f64::from(self.view.create_pango_layout(Some("[")).pixel_size().0);
+        // A table is a grid while its widest line fits the measure, in the code font.
+        let letters = self.view.create_pango_layout(Some(&"0".repeat(20)));
+        let mut face = self.view.pango_context().font_description().unwrap_or_default();
+        face.set_family(&self.styler.code_font());
+        letters.set_font_description(Some(&face));
+        let mono = f64::from(letters.pixel_size().0) / 20.0;
+        let line = if pane > 1.0 { pane - 2.0 * f64::from(room) } else { 0.0 };
+        self.styler.set_metrics(Metrics { size, room, bracket, line, mono });
+    }
+
+    /// The measure follows the pane's width, and the late chips the day.
+    fn connect_measure(self: &Rc<Self>) {
+        if let Some(h) = self.view.hadjustment() {
+            let this = Rc::downgrade(self);
+            h.connect_page_size_notify(move |_| {
+                let this = this.clone();
+                glib::idle_add_local_once(move || {
+                    if let Some(this) = this.upgrade() {
+                        this.measure();
+                    }
+                });
+            });
+        }
+        // "Today" is looked at once a minute, never on a key.
+        let this = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(60, move || match this.upgrade() {
+            Some(this) => {
+                this.styler.follow_day();
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        });
+    }
+
+    /// A click on the box of the task whose marks start at [offset]: the
+    /// line becomes what the task toggle makes of it (Ctrl+Return), as one
+    /// step to undo. The caret stays on its text and the page where it is;
+    /// in Neovim mode the change of those lines is sent to Neovim, and a
+    /// read-only vault's text is not changed.
+    fn click_box(&self, offset: usize) {
+        let read_only = self.store.borrow().as_ref().is_some_and(|store| daftar_core::VaultEdits::writable(&store.root).is_err());
+        if read_only {
+            return;
+        }
+        let at = self.iter(offset);
+        let mut start = at;
+        start.set_line_offset(0);
+        let mut end = at;
+        if !end.ends_line() {
+            end.forward_to_line_end();
+        }
+        let range = start.offset() as usize..end.offset() as usize;
+        let Some(lines) = LivePreview::click(&self.slice(range.clone()), Day::today()) else { return };
+        if let Some(vim) = self.vim.borrow().as_ref() {
+            let (line, expected) = (at.line().max(0) as usize, NoteFormat::lines(&self.text()).join("\n"));
+            // Neovim answers with its own lines event; nothing waits for it here.
+            drop(vim.session.replace_lines(&expected, line..line + 1, lines));
+            return;
+        }
+        let place =
+            |mark: &gtk::TextMark| LivePreview::caret_after_click(self.buffer.iter_at_mark(mark).offset().max(0) as usize, &range, &lines);
+        let (insert, bound) = (place(&self.buffer.get_insert()), place(&self.buffer.selection_bound()));
+        self.buffer.begin_user_action();
+        self.buffer.delete(&mut start, &mut end);
+        self.buffer.insert(&mut self.iter(range.start), &lines.join("\n"));
+        self.buffer.end_user_action();
+        self.buffer.select_range(&self.iter(insert), &self.iter(bound));
     }
 
     fn connect_buffer(self: &Rc<Self>) {
@@ -660,6 +816,8 @@ impl Editor {
                 |(a, b)| (a.offset() as usize, b.offset() as usize),
             );
             this.styler.reveal((a, b));
+            this.focus.follow(None);
+            this.slash_follows_caret();
             this.update_counts();
             this.show_format_bar();
         });
@@ -745,8 +903,17 @@ impl Editor {
             this.restyle_soon.set(false);
             if let Some((start, end)) = this.dirty.take() {
                 this.styler.restyle_after(start..end);
+                // Focus mode's paragraph is looked at again only where the text changed.
+                if this.focus.is_on() {
+                    let total = this.buffer.char_count().max(0) as usize;
+                    let line = |offset: usize| this.iter(offset.min(total)).line();
+                    this.focus.follow(Some(line(start)..line(end)));
+                }
             }
             this.update_counts();
+            if let Some(slash) = this.slash_typed.take() {
+                this.maybe_slash_bar(slash);
+            }
             this.follow_completion();
             this.refresh_pictures();
         });
@@ -794,8 +961,13 @@ impl Editor {
         let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
         let alt = state.contains(gdk::ModifierType::ALT_MASK);
         let super_ = state.contains(gdk::ModifierType::SUPER_MASK);
+        // A key closes the link's card, and typing under a still pointer opens none.
+        self.typed_under_pointer();
         if self.vim.borrow().is_some() {
             return self.vim_key(key, keycode, control, alt, super_, shift);
+        }
+        if !super_ && self.slash_key(key, control, alt, shift) {
+            return glib::Propagation::Stop;
         }
         if !control && !alt && self.popup.key(key) {
             return glib::Propagation::Stop;
@@ -808,6 +980,9 @@ impl Editor {
                 glib::Propagation::Stop
             }
             gdk::Key::Return | gdk::Key::KP_Enter if plain && !shift => stop(self.on_return()),
+            // In a table Shift+Return is Return: a cell never holds a line break.
+            gdk::Key::Return | gdk::Key::KP_Enter if plain && shift => stop(self.table_key(TableKey::Return)),
+            gdk::Key::Left | gdk::Key::Right if plain && !shift => stop(self.table_arrow(key == gdk::Key::Right)),
             gdk::Key::Tab if plain && !shift => stop(self.on_tab(false)),
             gdk::Key::ISO_Left_Tab | gdk::Key::Tab if plain && shift => stop(self.on_tab(true)),
             gdk::Key::Up | gdk::Key::Down if alt && !control && shift => {
@@ -879,42 +1054,23 @@ impl Editor {
         }
     }
 
-    /// Return continues a list, and on an empty item ends it; at the end of
-    /// a table row it makes a new row, and on an empty last row ends the table.
+    /// Return continues a list, and on an empty item ends it. In a table it
+    /// goes to the same column of the row below, with a new row after the
+    /// last, and on an empty last row it ends the table
+    /// (`MarkdownTable::enter`): one step to undo, with the formatting.
     fn on_return(&self) -> bool {
+        // A selection in one cell does not become a line break: a cell holds none.
+        if self.table_key(TableKey::Return) {
+            return true;
+        }
         let line = self.current_line();
         let cursor = self.selection();
         if !cursor.is_empty() {
             return false;
         }
         let text = self.slice(line.clone());
-        // In a table row Return goes to a new row from any cell, as Tab
-        // leaves the cursor inside one; elsewhere only at the line's end.
-        let table = self.table_block();
-        if table.is_none() && cursor.start != line.end {
+        if cursor.start != line.end {
             return false;
-        }
-        // Return on the table's empty last row ends the table: the row goes,
-        // and a blank line follows it, or the next line would be a row too.
-        if let Some((_, lines, row)) = &table
-            && MarkdownTable::cells(&text).iter().all(|cell| cell.trim().is_empty())
-            && *row + 1 == lines.len()
-            && *row > 0
-        {
-            self.replace(line.clone(), "\n", Some(line.start + 1..line.start + 1));
-            return true;
-        }
-        if let Some((range, lines, row)) = table
-            && !MarkdownTable::cells(&text).iter().all(String::is_empty)
-        {
-            let formatted = MarkdownTable::new_row(&lines[..=row]);
-            let replaced = range.start..line.end;
-            let joined = formatted.join("\n");
-            let last = formatted.last().unwrap();
-            let start = replaced.start + joined.chars().count() - last.chars().count();
-            let cell = start + MarkdownTable::cell_start(last, 0);
-            self.replace(replaced, &joined, Some(cell..cell));
-            return true;
         }
         match EditorCommands::on_return(&text) {
             Some(Return::Insert(insert)) => {
@@ -933,7 +1089,7 @@ impl Editor {
     /// Tab: the next cell of a table, else list items in by four spaces.
     /// Shift+Tab: the cell before, else out.
     fn on_tab(&self, back: bool) -> bool {
-        if self.selection().is_empty() && self.table_tab(back) {
+        if self.table_key(TableKey::Tab { back }) {
             return true;
         }
         let lines = self.selected_lines();
@@ -969,48 +1125,62 @@ impl Editor {
         self.replace(lines, &changed, Some(select));
     }
 
-    /// The rows of the table the cursor is in: their characters, their
-    /// lines, and which of them holds the cursor.
-    fn table_block(&self) -> Option<(Range<usize>, Vec<String>, usize)> {
-        let line = self.current_line();
-        if !MarkdownTable::is_row(&self.slice(line)) {
-            return None;
+    /// Tab, Shift+Tab or Return in a table (`MarkdownTable::tab_key`,
+    /// `return_key`): the table formatted and the caret in the cell the
+    /// key goes to, as one step to undo. Only the lines that start with a
+    /// pipe are the table's, so the text beside it stays as it is. False
+    /// where the key is the text's own: on a line that is no row, in a
+    /// code block or the front matter, and with a selection over a pipe or
+    /// a line. The note is read only on a key in a line that starts with a pipe.
+    fn table_key(&self, key: TableKey) -> bool {
+        if !MarkdownTable::is_row(&self.slice(self.current_line())) {
+            return false;
         }
-        let at = self.buffer.iter_at_mark(&self.buffer.get_insert()).line();
-        let row_text = |line: i32| -> Option<String> {
-            let start = self.buffer.iter_at_line(line)?;
-            let mut end = start;
-            if !end.ends_line() {
-                end.forward_to_line_end();
-            }
-            Some(self.buffer.text(&start, &end, true).to_string())
+        let (text, selection) = (self.text(), self.selection());
+        let edit = match key {
+            TableKey::Tab { back } => MarkdownTable::tab_key(&text, selection, back),
+            TableKey::Return => MarkdownTable::return_key(&text, selection),
         };
-        let mut first = at;
-        while first > 0 && row_text(first - 1).is_some_and(|t| MarkdownTable::is_row(&t)) {
-            first -= 1;
-        }
-        let mut last = at;
-        while row_text(last + 1).is_some_and(|t| MarkdownTable::is_row(&t)) {
-            last += 1;
-        }
-        let lines: Vec<String> = (first..=last).filter_map(row_text).collect();
-        let start = self.buffer.iter_at_line(first)?.offset() as usize;
-        let mut end = self.buffer.iter_at_line(last)?;
-        if !end.ends_line() {
-            end.forward_to_line_end();
-        }
-        Some((start..end.offset() as usize, lines, (at - first) as usize))
+        let Some(edit) = edit else { return false };
+        self.replace(edit.range, &edit.text, Some(edit.selection));
+        true
     }
 
-    fn table_tab(&self, back: bool) -> bool {
-        let Some((range, lines, row)) = self.table_block() else { return false };
+    /// Left and Right in a table drawn as a grid: at the edge of a cell's
+    /// text the caret goes to the next cell's text, over the pipe and the
+    /// padding, which are not drawn. Elsewhere, and in a line with
+    /// right-to-left text, where the arrows go by what is seen, the key is
+    /// the view's own.
+    fn table_arrow(&self, right: bool) -> bool {
+        let at = self.cursor();
+        if !self.selection().is_empty() || !self.styler.in_grid(at) {
+            return false;
+        }
         let line = self.current_line();
-        let column = MarkdownTable::column(self.cursor() - line.start, &self.slice(line));
-        let moved = MarkdownTable::tab(&lines, row, column, back);
-        let start = range.start + moved.lines[..moved.row].iter().map(|l| l.chars().count() + 1).sum::<usize>();
-        let cell = start + MarkdownTable::cell_start(&moved.lines[moved.row], moved.column);
-        self.replace(range, &moved.lines.join("\n"), Some(cell..cell));
+        let text = self.slice(line.clone());
+        if daftar_core::text::direction::contains_rtl(&text) {
+            return false;
+        }
+        let place = if right { MarkdownTable::right(&text, at - line.start) } else { MarkdownTable::left(&text, at - line.start) };
+        let Some(place) = place else { return false };
+        self.buffer.place_cursor(&self.iter(line.start + place));
+        self.view.scroll_mark_onscreen(&self.buffer.get_insert());
         true
+    }
+
+    /// A click in a table drawn as a grid puts the caret at the nearest
+    /// place in the cell's text, never in the padding or on a pipe, which
+    /// are not drawn; in an empty cell, between its two padding spaces.
+    fn click_in_grid(&self) {
+        let at = self.cursor();
+        if !self.selection().is_empty() || !self.styler.in_grid(at) {
+            return;
+        }
+        let line = self.current_line();
+        let place = line.start + MarkdownTable::nearest(&self.slice(line.clone()), at - line.start);
+        if place != at {
+            self.buffer.place_cursor(&self.iter(place));
+        }
     }
 
     fn move_lines(&self, up: bool) {
@@ -1144,13 +1314,9 @@ impl Editor {
             return true;
         }
         if typed == '/' {
-            // After the slash is in, so it is on screen under the list.
-            let this = Rc::downgrade(self);
-            glib::idle_add_local_once(move || {
-                if let Some(this) = this.upgrade() {
-                    this.maybe_slash_menu();
-                }
-            });
+            // Looked at once the slash is in the text and styled, so it is
+            // on screen under the list. A pasted `/` never comes here.
+            self.slash_typed.set(Some(at));
             return false;
         }
         let Some(close) = Self::closing(typed) else {
@@ -1218,14 +1384,6 @@ impl Editor {
         self.follow_completion();
     }
 
-    fn maybe_slash_menu(self: &Rc<Self>) {
-        let at = self.cursor();
-        if EditorCommands::opens_slash_menu(&self.text(), at) {
-            self.completing.set(Completing::Slash(at - 1));
-            self.follow_completion();
-        }
-    }
-
     /// The list at the cursor, for what is typed now; closed when the cursor
     /// left the `[[` or the `/`.
     fn follow_completion(self: &Rc<Self>) {
@@ -1245,34 +1403,10 @@ impl Editor {
                     })
                     .collect::<Vec<_>>()
             }
-            Completing::Slash(slash) => {
-                let at = self.cursor();
-                if at <= slash || self.slice(slash..slash + 1) != "/" {
-                    return self.stop_completion();
-                }
-                let typed = self.slice(slash + 1..at);
-                if typed.chars().any(char::is_whitespace) {
-                    return self.stop_completion();
-                }
-                let mut found: Vec<(i64, usize, Choice)> = slash_snippets()
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(order, snippet)| {
-                        let hit = Fuzzy::matches(&typed, &snippet.title)?;
-                        let choice = Choice {
-                            title: glib::markup_escape_text(&snippet.title).into(),
-                            subtitle: snippet.group.clone(),
-                            value: snippet.id.clone(),
-                        };
-                        Some((hit.score, order, choice))
-                    })
-                    .collect();
-                found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-                found.into_iter().map(|(_, _, choice)| choice).collect()
-            }
+            Completing::Slash(slash) => return self.follow_slash(slash),
         };
-        // Nothing matches what is typed yet: no list, but the `[[` or the `/`
-        // still listens, as more is typed.
+        // Nothing matches what is typed yet: no list, but the `[[` still
+        // listens, as more is typed.
         if choices.is_empty() {
             self.popup.close();
             return;
@@ -1283,10 +1417,8 @@ impl Editor {
         self.popup.show(self.cursor_rectangle(), below, choices, move |choice| {
             if let Some(this) = this.upgrade() {
                 this.completing.set(Completing::Nothing);
-                match kind {
-                    Completing::Link => this.insert_completion(&choice.value),
-                    Completing::Slash(slash) => this.apply_slash(&choice.value, slash),
-                    Completing::Nothing => {}
+                if kind == Completing::Link {
+                    this.insert_completion(&choice.value);
                 }
             }
         });
@@ -1295,6 +1427,7 @@ impl Editor {
     fn stop_completion(&self) {
         self.completing.set(Completing::Nothing);
         self.popup.close();
+        self.slash.close();
     }
 
     /// The note picked for `[[`: its name, or its path when another note has
@@ -1310,26 +1443,6 @@ impl Editor {
             self.buffer.place_cursor(&self.iter(end + 2));
         }
         self.view.grab_focus();
-    }
-
-    /// The snippet picked for the `/` at [slash], in its place, as one step.
-    fn apply_slash(self: &Rc<Self>, id: &str, slash: usize) {
-        let Some(snippet) = slash_snippets().into_iter().find(|s| s.id == id) else { return };
-        if self.slice(slash..slash + 1) != "/" {
-            return;
-        }
-        // What was typed after the slash to find it goes with the slash.
-        let typed_end = self.cursor().max(slash + 1);
-        self.buffer.begin_user_action();
-        let (mut start, mut end) = (self.iter(slash + 1), self.iter(typed_end));
-        self.buffer.delete(&mut start, &mut end);
-        let edit = EditorCommands::apply(&snippet, slash, &self.text());
-        self.replace(edit.range, &edit.text, Some(edit.selection));
-        self.buffer.end_user_action();
-        self.view.grab_focus();
-        if snippet.id == "link" || snippet.id == "embed" {
-            self.complete_links();
-        }
     }
 
     // Pasting
@@ -1496,6 +1609,7 @@ impl Editor {
             Some(Vim { session, mirror: None, mode: "n".into(), start_line: line, save_soon: None, wheel_top: None, command: false });
         self.glide.set_on(true);
         self.glide.set_shape(Shape::Block);
+        self.caret.set_on(false);
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
         self.set_bar("NEOVIM", "Starting Neovim…");
@@ -1521,6 +1635,7 @@ impl Editor {
         self.buffer.remove_tag(&self.block_tag, &self.buffer.start_iter(), &self.buffer.end_iter());
         self.view.set_overwrite(false);
         self.glide.set_on(false);
+        self.caret.set_on(true);
         self.draw_floats(&crate::vim_floats::Floats::default());
         self.popup.close();
         self.long_message.popdown();
@@ -1594,7 +1709,8 @@ impl Editor {
         let scale = f64::from(gtk::pango::SCALE);
         let line = f64::from(metrics.ascent() + metrics.descent()) / scale + f64::from(self.view.pixels_below_lines());
         let width = f64::from(metrics.approximate_char_width()) / scale;
-        let (height, across) = (f64::from(self.view.height()), f64::from(self.view.width()) - 64.0);
+        let (height, across) =
+            (f64::from(self.view.height()), f64::from(self.view.width() - self.view.left_margin() - self.view.right_margin()));
         if height < 1.0 || line < 1.0 || width < 1.0 {
             return (40, 100);
         }
@@ -1753,8 +1869,10 @@ impl Editor {
                 self.buffer.place_cursor(&self.iter(cursor));
             }
         }
-        // A block cursor in normal mode, a bar while inserting, gliding there.
+        // A block cursor in normal mode, gliding there; while inserting, the
+        // editor's own caret.
         self.glide.set_shape(Shape::of(&mode));
+        self.caret.set_on(Shape::of(&mode) == Shape::Bar);
         self.glide.cursor_moved();
         let name = neovim_session::mode_name(&mode);
         if let Some(vim) = self.vim.borrow_mut().as_mut() {
@@ -1891,8 +2009,66 @@ impl Editor {
         if daftar_core::text::direction::first_strong(&line) == Some(true) { swapped } else { key }
     }
 
-    /// A click moves Neovim's cursor where it landed.
+    /// A click on a task's box changes its status, and never moves the
+    /// caret or the focus: the gesture is before the view's own and keeps
+    /// the click from it. With Shift, Ctrl, Alt or Super it is a click in
+    /// the text. The pointer is a hand over a box. Any other click moves
+    /// Neovim's cursor where it landed.
     fn connect_clicks(self: &Rc<Self>) {
+        let on_box = gtk::GestureClick::builder().button(gdk::BUTTON_PRIMARY).propagation_phase(gtk::PropagationPhase::Capture).build();
+        let this = Rc::downgrade(self);
+        on_box.connect_pressed(move |gesture, _, x, y| {
+            let Some(this) = this.upgrade() else { return };
+            let keys = gdk::ModifierType::SHIFT_MASK
+                | gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::ALT_MASK
+                | gdk::ModifierType::SUPER_MASK;
+            // A click outside the link's card closes it.
+            this.close_card();
+            if gesture.current_event_state().intersects(keys) {
+                return;
+            }
+            let (bx, by) = this.view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+            if let Some(offset) = this.draw.box_at(this.view.upcast_ref(), bx, by) {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                this.click_box(offset.max(0) as usize);
+            }
+        });
+        self.view.add_controller(on_box);
+        let pointer = gtk::EventControllerMotion::new();
+        let this = Rc::downgrade(self);
+        let over = move |place: Option<(f64, f64)>| {
+            let Some(this) = this.upgrade() else { return };
+            let on = place.and_then(|(x, y)| {
+                let (bx, by) = this.view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+                this.draw.box_at(this.view.upcast_ref(), bx, by)
+            });
+            if this.draw.set_hover(on) {
+                this.view.queue_draw();
+            }
+            if this.over_box.replace(on.is_some()) != on.is_some() {
+                this.view.set_cursor_from_name(Some(if on.is_some() { "pointer" } else { "text" }));
+            }
+        };
+        let over = Rc::new(over);
+        {
+            let (over, this) = (over.clone(), Rc::downgrade(self));
+            pointer.connect_motion(move |pointer, x, y| {
+                over(Some((x, y)));
+                if let Some(this) = this.upgrade() {
+                    let buttons = gdk::ModifierType::BUTTON1_MASK | gdk::ModifierType::BUTTON2_MASK | gdk::ModifierType::BUTTON3_MASK;
+                    this.hover_link(Some((x, y)), pointer.current_event_state().intersects(buttons));
+                }
+            });
+        }
+        let this = Rc::downgrade(self);
+        pointer.connect_leave(move |_| {
+            over(None);
+            if let Some(this) = this.upgrade() {
+                this.hover_link(None, false);
+            }
+        });
+        self.view.add_controller(pointer);
         let click = gtk::GestureClick::new();
         let this = Rc::downgrade(self);
         click.connect_released(move |_, _, _, _| {
@@ -1900,6 +2076,9 @@ impl Editor {
             let this = Rc::downgrade(&this);
             glib::idle_add_local_once(move || {
                 let Some(this) = this.upgrade() else { return };
+                if this.vim.borrow().is_none() {
+                    this.click_in_grid();
+                }
                 let vim = this.vim.borrow();
                 let Some(vim) = vim.as_ref() else { return };
                 let Some(mirror) = vim.mirror.as_ref() else { return };
@@ -1948,6 +2127,13 @@ impl Editor {
 /// [noun] for [count] of it: "1 word", "2 words".
 fn plural(count: usize, noun: &str) -> String {
     if count == 1 { noun.to_string() } else { format!("{noun}s") }
+}
+
+/// A key that is the table's with the caret in one.
+#[derive(Debug, Clone, Copy)]
+enum TableKey {
+    Tab { back: bool },
+    Return,
 }
 
 /// The snippets of the slash menu, with today's date and this minute in them.
@@ -2082,6 +2268,752 @@ mod tests {
         assert_eq!(write_if_unchanged(&file, "two\n", "mine\n"), Saved::ChangedOnDisk);
         assert_eq!(fs::read_to_string(&file).unwrap(), "three\n");
         assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
+    }
+
+    /// Live preview's drawn parts in a real view (docs/specs/look.md, part
+    /// 2): the tags the drawing follows, a part raw with the cursor in it,
+    /// the click on a box, and the measure. Needs a display: `xvfb-run -a
+    /// cargo test -p daftar -- --ignored live_preview_draws`, alone, as GTK
+    /// keeps to the thread that started it.
+    #[test]
+    #[ignore = "needs a display"]
+    fn live_preview_draws_the_parts_and_a_click_is_the_toggle() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            crate::style::install();
+            let vault = tempfile::tempdir().unwrap();
+            // The task's line starts at 5, the callout at 29, the code block at 46.
+            let text = "# T\n\n- [ ] Buy 📅 2001-01-01\n\n> [!tip]\n> body\n\n```Rust\nlet a;\n```\n";
+            fs::write(vault.path().join("Note.md"), text).unwrap();
+            let settings = AppSettings::of(vault.path().join("config.toml"), daftar_core::ConfigFile::TEMPLATE);
+            let editor = Editor::new(Rc::new(RefCell::new(settings)), |_| {}, |_| {});
+            let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
+            window.present();
+            assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            let tagged =
+                |name: &str, at: usize| editor.iter(at).tags().iter().any(|tag| tag.name().is_some_and(|n| n == format!("daftar:{name}")));
+
+            // Each part has its tag: the box over `- [ ]`, the late chip, the
+            // callout's panel with its icon where `[` is, the code block's
+            // panel with its fence hidden and its language word.
+            assert!(wait(context, || tagged("box:5", 5)), "the box is drawn");
+            assert!(tagged("box:5", 9) && !tagged("box:5", 10), "over the five marks and no more");
+            assert!(tagged("chip:red:late", 15) && tagged("chip:red:late", 26) && !tagged("chip:red:late", 27));
+            assert!(tagged("chip-gap", 14), "the room before the pill is in the space");
+            assert!(
+                tagged("panel:callout:chartreuse", 29) && tagged("panel:callout:chartreuse", 40) && !tagged("panel:callout:chartreuse", 45)
+            );
+            assert!(tagged("panel-top", 29) && tagged("panel-bottom", 38) && !tagged("panel-bottom", 29));
+            assert!(tagged("hidden", 29) && tagged("callout-icon", 31) && tagged("hidden", 32));
+            assert!(tagged("panel:code", 46) && tagged("panel:code", 60) && tagged("panel-top", 46) && tagged("panel-bottom:code", 61));
+            assert!(tagged("hidden", 46) && tagged("language:orange", 49) && tagged("code-body", 54) && tagged("hidden", 61));
+            assert_eq!(editor.styler.drawn().len(), 6, "a box, a chip, a callout's icon and panel, a code panel, a first line");
+
+            // The cursor in the box shows it raw, and drawn again when it leaves;
+            // on the callout's first line its marks show.
+            editor.buffer.place_cursor(&editor.iter(7));
+            assert!(wait(context, || !tagged("box:5", 5)), "raw with the cursor inside");
+            assert!(tagged("chip:red:late", 15), "the chip of the same line stays drawn");
+            editor.buffer.place_cursor(&editor.iter(20));
+            assert!(wait(context, || tagged("box:5", 5) && !tagged("chip:red:late", 15)));
+            editor.buffer.place_cursor(&editor.iter(33));
+            assert!(wait(context, || !tagged("callout-icon", 31) && !tagged("hidden", 29) && tagged("chip:red:late", 15)));
+            assert!(tagged("panel:callout:chartreuse", 29), "the panel stays");
+
+            // A click on the box is the task toggle: one step to undo, the
+            // cursor and the selection where they were, the file not written.
+            editor.buffer.select_range(&editor.iter(13), &editor.iter(11));
+            editor.click_box(5);
+            let done = format!("- [x] Buy 📅 2001-01-01 ✅ {}", Day::today());
+            assert_eq!(editor.text().lines().nth(2), Some(done.as_str()));
+            assert_eq!(editor.selection(), 11..13);
+            assert_eq!(editor.cursor(), 13);
+            assert_eq!(fs::read_to_string(vault.path().join("Note.md")).unwrap(), text, "the save is the editor's ordinary one");
+            assert!(wait(context, || tagged("chip:green:closed", 28)), "the done date is a chip, weaker on a closed task");
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text, "one undo takes the click back");
+
+            // The line is the measure, 35 em of 16 px, in the middle of the pane.
+            let pane = editor.view.hadjustment().unwrap().page_size();
+            assert!(wait(context, || editor.view.left_margin() > 32));
+            assert!((pane - 2.0 * f64::from(editor.view.left_margin()) - 560.0).abs() <= 1.0, "{pane}");
+            assert_eq!(editor.view.left_margin(), editor.view.right_margin());
+            assert!(editor.view.is_cursor_visible(), "the arrow keys move the cursor of a view that has one");
+            editor.discard();
+            window.destroy();
+        });
+    }
+
+    /// The table's grid and its keys, the slash bar, focus mode and the
+    /// link preview in a real view (docs/specs/look.md, part 2). Needs a
+    /// display: `xvfb-run -a cargo test -p daftar -- --ignored
+    /// the_grid_the_slash_bar`, alone, as GTK keeps to the thread that
+    /// started it.
+    #[test]
+    #[ignore = "needs a display"]
+    fn the_grid_the_slash_bar_focus_mode_and_the_link_card_in_a_view() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            crate::style::install();
+            let vault = tempfile::tempdir().unwrap();
+            let text = "Intro with [[Plan#Next|the plan]] and [[Nowhere]].\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n\nlast\n\n| X | Y |\n| --- | --- |\n| **b** | c |\n";
+            fs::write(vault.path().join("Note.md"), text).unwrap();
+            fs::create_dir_all(vault.path().join("Work")).unwrap();
+            fs::write(vault.path().join("Work/Plan.md"), "# Plan\n\nfirst\n\n## Next\n\n- [ ] do it\nthen rest\n").unwrap();
+            let index = Vault::index(vault.path(), None);
+            let store = Rc::new(VaultStore::new(vault.path().to_path_buf(), index, std::sync::Arc::new(daftar_core::SearchIndex::new())));
+            let settings = Rc::new(RefCell::new(AppSettings::of(vault.path().join("config.toml"), daftar_core::ConfigFile::TEMPLATE)));
+            let editor = Editor::new(settings.clone(), |_| {}, |_| {});
+            editor.set_store(store);
+            let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
+            window.present();
+            // A note opened with focus mode on has its first paragraph
+            // bright, not the whole note.
+            assert!(!settings.borrow().focus(), "`editor.focus` is false with no setting");
+            settings.borrow_mut().file.set("editor.focus", daftar_core::Value::Bool(true));
+            assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            assert_eq!(editor.focus.bright_lines(), Some((0, 0)));
+            settings.borrow_mut().file.set("editor.focus", daftar_core::Value::Bool(false));
+            editor.settings_changed();
+            // Where [needle] starts in the editor's text, in characters.
+            let at = |needle: &str| {
+                let text = editor.text();
+                text[..text.find(needle).unwrap_or_else(|| panic!("{needle:?} is in {text:?}"))].chars().count()
+            };
+            let tagged =
+                |name: &str, at: usize| editor.iter(at).tags().iter().any(|tag| tag.name().is_some_and(|n| n == format!("daftar:{name}")));
+            let none = gdk::ModifierType::empty();
+            let key = |key: gdk::Key, state: gdk::ModifierType| editor.key(key, 0, state) == glib::Propagation::Stop;
+            // Keys as the view gets them: one the editor leaves alone goes into the text.
+            let typed = |letters: &str| {
+                for letter in letters.chars() {
+                    let name = match letter {
+                        '/' => "slash".to_string(),
+                        ' ' => "space".to_string(),
+                        letter => letter.to_string(),
+                    };
+                    if !key(gdk::Key::from_name(name).unwrap(), none) {
+                        editor.buffer.insert_at_cursor(&letter.to_string());
+                    }
+                }
+            };
+            // The loop runs for this long, for what a timer does.
+            let spin = |ms: u64| {
+                let start = std::time::Instant::now();
+                while start.elapsed() < Duration::from_millis(ms) {
+                    while context.iteration(false) {}
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            };
+
+            // The table is a grid: its rows one run, the header, the
+            // delimiter row at no height, each pipe clear, the last row marked.
+            let (head, rule, one) = (at("| A |"), at("| --- |"), at("| 1 |"));
+            assert!(wait(context, || tagged("grid", head)), "the table is a grid");
+            assert!(
+                tagged("grid-head", head + 2)
+                    && tagged("grid-pipe", head)
+                    && tagged("grid-pipe", head + 4)
+                    && !tagged("grid-pipe", head + 2)
+            );
+            assert!(tagged("grid-rule", rule) && tagged("grid", one) && tagged("grid-last", at("| 3 |")) && !tagged("grid-last", one));
+            assert!(!tagged("grid", at("last")) && editor.styler.in_grid(one) && !editor.styler.in_grid(0));
+
+            // The caret in a cell keeps the grid; on the delimiter row, and
+            // with a selection that reaches outside one cell, the table is raw.
+            editor.buffer.place_cursor(&editor.iter(one + 2));
+            spin(50);
+            assert!(tagged("grid", head) && tagged("grid-pipe", one), "a cell is edited in place");
+            editor.buffer.place_cursor(&editor.iter(rule + 2));
+            assert!(wait(context, || !tagged("grid", head)), "raw with the caret on the delimiter row");
+            assert!(!tagged("grid-rule", rule) && !tagged("grid-pipe", head) && !tagged("grid", at("| 3 |")));
+            editor.buffer.place_cursor(&editor.iter(one + 2));
+            assert!(wait(context, || tagged("grid", head) && tagged("grid-rule", rule)), "drawn again when the caret leaves");
+            editor.buffer.select_range(&editor.iter(one + 2), &editor.iter(one + 6));
+            assert!(wait(context, || !tagged("grid", head)), "raw with a selection over two cells");
+            editor.buffer.select_range(&editor.iter(one + 2), &editor.iter(one + 3));
+            assert!(wait(context, || tagged("grid", head)), "a selection inside one cell keeps the grid");
+
+            // A cell has part 1's marks rule: `**` shows with the caret in
+            // the bold text and hides when it leaves. What the hidden marks
+            // lost of the column's width is given back in the cell's padding.
+            let bold = at("| **b**");
+            let padded = |at: usize| editor.iter(at).tags().iter().any(|tag| tag.name().is_some_and(|n| n.starts_with("daftar:grid-pad:")));
+            assert!(wait(context, || tagged("hidden", bold + 2) && tagged("hidden", bold + 6) && padded(bold + 7)), "hidden, and padded");
+            editor.buffer.place_cursor(&editor.iter(bold + 5));
+            assert!(wait(context, || !tagged("hidden", bold + 2) && !padded(bold + 7)), "the marks show with the caret in the element");
+            assert!(tagged("grid", bold) && tagged("grid-pipe", bold));
+            editor.buffer.place_cursor(&editor.iter(bold + 11));
+            assert!(wait(context, || tagged("hidden", bold + 2) && padded(bold + 7)), "and hide when it leaves, in the same row");
+
+            // Right at the end of a cell's text goes to the next cell's text, and Left back.
+            editor.buffer.place_cursor(&editor.iter(one + 3));
+            assert!(key(gdk::Key::Right, none));
+            assert_eq!(editor.cursor(), one + 6);
+            assert!(key(gdk::Key::Left, none));
+            assert_eq!(editor.cursor(), one + 3);
+            assert!(!key(gdk::Key::Left, none), "inside the text the key is the view's");
+
+            // Return goes to the same column of the row below, with the
+            // table formatted, as one step to undo.
+            assert!(key(gdk::Key::Return, none));
+            assert!(editor.text().contains("| A   | B   |\n| --- | --- |\n| 1   | 2   |\n| 3   | 4   |\n"));
+            assert_eq!(editor.cursor(), at("| 3  ") + 2);
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text, "one undo takes the move and its formatting back");
+            // Shift+Return is Return. On the last row a new row is added,
+            // the caret in its same column, and Return on it ends the table.
+            editor.buffer.place_cursor(&editor.iter(at("| 3 |") + 6));
+            assert!(key(gdk::Key::Return, gdk::ModifierType::SHIFT_MASK));
+            assert!(editor.text().contains("| 3   | 4   |\n|     |     |\n"));
+            let added = at("|     |     |");
+            assert_eq!(editor.cursor(), added + 8);
+            assert!(wait(context, || tagged("grid-last", added) && !tagged("grid-last", at("| 3  "))), "the box ends under the new row");
+            assert!(key(gdk::Key::Return, none));
+            assert!(editor.text().contains("| 3   | 4   |\n\n") && !editor.text().contains("|     |"), "{}", editor.text());
+            // Tab from the header's last cell passes the delimiter row.
+            editor.buffer.place_cursor(&editor.iter(at("| A  ") + 8));
+            assert!(key(gdk::Key::Tab, none));
+            assert_eq!(editor.cursor(), at("| 1  ") + 2);
+            // Outside a table Shift+Return is the view's own key.
+            editor.buffer.place_cursor(&editor.iter(at("last")));
+            assert!(!key(gdk::Key::Return, gdk::ModifierType::SHIFT_MASK));
+
+            // Focus mode: the caret's paragraph is the bright one. The table
+            // is lines 2 to 5; a blank line is alone; a selection keeps
+            // every paragraph it touches.
+            assert!(!editor.focus.is_on() && editor.focus.bright_lines().is_none());
+            settings.borrow_mut().file.set("editor.focus", daftar_core::Value::Bool(true));
+            editor.settings_changed();
+            assert!(editor.focus.is_on());
+            editor.buffer.place_cursor(&editor.iter(at("| 1  ") + 2));
+            assert!(wait(context, || editor.focus.bright_lines() == Some((2, 5))), "{:?}", editor.focus.bright_lines());
+            editor.buffer.place_cursor(&editor.iter(3));
+            assert!(wait(context, || editor.focus.bright_lines() == Some((0, 0))));
+            let blank = at("| 3  ") + 15;
+            editor.buffer.place_cursor(&editor.iter(blank));
+            assert!(wait(context, || editor.focus.bright_lines() == Some((7, 7))), "{:?}", editor.focus.bright_lines());
+            // A blank line typed in is still its own paragraph, between blank lines.
+            editor.buffer.insert_at_cursor("x");
+            spin(50);
+            assert_eq!(editor.focus.bright_lines(), Some((7, 7)));
+            editor.buffer.undo();
+            editor.buffer.select_range(&editor.iter(3), &editor.iter(at("| 1  ") + 2));
+            assert!(wait(context, || editor.focus.bright_lines() == Some((0, 5))), "{:?}", editor.focus.bright_lines());
+            // A line break in a paragraph of two lines parts it.
+            editor.buffer.place_cursor(&editor.iter(at("last") + 4));
+            editor.buffer.insert_at_cursor("\nmore");
+            assert!(wait(context, || editor.focus.bright_lines().is_some_and(|(first, last)| last == first + 1)));
+            let two = editor.focus.bright_lines().unwrap();
+            editor.buffer.place_cursor(&editor.iter(at("more")));
+            editor.buffer.insert_at_cursor("\n");
+            assert!(wait(context, || editor.focus.bright_lines() == Some((two.1 + 1, two.1 + 1))), "{:?}", editor.focus.bright_lines());
+            settings.borrow_mut().file.set("editor.focus", daftar_core::Value::Bool(false));
+            editor.settings_changed();
+            assert!(!editor.focus.is_on() && editor.focus.bright_lines().is_none());
+
+            // The slash bar: a `/` at a line's start opens it with every
+            // item, the first chosen; what is typed after it filters.
+            editor.buffer.place_cursor(&editor.buffer.end_iter());
+            editor.buffer.insert_at_cursor("\n");
+            typed("/");
+            assert!(wait(context, || editor.slash.is_open()), "a `/` at a line's start opens the bar");
+            let (chosen, shown) = editor.slash.shown();
+            assert_eq!((chosen.as_deref(), shown.len()), (Some("h1"), 36));
+            // Down, Up, Ctrl+N and Ctrl+P choose, and stop at the ends.
+            assert!(key(gdk::Key::n, gdk::ModifierType::CONTROL_MASK) && key(gdk::Key::Down, none));
+            assert_eq!(editor.slash.shown().0.as_deref(), Some("h3"));
+            assert!(key(gdk::Key::Up, none) && key(gdk::Key::p, gdk::ModifierType::CONTROL_MASK) && key(gdk::Key::Up, none));
+            assert_eq!(editor.slash.shown().0.as_deref(), Some("h1"));
+            typed("tab");
+            assert!(wait(context, || editor.slash.shown().0.as_deref() == Some("table")), "{:?}", editor.slash.shown());
+            // Nothing matches: the list hides and still listens, Return is
+            // an ordinary key, and Backspace brings the list back.
+            typed("zz");
+            assert!(wait(context, || !editor.slash.is_open()));
+            assert!(matches!(editor.completing.get(), Completing::Slash(_)));
+            assert!(!key(gdk::Key::Return, none), "with the list hidden Return is an ordinary key");
+            let backspace = || {
+                if !key(gdk::Key::BackSpace, none) {
+                    let mut at = editor.buffer.iter_at_mark(&editor.buffer.get_insert());
+                    editor.buffer.backspace(&mut at, true, true);
+                }
+            };
+            backspace();
+            backspace();
+            assert!(wait(context, || editor.slash.is_open() && editor.slash.shown().0.as_deref() == Some("table")));
+            // Escape closes the list and leaves the `/` and what was typed;
+            // the same `/` does not open it again.
+            assert!(key(gdk::Key::Escape, none));
+            assert!(!editor.slash.is_open() && editor.completing.get() == Completing::Nothing);
+            assert!(editor.text().ends_with("\n/tab"));
+            typed("l");
+            spin(100);
+            assert!(!editor.slash.is_open());
+            // Return inserts the chosen row in place of the `/` and what was typed, as one step.
+            editor.buffer.insert_at_cursor("\n");
+            typed("/task");
+            assert!(wait(context, || editor.slash.is_open() && editor.slash.shown().0.as_deref() == Some("task")));
+            assert!(key(gdk::Key::Return, none));
+            assert!(editor.text().ends_with("\n- [ ] ") && !editor.slash.is_open(), "{}", editor.text());
+            assert_eq!(editor.cursor(), editor.buffer.char_count() as usize);
+            editor.buffer.undo();
+            assert!(editor.text().ends_with("\n/task"), "one undo takes the insert back");
+            // A space closes the list; so does the caret leaving the `/`.
+            editor.buffer.place_cursor(&editor.buffer.end_iter());
+            editor.buffer.insert_at_cursor("\n");
+            typed("/h");
+            assert!(wait(context, || editor.slash.is_open()));
+            typed(" ");
+            assert!(wait(context, || !editor.slash.is_open() && editor.completing.get() == Completing::Nothing));
+            editor.buffer.insert_at_cursor("\n");
+            typed("/he");
+            assert!(wait(context, || editor.slash.is_open()));
+            editor.buffer.place_cursor(&editor.iter(editor.cursor() - 3));
+            assert!(wait(context, || !editor.slash.is_open() && editor.completing.get() == Completing::Nothing));
+            // A `/` in a word, in inline code, and with the setting off opens nothing.
+            editor.buffer.place_cursor(&editor.buffer.end_iter());
+            editor.buffer.insert_at_cursor("\n");
+            typed("a/");
+            spin(100);
+            assert!(!editor.slash.is_open() && editor.completing.get() == Completing::Nothing);
+            editor.buffer.insert_at_cursor("\n`x y`");
+            editor.buffer.place_cursor(&editor.iter(editor.cursor() - 1));
+            typed(" /");
+            spin(100);
+            assert!(!editor.slash.is_open() && editor.completing.get() == Completing::Nothing, "not in inline code");
+            settings.borrow_mut().file.set("editor.slash_menu", daftar_core::Value::Bool(false));
+            editor.buffer.place_cursor(&editor.buffer.end_iter());
+            editor.buffer.insert_at_cursor("\n");
+            typed("/");
+            spin(100);
+            assert!(!editor.slash.is_open(), "`editor.slash_menu = false`: a `/` is only a `/`");
+
+            // The link preview: the card of a link to a heading has the
+            // note's title, the heading, the folder and the lines under the heading.
+            let link = at("[[Plan#Next|the plan]]");
+            editor.show_card((link, link + 22));
+            assert!(editor.card.is_open());
+            assert_eq!(editor.card.said(), ("Plan".into(), "› Next".into(), "Work".into(), "- [ ] do it\nthen rest".into()));
+            // Any key closes it at once.
+            editor.key(gdk::Key::Shift_L, 0, none);
+            assert!(!editor.card.is_open());
+            let missing = at("[[Nowhere]]");
+            editor.show_card((missing, missing + 11));
+            assert_eq!(editor.card.said(), ("Nowhere".into(), String::new(), String::new(), "No note yet.".into()));
+            editor.close_card();
+            // The pointer rests on the link for 350 ms before the card
+            // shows, and the card stays 250 ms after the pointer left.
+            let place = editor.view.iter_location(&editor.iter(at("the plan") + 2));
+            let (x, y) = editor.view.buffer_to_window_coords(gtk::TextWindowType::Widget, place.x() + 2, place.y() + place.height() / 2);
+            let point = Some((f64::from(x), f64::from(y)));
+            let rested = std::time::Instant::now();
+            editor.hover_link(point, false);
+            assert!(!editor.card.is_open(), "not before the pointer has rested");
+            assert!(wait(context, || editor.card.is_open()), "after 350 ms on the link");
+            assert!(rested.elapsed() >= Duration::from_millis(daftar_core::LinkPreview::REST - 10), "{:?}", rested.elapsed());
+            assert_eq!(editor.card.said().0, "Plan");
+            let left = std::time::Instant::now();
+            editor.hover_link(None, false);
+            assert!(editor.card.is_open(), "it stays while the pointer goes to it");
+            assert!(wait(context, || !editor.card.is_open()), "and closes after the pointer left");
+            assert!(left.elapsed() >= Duration::from_millis(daftar_core::LinkPreview::LINGER - 10), "{:?}", left.elapsed());
+            // Off a link there is no card; a key pressed since the pointer
+            // last moved opens none; a button held down opens none.
+            editor.hover_link(Some((f64::from(x), f64::from(y) + 300.0)), false);
+            spin(450);
+            assert!(!editor.card.is_open());
+            editor.hover_link(point, false);
+            editor.key(gdk::Key::Shift_L, 0, none);
+            spin(450);
+            assert!(!editor.card.is_open(), "typing under a still pointer opens no card");
+            editor.hover_link(point, true);
+            spin(450);
+            assert!(!editor.card.is_open(), "not while a mouse button is down");
+            settings.borrow_mut().file.set("appearance.link_preview", daftar_core::Value::Bool(false));
+            editor.hover_link(Some((f64::from(x) + 1.0, f64::from(y))), false);
+            spin(450);
+            assert!(!editor.card.is_open(), "`appearance.link_preview = false`");
+            editor.discard();
+            window.destroy();
+        });
+    }
+
+    /// The keys and the clicks of the drawn parts keep the person's text
+    /// (docs/specs/look.md, part 2): a `|` line in a code block is no
+    /// table, a click on a box is `TaskLine::toggled` and one step to undo
+    /// in a Persian line, a repeating task and a callout, a Persian table
+    /// is only formatted, and a read-only vault's text never changes.
+    /// Needs a display: `xvfb-run -a cargo test -p daftar -- --ignored
+    /// the_keys_and_the_clicks_keep_the_text`, alone.
+    #[test]
+    #[ignore = "needs a display"]
+    fn the_keys_and_the_clicks_keep_the_text() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            crate::style::install();
+            let vault = tempfile::tempdir().unwrap();
+            let text = "---\n| k | v |\n---\n\n```sh\n| a | b |\ncat x\n```\n\n- [ ] سلام دنیا 📅 2026-11-20\n- [ ] Water 🔁 every week 📅 2026-11-20\n\n> [!tip] T\n> - [ ] in callout\n\n| نام | B |\n| --- | --- |\n| یک | 2 |\n\n- [x] one ✅ 2001-01-01\n- [ ] ab [[Some Person]] and more\n\nend\n";
+            fs::write(vault.path().join("Note.md"), text).unwrap();
+            let index = Vault::index(vault.path(), None);
+            let store = Rc::new(VaultStore::new(vault.path().to_path_buf(), index, std::sync::Arc::new(daftar_core::SearchIndex::new())));
+            let settings = Rc::new(RefCell::new(AppSettings::of(vault.path().join("config.toml"), daftar_core::ConfigFile::TEMPLATE)));
+            let editor = Editor::new(settings.clone(), |_| {}, |_| {});
+            editor.set_store(store);
+            let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
+            window.present();
+            assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            let at = |needle: &str| {
+                let text = editor.text();
+                text[..text.find(needle).unwrap_or_else(|| panic!("{needle:?} is in {text:?}"))].chars().count()
+            };
+            let tagged = |name: &str, at: usize| {
+                editor.iter(at).tags().iter().any(|tag| tag.name().is_some_and(|n| n.starts_with(&format!("daftar:{name}"))))
+            };
+            let none = gdk::ModifierType::empty();
+            let key = |key: gdk::Key, state: gdk::ModifierType| editor.key(key, 0, state) == glib::Propagation::Stop;
+            let today = Day::today().to_string();
+            let spin = |ms: u64| {
+                let start = std::time::Instant::now();
+                while start.elapsed() < Duration::from_millis(ms) {
+                    while context.iteration(false) {}
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            };
+
+            // A `|` line in a code block and in the front matter is no table:
+            // Return and Shift+Return are the view's own keys, Tab indents as
+            // in any text, and no line is formatted.
+            assert!(wait(context, || tagged("box", at("- [ ] Water"))), "the note is styled");
+            for needle in ["| a | b |", "| k | v |"] {
+                editor.buffer.place_cursor(&editor.iter(at(needle) + 4));
+                assert!(!key(gdk::Key::Return, none), "{needle}");
+                assert!(!key(gdk::Key::Return, gdk::ModifierType::SHIFT_MASK), "{needle}");
+                assert_eq!(editor.text(), text, "{needle}");
+            }
+            editor.buffer.place_cursor(&editor.iter(at("| a | b |") + 4));
+            assert!(key(gdk::Key::Tab, none));
+            assert_eq!(editor.text(), text.replace("| a | b |", "| a     | b |"), "Tab is four spaces in code, not a table's move");
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text);
+            assert!(!editor.styler.in_grid(at("| a | b |")), "and it is no grid");
+
+            // A click on the box of a Persian line: where the box is drawn
+            // is where the click lands, and the line is the toggle's.
+            let persian = at("- [ ] سلام");
+            let hit = |offset: usize| {
+                let place = editor.view.iter_location(&editor.iter(offset + 2));
+                editor.draw.box_at(editor.view.upcast_ref(), place.x() + place.width() / 2, place.y() + place.height() / 2)
+            };
+            assert!(wait(context, || hit(persian) == Some(persian as i32)), "the Persian line's box takes the click: {:?}", hit(persian));
+            editor.buffer.place_cursor(&editor.iter(at("دنیا") + 2));
+            let caret = editor.cursor();
+            editor.click_box(persian);
+            assert_eq!(editor.text(), text.replace("- [ ] سلام دنیا 📅 2026-11-20", &format!("- [x] سلام دنیا 📅 2026-11-20 ✅ {today}")));
+            assert_eq!(editor.cursor(), caret, "the caret stays in its word");
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text, "one undo");
+
+            // A repeating task leaves its next occurrence on the line above,
+            // the caret stays on the task's own text, and one undo takes both lines back.
+            let water = "- [ ] Water 🔁 every week 📅 2026-11-20";
+            let toggled = daftar_core::TaskLine::toggled(water, &today).unwrap();
+            assert_eq!(toggled.len(), 2, "{toggled:?}");
+            editor.buffer.place_cursor(&editor.iter(at("Water") + 3));
+            editor.click_box(at(water));
+            assert_eq!(editor.text(), text.replace(water, &toggled.join("\n")));
+            let done = at(&toggled[1]);
+            assert_eq!(editor.cursor(), done + 6 + 3, "on the done line's `Water`");
+            assert_eq!(editor.text().chars().skip(editor.cursor() - 3).take(5).collect::<String>(), "Water");
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text, "one undo takes both lines back");
+            editor.buffer.redo();
+            assert_eq!(editor.text(), text.replace(water, &toggled.join("\n")));
+            editor.buffer.undo();
+
+            // A click on a box above the caret moves the caret's line and
+            // sets no mark: the line under it, with a link across where
+            // its start was, is styled where it is now, and its marks stay
+            // hidden. The same when the click adds a line above.
+            let link = "[[Some Person]]";
+            editor.buffer.place_cursor(&editor.iter(at(link) + 24));
+            assert!(wait(context, || tagged("hidden", at(link)) && tagged("box", at("- [x] one"))));
+            editor.click_box(at("- [x] one"));
+            spin(100);
+            assert_eq!(editor.text(), text.replace("- [x] one ✅ 2001-01-01", "- [ ] one"));
+            assert_eq!(editor.cursor(), at(link) + 24, "the caret stays on its text");
+            assert!(tagged("hidden", at(link)) && tagged("hidden", at(link) + 14) && tagged("box", at("- [ ] ab")));
+            editor.click_box(at(water));
+            spin(100);
+            assert_eq!(editor.cursor(), at(link) + 24);
+            assert!(tagged("hidden", at(link)) && tagged("box", at("- [ ] ab")), "styled where it is after a line came above");
+            editor.buffer.place_cursor(&editor.iter(at(link) + 4));
+            assert!(wait(context, || !tagged("hidden", at(link))), "the marks show with the caret in the link");
+            editor.buffer.place_cursor(&editor.iter(at(link) + 24));
+            assert!(wait(context, || tagged("hidden", at(link))));
+            editor.buffer.undo();
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text);
+            spin(100);
+
+            // A task in a callout is drawn and can be clicked.
+            let quoted = at("> - [ ] in callout");
+            assert!(wait(context, || tagged("box", quoted + 2)), "a box in a callout");
+            editor.click_box(quoted + 2);
+            assert_eq!(editor.text(), text.replace("> - [ ] in callout", &format!("> - [x] in callout ✅ {today}")));
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text);
+
+            // A Persian table: Return on its last row formats it and adds a
+            // row, with every cell's text kept, as one step to undo; Left
+            // and Right are the view's own in a right-to-left row.
+            let row = at("| یک |");
+            editor.buffer.place_cursor(&editor.iter(row + 3));
+            assert!(wait(context, || editor.styler.in_grid(row)));
+            assert!(!key(gdk::Key::Right, none) && !key(gdk::Key::Left, none));
+            assert!(key(gdk::Key::Return, none));
+            let rows: Vec<String> = ["| نام | B |", "| --- | --- |", "| یک | 2 |", "|  |  |"].map(String::from).to_vec();
+            let formatted = MarkdownTable::format(&rows).join("\n");
+            assert_eq!(editor.text(), text.replace("| نام | B |\n| --- | --- |\n| یک | 2 |", &formatted));
+            for cell in ["نام", "یک", "B", "2"] {
+                assert!(formatted.contains(cell), "{cell}");
+            }
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text, "one undo takes the row and the formatting back");
+
+            // With `editor.live_preview = false` nothing is drawn, and the keys still work.
+            settings.borrow_mut().file.set("editor.live_preview", daftar_core::Value::Bool(false));
+            editor.settings_changed();
+            assert!(wait(context, || !tagged("box", at("- [ ] Water")) && !editor.styler.in_grid(row)), "raw with live preview off");
+            assert_eq!(hit(persian), None, "no box to click");
+            assert!(!tagged("panel", at("> [!tip]")) && !tagged("chip", at("📅 2026-11-20") + 3));
+            editor.buffer.place_cursor(&editor.iter(row + 3));
+            assert!(key(gdk::Key::Tab, none), "Tab still goes to the next cell");
+            editor.buffer.undo();
+            assert_eq!(editor.text(), text);
+            settings.borrow_mut().file.set("editor.live_preview", daftar_core::Value::Bool(true));
+            editor.settings_changed();
+            assert!(wait(context, || tagged("box", at("- [ ] Water"))));
+
+            // A read-only vault: everything is drawn, a click on a box
+            // changes nothing, and a `/` is only a `/`.
+            let git = |arguments: &[&str]| {
+                assert!(std::process::Command::new("git").args(arguments).current_dir(vault.path()).output().unwrap().status.success());
+            };
+            git(&["init", "-q"]);
+            git(&["config", "daftar.readonly", "true"]);
+            assert!(daftar_core::VaultEdits::writable(vault.path()).is_err());
+            editor.click_box(at(water));
+            editor.click_box(persian);
+            assert_eq!(editor.text(), text, "a read-only vault's text is not changed by a click");
+            assert!(tagged("box", at("- [ ] Water")), "and the box is still drawn");
+            editor.discard();
+            window.destroy();
+        });
+    }
+
+    /// The fault found on the Mac, in a real view: `/tab` and Return in a
+    /// note of three paragraphs, then Tab, Shift+Tab and Return in the
+    /// cells. The table stands apart by a blank line on each side, the
+    /// placeholders are selected so typing replaces them, no paragraph
+    /// becomes a row, and one undo takes the insert back. Needs a display:
+    /// `xvfb-run -a cargo test -p daftar -- --ignored
+    /// a_table_from_the_slash_bar_keeps_the_text_beside_it`, alone.
+    #[test]
+    #[ignore = "needs a display"]
+    fn a_table_from_the_slash_bar_keeps_the_text_beside_it() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            crate::style::install();
+            let vault = tempfile::tempdir().unwrap();
+            let text = "x\n\nA first paragraph.\n\nA second paragraph.\n";
+            fs::write(vault.path().join("Note.md"), text).unwrap();
+            let index = Vault::index(vault.path(), None);
+            let store = Rc::new(VaultStore::new(vault.path().to_path_buf(), index, std::sync::Arc::new(daftar_core::SearchIndex::new())));
+            let settings = Rc::new(RefCell::new(AppSettings::of(vault.path().join("config.toml"), daftar_core::ConfigFile::TEMPLATE)));
+            let editor = Editor::new(settings, |_| {}, |_| {});
+            editor.set_store(store);
+            let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
+            window.present();
+            assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            let none = gdk::ModifierType::empty();
+            let key = |key: gdk::Key, state: gdk::ModifierType| editor.key(key, 0, state) == glib::Propagation::Stop;
+            // Keys as the view gets them: one the editor leaves alone goes
+            // into the text in place of the selection, as the view types it.
+            let typed = |letters: &str| {
+                for letter in letters.chars() {
+                    let name = match letter {
+                        '/' => "slash".to_string(),
+                        ' ' => "space".to_string(),
+                        letter => letter.to_string(),
+                    };
+                    if !key(gdk::Key::from_name(name).unwrap(), none) {
+                        editor.buffer.delete_selection(true, true);
+                        editor.buffer.insert_at_cursor(&letter.to_string());
+                    }
+                }
+            };
+            let selected = || editor.slice(editor.selection());
+            let table = "| Column | Column |\n| ------ | ------ |\n|        |        |";
+            // The `/` at the start of line 0, at its end after a space, and on the blank line under it.
+            let rest = "A first paragraph.\n\nA second paragraph.\n";
+            for (caret, lead, slashed, inserted) in [
+                (0, "", format!("/tabx\n\n{rest}"), format!("{table}\n\nx\n\n{rest}")),
+                (1, " ", format!("x /tab\n\n{rest}"), format!("x \n\n{table}\n\n{rest}")),
+                (2, "", format!("x\n/tab\n{rest}"), format!("x\n\n{table}\n\n{rest}")),
+            ] {
+                assert_eq!(editor.text(), text);
+                editor.buffer.place_cursor(&editor.iter(caret));
+                typed(lead);
+                typed("/tab");
+                assert!(
+                    wait(context, || editor.slash.is_open() && editor.slash.shown().0.as_deref() == Some("table")),
+                    "the `/` at {caret}"
+                );
+                assert!(key(gdk::Key::Return, none));
+                assert_eq!(editor.text(), inserted, "the `/` at {caret}");
+                assert_eq!(selected(), "Column", "the first header is selected");
+                // One undo takes the table and its blank lines back.
+                editor.buffer.undo();
+                assert_eq!(editor.text(), slashed, "one undo");
+                editor.buffer.redo();
+                assert_eq!(editor.text(), inserted);
+                let start = inserted.find(table).unwrap();
+                editor.buffer.select_range(&editor.iter(start + 8), &editor.iter(start + 2));
+                // What is typed takes the placeholder's place, and Tab selects the next.
+                typed("Name");
+                assert!(key(gdk::Key::Tab, none));
+                assert_eq!(selected(), "Column", "Tab selects the next placeholder");
+                typed("Age");
+                assert!(key(gdk::Key::Tab, none));
+                assert!(editor.selection().is_empty(), "an empty cell has a caret");
+                typed("Sara");
+                assert!(key(gdk::Key::Tab, none));
+                typed("7");
+                let rows = |more: &str| inserted.replace(table, &format!("| Name | Age |\n| ---- | --- |\n| Sara | 7   |{more}"));
+                // Tab past the last cell makes a row: the paragraph under the table is no row.
+                assert!(key(gdk::Key::Tab, none));
+                assert_eq!(editor.text(), rows("\n|      |     |"));
+                assert!(key(gdk::Key::ISO_Left_Tab, gdk::ModifierType::SHIFT_MASK));
+                assert_eq!(editor.text(), rows("\n|      |     |"));
+                // Return with a selection in a cell goes down and keeps the text.
+                let seven = editor.cursor();
+                editor.buffer.select_range(&editor.iter(seven + 1), &editor.iter(seven));
+                assert_eq!(selected(), "7");
+                assert!(key(gdk::Key::Return, none));
+                assert_eq!(editor.text(), rows("\n|      |     |"));
+                // Return on the last row, which is empty, ends the table: the row goes.
+                assert!(key(gdk::Key::Return, none));
+                assert_eq!(editor.text(), rows("\n\n"));
+                // In the paragraphs the keys are the text's own.
+                let paragraph = editor.text().find("A first").unwrap();
+                editor.buffer.place_cursor(&editor.iter(paragraph + 3));
+                assert!(!key(gdk::Key::Return, none) && !key(gdk::Key::Return, gdk::ModifierType::SHIFT_MASK));
+                assert_eq!(editor.text(), rows("\n\n"));
+                while editor.buffer.can_undo() {
+                    editor.buffer.undo();
+                }
+            }
+            editor.discard();
+            window.destroy();
+        });
+    }
+
+    /// Neovim mode (docs/specs/look.md, part 2): the parts are drawn and
+    /// focus mode follows Neovim's cursor, a click on a box is sent to
+    /// Neovim as a change of its lines (one `u`), the table's keys and the
+    /// slash bar are not there, and Neovim's keys change no text by
+    /// themselves. Needs a display and `nvim`: `xvfb-run -a cargo test -p
+    /// daftar -- --ignored in_neovim_mode`, alone.
+    #[test]
+    #[ignore = "needs a display and nvim"]
+    fn in_neovim_mode_the_parts_are_drawn_and_a_click_is_a_change_of_lines() {
+        use crate::vault_checks::tests::{on_a_loop_of_its_own, wait};
+        on_a_loop_of_its_own(|context| {
+            gtk::init().unwrap();
+            adw::init().unwrap();
+            crate::style::install();
+            let vault = tempfile::tempdir().unwrap();
+            let text =
+                "# T\n\n- [ ] Buy 📅 2001-01-01\n- [ ] Water 🔁 every week 📅 2001-01-01\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nend\n";
+            fs::write(vault.path().join("Note.md"), text).unwrap();
+            let config = daftar_core::ConfigFile::TEMPLATE
+                .replace("vim_mode = false", "vim_mode = true")
+                .replace("nvim_config = \"user\"", "nvim_config = \"clean\"")
+                .replace("focus = false", "focus = true");
+            let settings = Rc::new(RefCell::new(AppSettings::of(vault.path().join("config.toml"), &config)));
+            assert!(settings.borrow().focus());
+            let editor = Editor::new(settings, |_| {}, |_| {});
+            let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
+            window.present();
+            assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            assert!(wait(context, || editor.vim.borrow().as_ref().is_some_and(|vim| vim.mirror.is_some())), "Neovim started");
+            let at = |needle: &str| {
+                let text = editor.text();
+                text[..text.find(needle).unwrap_or_else(|| panic!("{needle:?} is in {text:?}"))].chars().count()
+            };
+            let tagged = |name: &str, at: usize| {
+                editor.iter(at).tags().iter().any(|tag| tag.name().is_some_and(|n| n.starts_with(&format!("daftar:{name}"))))
+            };
+            let input = |keys: &str| editor.vim.borrow().as_ref().unwrap().session.input(keys);
+            let none = gdk::ModifierType::empty();
+            let spin = |ms: u64| {
+                let start = std::time::Instant::now();
+                while start.elapsed() < Duration::from_millis(ms) {
+                    while context.iteration(false) {}
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            };
+            let on_disk = || fs::read_to_string(vault.path().join("Note.md")).unwrap();
+            let today = Day::today().to_string();
+
+            // The box, the chip and the grid are drawn, and focus mode has
+            // the paragraph of Neovim's cursor.
+            assert!(wait(context, || tagged("box", 5) && tagged("chip", at("📅 2001") + 3) && editor.styler.in_grid(at("| 1 |"))));
+            input("6G");
+            assert!(wait(context, || editor.focus.bright_lines() == Some((5, 7))), "{:?}", editor.focus.bright_lines());
+
+            // Return and Tab on a table's row are Neovim's keys: in normal
+            // mode they move its cursor and no line is formatted.
+            assert_eq!(editor.key(gdk::Key::Return, 0, none), glib::Propagation::Stop);
+            assert_eq!(editor.key(gdk::Key::Tab, 0, none), glib::Propagation::Stop);
+            spin(300);
+            assert_eq!(editor.text(), text);
+
+            // A click on a box is a change of that line in Neovim, which
+            // writes the file; one `u` takes it back.
+            editor.click_box(5);
+            let done = text.replace("- [ ] Buy 📅 2001-01-01", &format!("- [x] Buy 📅 2001-01-01 ✅ {today}"));
+            assert!(wait(context, || editor.text() == done), "{}", editor.text());
+            assert!(wait(context, || on_disk() == done), "Neovim wrote the file");
+            input("u");
+            assert!(wait(context, || editor.text() == text), "one u takes the click back");
+            // A repeating task: two lines for one, and one `u`.
+            let water = "- [ ] Water 🔁 every week 📅 2001-01-01";
+            let toggled = daftar_core::TaskLine::toggled(water, &today).unwrap();
+            editor.click_box(at(water));
+            assert!(wait(context, || editor.text() == text.replace(water, &toggled.join("\n"))), "{}", editor.text());
+            input("u");
+            assert!(wait(context, || editor.text() == text), "one u takes both lines back");
+
+            // A `/` typed in insert mode is only a `/`: no slash bar.
+            input("Go/");
+            assert!(wait(context, || editor.text().ends_with("\n/\n")));
+            spin(300);
+            assert!(!editor.slash.is_open() && editor.completing.get() == Completing::Nothing);
+            input("<Esc>u");
+            assert!(wait(context, || editor.text() == text));
+            editor.discard();
+            window.destroy();
+        });
     }
 
     #[test]
