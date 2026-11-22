@@ -32,6 +32,7 @@ pub mod jalali;
 pub mod job_search;
 pub mod line_diff;
 pub mod link_resolver;
+pub mod live_preview;
 pub mod markdown_format;
 pub mod markdown_highlighter;
 pub mod markdown_lint;
@@ -109,6 +110,10 @@ pub use inbox::{Inbox, InboxItem};
 pub use job_search::{Application, ChannelCount, JobKeys, JobSearch};
 pub use line_diff::{Kind as DiffKind, Line as DiffLine, LineDiff};
 pub use link_resolver::LinkResolver;
+pub use live_preview::{
+    Above as PreviewAbove, Block as PreviewBlock, BlockLine as PreviewLine, BoxLook, CalloutHead, Chip, ChipKind, CodeRole, Fence,
+    LivePreview, Measure, Panel, PanelKind, Parts as PreviewParts, TaskBox,
+};
 pub use markdown_format::{FormatConfig, MarkdownFormat, ProseWrap};
 pub use markdown_highlighter::{BlockState, Kind as HighlightKind, MarkdownHighlighter, Span as HighlightSpan};
 pub use markdown_lint::{LintConfig, MarkdownLint, Problem as LintProblem};
