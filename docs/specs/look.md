@@ -559,7 +559,7 @@ Ported by name (snake case in Rust, camelCase in Swift and Kotlin). Each is a pu
 | Part 2: reader, section bar | done | done | not started |
 | Part 2: reader, a table header that stays, and the sort | done | done | not started |
 | Part 2: reader, footnote popover | done (a card a click opened stays at its number while the note scrolls, and closes when the number leaves the view) | done (the same page) | not started |
-| Part 2: reader, the soft change | done (back to reading, a picture of the editor fades out over the page; only between two notes, not to or from a canvas, a picture or a base) | done (the same page; back to reading, a picture of the editor fades out over the page, which has the keys from the start; into the editor, the pane's stack crossfades in 120 ms) | not started |
+| Part 2: reader, the soft change | done (back to reading, a picture of the editor fades out over the page; only between two notes, not to or from a canvas, a picture or a base; a click or a plain key in the frame before the new note is drawn is dropped, since it would act on the note that leaves) | done (the same page; back to reading, a picture of the editor fades out over the page, which has the keys from the start; into the editor, the pane's stack crossfades in 120 ms) | not started |
 | Part 2: Linux, the caret in the accent and the editor's measure | does not apply | not started | does not apply |
 | Part 2: Android, the editor with part 1, the task box and date chips | does not apply | does not apply | not started (the phone has no editor of a note's text yet) |
 | One palette file with generators | not started | not started | not started |
