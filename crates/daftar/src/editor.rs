@@ -366,7 +366,6 @@ impl Editor {
         self.cancel_pending();
         self.stop_completion();
         self.close_card();
-        self.focus.forget();
         self.auto_closed.set(None);
         self.apply_fonts();
         self.buffer.begin_irreversible_action();
@@ -374,11 +373,14 @@ impl Editor {
         self.buffer.end_irreversible_action();
         self.buffer.set_modified(false);
         self.dirty.set(None);
+        // Another text: focus mode's paragraph is found anew, once the cursor is placed.
+        self.focus.forget();
         self.styler.restyle_all();
         *self.open.borrow_mut() = Some(Open { path: path.to_string(), file, on_disk: text.clone(), loaded: text });
         self.refresh_marks();
         let line = line.unwrap_or(0);
         self.go_to_line(line);
+        self.focus.follow(None);
         self.update_counts();
         let vim = self.settings.borrow().file.bool("editor.vim_mode").unwrap_or(false);
         if vim {
@@ -551,9 +553,11 @@ impl Editor {
             open.on_disk.clone_from(&text);
             open.loaded = text;
         }
+        self.focus.forget();
         if let Some(at) = self.buffer.iter_at_line(line as i32) {
             self.buffer.place_cursor(&at);
         }
+        self.focus.follow(None);
         self.refresh_marks();
     }
 
@@ -2394,7 +2398,14 @@ mod tests {
             editor.set_store(store);
             let window = gtk::Window::builder().default_width(1100).default_height(700).child(&editor.widget).build();
             window.present();
+            // A note opened with focus mode on has its first paragraph
+            // bright, not the whole note.
+            assert!(!settings.borrow().focus(), "`editor.focus` is false with no setting");
+            settings.borrow_mut().file.set("editor.focus", daftar_core::Value::Bool(true));
             assert!(editor.load(vault.path(), "Note.md", Some(0)));
+            assert_eq!(editor.focus.bright_lines(), Some((0, 0)));
+            settings.borrow_mut().file.set("editor.focus", daftar_core::Value::Bool(false));
+            editor.settings_changed();
             // Where [needle] starts in the editor's text, in characters.
             let at = |needle: &str| {
                 let text = editor.text();
@@ -2502,7 +2513,7 @@ mod tests {
             // Focus mode: the caret's paragraph is the bright one. The table
             // is lines 2 to 5; a blank line is alone; a selection keeps
             // every paragraph it touches.
-            assert!(!editor.focus.is_on(), "off with no setting");
+            assert!(!editor.focus.is_on() && editor.focus.bright_lines().is_none());
             settings.borrow_mut().file.set("editor.focus", daftar_core::Value::Bool(true));
             editor.settings_changed();
             assert!(editor.focus.is_on());
