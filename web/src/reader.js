@@ -12,8 +12,18 @@ import { PanZoom, percent, svgSize } from "./viewer.js";
 
 const app = window.webkit?.messageHandlers;
 
+/**
+ * The path of the note the page has drawn. Every message to the app carries
+ * it as `note`: the app may already show another note (it has asked for it,
+ * and the page has not drawn it yet, or has not even heard), and a line or a
+ * link of the note on the page means nothing in that one. The app drops a
+ * message whose note is not the one it shows. This is state, not time: it
+ * holds however slow the page is.
+ */
+const onPage = { path: "" };
+
 function post(message) {
-  app?.daftar?.postMessage(message);
+  app?.daftar?.postMessage({ ...message, note: onPage.path });
 }
 
 let current = { path: "" };
@@ -1634,6 +1644,7 @@ window.daftar = {
     // A board or a picture is no note drawn block by block, and has nothing that stays at its top.
     if (note.canvas || note.image) {
       drawn.path = "";
+      onPage.path = note.path ?? "";
       forgetPage();
       pinTop();
     }
@@ -1675,6 +1686,7 @@ window.daftar = {
         remember(main);
       }
       drawn.path = note.base ? "" : note.path;
+      onPage.path = note.path ?? "";
       timing.mark("inserted");
       // A base is a wide table: it gets the whole window.
       main.classList.toggle("is-base", Boolean(note.base));
