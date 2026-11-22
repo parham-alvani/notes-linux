@@ -244,6 +244,12 @@ remote_images = true
 # .daftar.toml), "always" or "never". A note whose sections you fold
 # or open yourself is kept as you left it.
 fold_sections = "vault"
+# Resting the pointer on a link to a note shows the note's first
+# lines in a small card.
+link_preview = true
+# The reader shows the heading path of the place being read in a bar
+# at the top of the note, once that heading has left the view.
+section_bar = true
 # The Solar Hijri date beside the Gregorian one (home, Today, a daily
 # note), and Jalali days typed in a task's dates.
 persian_calendar = false
@@ -479,6 +485,7 @@ mod tests {
         assert_eq!(file.int("appearance.text_size"), Some(16));
         assert_eq!(file.string("appearance.code_font").as_deref(), Some("JetBrains Mono"));
         assert_eq!(file.int("appearance.reading_line"), Some(18));
+        assert_eq!((file.bool("appearance.link_preview"), file.bool("appearance.section_bar")), (Some(true), Some(true)));
         assert_eq!(file.bool("git.pull_on_launch"), Some(true));
         assert_eq!(file.string("notifications.digest_time").as_deref(), Some("09:00"));
     }

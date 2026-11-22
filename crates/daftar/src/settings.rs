@@ -302,6 +302,18 @@ impl AppSettings {
         daftar_core::FoldSections::named(&self.file.string("appearance.fold_sections").unwrap_or_default())
     }
 
+    /// Resting the pointer on a link to a note shows its first lines in a
+    /// card (`appearance.link_preview`, docs/specs/look.md).
+    pub fn link_preview(&self) -> bool {
+        self.file.bool("appearance.link_preview").unwrap_or(true)
+    }
+
+    /// The reader shows the heading path of the place being read in a bar
+    /// at the top of the note (`appearance.section_bar`).
+    pub fn section_bar(&self) -> bool {
+        self.file.bool("appearance.section_bar").unwrap_or(true)
+    }
+
     /// The reader's font families as CSS, Persian always cascading to Vazirmatn.
     pub fn font_css(&self) -> (String, String) {
         let font = self.file.string("appearance.font").unwrap_or_default();
@@ -467,6 +479,19 @@ mod tests {
         assert_eq!(of("[appearance]\nfold_sections = \"vault\"\n"), FoldSections::Vault);
         assert_eq!(of("[appearance]\nfold_sections = \"always\"\n"), FoldSections::Always);
         assert_eq!(of("[appearance]\nfold_sections = \"never\"\n"), FoldSections::Never);
+    }
+
+    #[test]
+    fn the_link_card_and_the_section_bar_are_on_unless_turned_off() {
+        let of = |text: &str| {
+            let settings = AppSettings::of(PathBuf::new(), text);
+            (settings.link_preview(), settings.section_bar())
+        };
+        assert_eq!(of(""), (true, true));
+        assert_eq!(of("[appearance]\nlink_preview = false\n"), (false, true));
+        assert_eq!(of("[appearance]\nsection_bar = false\n"), (true, false));
+        // A value that is no boolean is as not there.
+        assert_eq!(of("[appearance]\nlink_preview = \"no\"\nsection_bar = 0\n"), (true, true));
     }
 
     #[test]

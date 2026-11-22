@@ -146,6 +146,8 @@ const ALLOWED: &[(&str, Rule)] = &[
     ("appearance.text_width", Rule::Int(0, 400)),
     ("appearance.reading_line", Rule::Int(0, 100)),
     ("appearance.fold_sections", Rule::Choice(&["vault", "always", "never"])),
+    ("appearance.link_preview", Rule::Bool),
+    ("appearance.section_bar", Rule::Bool),
     ("appearance.persian_calendar", Rule::Bool),
     ("appearance.remote_images", Rule::OnlyFalse),
     ("calendar.place", Rule::Place),
@@ -864,5 +866,28 @@ mod tests {
         let keys: Vec<String> = Settings::resolved("", "").entries().into_iter().map(|e| e.key).collect();
         let at = keys.iter().position(|k| k == "git.pull_on_launch").unwrap();
         assert_eq!(keys[at + 1..at + 3], ["git.name", "git.email"]);
+    }
+
+    /// Test 23 of `docs/specs/look.md`, part 2, for the reader's two keys.
+    #[test]
+    fn the_new_settings_have_their_defaults() {
+        let keys = ["appearance.link_preview", "appearance.section_bar"];
+        let entry = |settings: &Settings, key: &str| settings.entries().into_iter().find(|e| e.key == key).unwrap();
+        let none = Settings::resolved("", "");
+        for key in keys {
+            let found = entry(&none, key);
+            assert_eq!((found.value, found.from), (Some(Value::Bool(true)), Origin::Default), "{key}");
+        }
+        // A vault that sets each is followed, and none is listed as refused.
+        let vault = Settings::resolved("[appearance]\nlink_preview = false\nsection_bar = false\n", "");
+        for key in keys {
+            assert_eq!(vault.bool(key), Some(false), "{key}");
+            assert!(vault.is_from_vault(key), "{key}");
+        }
+        assert!(vault.refused().is_empty());
+        // A value that is no boolean is as not there.
+        let wrong = Settings::resolved("[appearance]\nsection_bar = \"yes\"\n", "[appearance]\nsection_bar = false\n");
+        assert_eq!(wrong.bool("appearance.section_bar"), Some(false));
+        assert!(!wrong.is_from_vault("appearance.section_bar") && wrong.refused().is_empty());
     }
 }
