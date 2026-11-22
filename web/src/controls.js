@@ -126,3 +126,36 @@ export function imageInfo(width, height, size, type) {
   if (type) parts.push(type);
   return escape(parts.join(" · "));
 }
+
+/**
+ * The section bar's path: a button for each heading, the last one the place
+ * being read. [path] are the headings' texts; each heading takes its own
+ * direction. No button is a Tab stop: the bar has no key. `…` stands for the
+ * parents left out when the path is too wide, and is shown only then.
+ */
+export function sectionCrumbs(path) {
+  const separator = `<span class="section-sep" aria-hidden="true">›</span>`;
+  const crumbs = path.map((text, at) => {
+    const last = at === path.length - 1;
+    return `<button type="button" tabindex="-1" class="section-crumb${last ? " is-last" : ""}" data-at="${at}" dir="auto"${last ? ` aria-current="location"` : ""}>${escape(text)}</button>`;
+  });
+  return `<span class="section-dots" aria-hidden="true" hidden>…${separator}</span>` + crumbs.join(separator);
+}
+
+/**
+ * The head of a link's preview card: the note's title, the heading the link
+ * names, and the note's folder as `A › B` at the end side. A link to no note
+ * has its name alone, faint.
+ */
+export function previewHead({ title, anchor = "", folder = "", missing = false }) {
+  return (
+    `<span class="preview-title${missing ? " is-missing" : ""}" dir="auto">${escape(title)}</span>` +
+    (anchor && !missing ? `<span class="preview-anchor" dir="auto">› ${escape(anchor.replace(/^\^/, ""))}</span>` : "") +
+    (folder && !missing ? `<span class="preview-path">${escape(folder.split("/").join(" › "))}</span>` : "")
+  );
+}
+
+/** What the footnote popover's head says for a reference drawn as `[1]`: "Footnote 1". */
+export function footnoteLabel(reference) {
+  return `Footnote ${reference.replace(/[[\]]/g, "").trim()}`;
+}
