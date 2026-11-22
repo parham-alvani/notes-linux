@@ -266,12 +266,23 @@ impl AppSettings {
     }
 
     pub fn text_size(&self) -> i64 {
-        self.file.int("appearance.text_size").unwrap_or(14)
+        self.file.int("appearance.text_size").unwrap_or(16)
+    }
+
+    /// The dark theme's palette is naz with its colour strength capped
+    /// (`appearance.dark_palette = "naz-soft"`, docs/specs/look.md).
+    pub fn soft_palette(&self) -> bool {
+        self.file.string("appearance.dark_palette").as_deref() == Some("naz-soft")
+    }
+
+    /// The format bar shows over a selection in the editor (`editor.format_bar`).
+    pub fn format_bar(&self) -> bool {
+        self.file.bool("editor.format_bar").unwrap_or(true)
     }
 
     /// The reader's widest line, in em of the text size; 0 is the whole window.
     pub fn text_width(&self) -> i64 {
-        self.file.int("appearance.text_width").unwrap_or(46).max(0)
+        self.file.int("appearance.text_width").unwrap_or(35).max(0)
     }
 
     /// The reading cursor's band on the line being read, in percent of the accent; 0 is none.

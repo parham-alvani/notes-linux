@@ -126,6 +126,8 @@ pub struct Editor {
     restyle_soon: Cell<bool>,
     /// A cursor move waiting for the idle that tints its line.
     reveal_soon: Cell<bool>,
+    /// The format bar over a selection, once one was shown (docs/specs/look.md).
+    format_bar: RefCell<Option<gtk::Popover>>,
     /// Edits so far, and the counts of words and characters at one of them.
     text_version: Cell<u64>,
     counted: Cell<Option<(u64, usize, usize)>>,
@@ -249,6 +251,7 @@ impl Editor {
             dirty: Cell::new(None),
             restyle_soon: Cell::new(false),
             reveal_soon: Cell::new(false),
+            format_bar: RefCell::new(None),
             text_version: Cell::new(0),
             counted: Cell::new(None),
             open: RefCell::new(None),
@@ -590,8 +593,9 @@ impl Editor {
         self.font_css.load_from_string(&format!("textview.daftar-editor {{ font-family: {text}; font-size: {size}px; }}"));
         self.styler.set_code_font(&code);
         self.styler.set_live(settings.file.bool("editor.live_preview").unwrap_or(true));
-        // Line height 1.6: the space between lines and between wrapped rows.
-        let gap = (size as f64 * 0.6).round() as i32;
+        self.styler.set_soft(settings.soft_palette());
+        // Line height 1.65, as the reader's: the space between lines and between wrapped rows.
+        let gap = (size as f64 * 0.65).round() as i32;
         self.view.set_pixels_below_lines(gap);
         self.view.set_pixels_inside_wrap(gap / 2);
     }
@@ -657,7 +661,68 @@ impl Editor {
             );
             this.styler.reveal((a, b));
             this.update_counts();
+            this.show_format_bar();
         });
+    }
+
+    /// The format bar over the start of a selection inside one paragraph:
+    /// bold, italic, highlight, code, strike and a link to a note, each the
+    /// command its key runs. Gone with the selection, in Neovim mode (Neovim
+    /// owns the text) and with `editor.format_bar` off. Its buttons take no
+    /// focus, so the keys stay in the text.
+    fn show_format_bar(self: &Rc<Self>) {
+        let range = self.selection();
+        let wanted =
+            !range.is_empty() && !self.is_neovim() && self.settings.borrow().format_bar() && !self.slice(range.clone()).contains('\n');
+        if !wanted {
+            if let Some(bar) = self.format_bar.borrow().as_ref() {
+                bar.popdown();
+            }
+            return;
+        }
+        if self.format_bar.borrow().is_none() {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+            const ITEMS: [(&str, &str, Option<&str>); 6] = [
+                ("B", "Bold (Ctrl+B)", Some("**")),
+                ("I", "Italic (Ctrl+I)", Some("*")),
+                ("==", "Highlight", Some("==")),
+                ("</>", "Code", Some("`")),
+                ("S", "Strikethrough", Some("~~")),
+                ("[[ ]]", "Link to a note (Ctrl+K)", None),
+            ];
+            for (title, help, marker) in ITEMS {
+                let button = gtk::Button::with_label(title);
+                button.add_css_class("flat");
+                button.set_tooltip_text(Some(help));
+                button.set_focusable(false);
+                button.set_focus_on_click(false);
+                let this = Rc::downgrade(self);
+                button.connect_clicked(move |_| {
+                    let Some(this) = this.upgrade() else { return };
+                    match marker {
+                        Some(marker) => this.wrap(marker),
+                        None => this.insert_link(),
+                    }
+                    this.view.grab_focus();
+                });
+                row.append(&button);
+            }
+            let bar = gtk::Popover::new();
+            bar.set_child(Some(&row));
+            bar.set_parent(&self.view);
+            bar.set_autohide(false);
+            bar.set_has_arrow(false);
+            bar.set_can_focus(false);
+            bar.set_position(gtk::PositionType::Top);
+            bar.add_css_class("daftar-format-bar");
+            *self.format_bar.borrow_mut() = Some(bar);
+        }
+        let place = self.view.iter_location(&self.iter(range.start));
+        let (x, y) = self.view.buffer_to_window_coords(gtk::TextWindowType::Widget, place.x(), place.y());
+        if let Some(bar) = self.format_bar.borrow().as_ref() {
+            bar.set_pointing_to(Some(&gdk::Rectangle::new(x, y, 1, place.height())));
+            bar.popup();
+        }
     }
 
     fn mark_dirty(&self, start: usize, end: usize) {

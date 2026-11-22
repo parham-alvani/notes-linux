@@ -50,9 +50,21 @@ fn pair(name: &str) -> (u32, u32) {
     }
 }
 
+/// The dark colours are naz's with their strength capped (`appearance.dark_palette`).
+static SOFT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn rgba(name: &str, alpha: f32, dark: bool) -> gtk::gdk::RGBA {
+    rgba_in(name, alpha, dark, SOFT.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// A colour of the palette: Daylight, naz, or naz with its strength capped.
+fn rgba_in(name: &str, alpha: f32, dark: bool, soft: bool) -> gtk::gdk::RGBA {
     let (d, l) = pair(name);
-    let value = if dark { d } else { l };
+    let value = match (dark, soft) {
+        (true, true) => daftar_core::soft_palette::soften(d),
+        (true, false) => d,
+        (false, _) => l,
+    };
     let channel = |shift: u32| ((value >> shift) & 0xFF) as f32 / 255.0;
     gtk::gdk::RGBA::new(channel(16), channel(8), channel(0), alpha)
 }
@@ -63,6 +75,8 @@ struct Look {
     fg: Option<(&'static str, f32)>,
     bg: Option<(&'static str, f32)>,
     bold: bool,
+    /// The weight of a heading and of bold text, 600: the reader's 650.
+    semibold: bool,
     medium: bool,
     italic: bool,
     strike: bool,
@@ -166,6 +180,29 @@ pub struct Styler {
     revealed_lines: std::cell::Cell<Option<((i32, i32), bool)>>,
     /// The tint of the cursor's line, as the Mac draws it.
     line: gtk::TextTag,
+    /// The selection, as last revealed: an element's marks show while it is in the element.
+    cursor: std::cell::Cell<(usize, usize)>,
+    /// The elements with marks on the cursor's lines, the ones the
+    /// selection was in when those lines were styled, and the start of the
+    /// lines and the length of the text then (docs/specs/look.md).
+    elements: RefCell<Vec<Range<usize>>>,
+    open: RefCell<Vec<Range<usize>>>,
+    elements_for: std::cell::Cell<Option<(usize, usize)>>,
+}
+
+/// The tint of the cursor's line: neutral, weaker than the reader's block.
+fn line_tint(dark: bool) -> gtk::gdk::RGBA {
+    rgba("text", 0.045, dark)
+}
+
+/// Whether [selection] is in [element]: a caret anywhere from its first
+/// mark to after its last, or a selection that reaches into it.
+fn is_open(element: &Range<usize>, selection: (usize, usize)) -> bool {
+    if selection.0 == selection.1 {
+        selection.0 >= element.start && selection.0 <= element.end
+    } else {
+        selection.0 < element.end && element.start < selection.1
+    }
 }
 
 /// Lines a paragraph is taken to reach up or down, at most.
@@ -190,8 +227,12 @@ impl Styler {
             revealed: std::cell::Cell::new((0, 0)),
             revealed_lines: std::cell::Cell::new(None),
             line: gtk::TextTag::new(Some("daftar:cursor-line")),
+            cursor: std::cell::Cell::new((0, 0)),
+            elements: RefCell::new(Vec::new()),
+            open: RefCell::new(Vec::new()),
+            elements_for: std::cell::Cell::new(None),
         });
-        styler.line.set_paragraph_background_rgba(Some(&rgba("orange", 0.07, manager.is_dark())));
+        styler.line.set_paragraph_background_rgba(Some(&line_tint(manager.is_dark())));
         buffer.tag_table().add(&styler.line);
         // What is not styled yet moves with the text.
         let this = Rc::downgrade(&styler);
@@ -235,10 +276,20 @@ impl Styler {
                 for (tag, look) in this.tags.borrow().values() {
                     apply_look(tag, look, manager.is_dark(), &this.code_font.borrow());
                 }
-                this.line.set_paragraph_background_rgba(Some(&rgba("orange", 0.07, manager.is_dark())));
+                this.line.set_paragraph_background_rgba(Some(&line_tint(manager.is_dark())));
             }
         });
         styler
+    }
+
+    /// The dark palette is naz, soft or naz: every tag takes its colours again.
+    pub fn set_soft(&self, soft: bool) {
+        // Set for every editor; each one's tags take their colours again here.
+        SOFT.store(soft, std::sync::atomic::Ordering::Relaxed);
+        for (tag, look) in self.tags.borrow().values() {
+            apply_look(tag, look, self.dark.get(), &self.code_font.borrow());
+        }
+        self.line.set_paragraph_background_rgba(Some(&line_tint(self.dark.get())));
     }
 
     pub fn set_code_font(&self, family: &str) {
@@ -484,9 +535,22 @@ impl Styler {
         end_iter.forward_char();
         let (start, end) = (start_iter.offset() as usize, end_iter.offset() as usize);
         let selecting = selection.0 != selection.1;
+        self.cursor.set(selection);
         // Typing on the line keeps it: only where it ends moves.
         if self.revealed_lines.replace(Some((lines, selecting))) == Some((lines, selecting)) {
             self.revealed.set((start, end));
+            // The same lines, but the cursor may be in another element of
+            // them: its marks show and the one it left hides its own.
+            if self.live.get() {
+                let total = self.buffer.char_count().max(0) as usize;
+                let open: Vec<Range<usize>> =
+                    self.elements.borrow().iter().filter(|e| is_open(&(e.start + start..e.end + start), selection)).cloned().collect();
+                let kept = self.elements_for.get() == Some((start, total));
+                if !kept || open != *self.open.borrow() {
+                    let text = self.text();
+                    self.style(start..end.min(total), Some(MarkdownHighlighter::block_state(start, &text)));
+                }
+            }
             return;
         }
         let (all_start, all_end) = self.buffer.bounds();
@@ -525,6 +589,24 @@ impl Styler {
                 self.buffer.apply_tag(&hidden, &iter(from), &iter(to));
             }
         };
+        // On the cursor's lines a line's marks show, and an element's marks
+        // show only while the cursor is in the element.
+        let cursor = self.cursor.get();
+        let cursor = (cursor.0.saturating_sub(base), cursor.1.saturating_sub(base));
+        let on_cursor_lines = |from: usize, to: usize| !(to <= shown_from || from >= shown_to);
+        let mut elements: Vec<Range<usize>> = Vec::new();
+        let mut hide_in = |marks: &[(usize, usize)], element: Range<usize>| {
+            let open = is_open(&element, cursor);
+            elements.push(element);
+            if open {
+                return;
+            }
+            for &(from, to) in marks {
+                if from < to && to <= chars.len() && from >= range.start && to <= range.end {
+                    self.buffer.apply_tag(&hidden, &iter(from), &iter(to));
+                }
+            }
+        };
         for (at, span) in spans.iter().enumerate() {
             let (from, to) = (span.range.start, span.range.end);
             if to > chars.len() || from >= to {
@@ -535,13 +617,24 @@ impl Styler {
                     if chars[from] == '>' || chars[from..].starts_with(&['[', '!']) {
                         continue;
                     }
+                    if on_cursor_lines(from, to) {
+                        if let Some(owner) = &span.owner {
+                            hide_in(&[(from, to)], owner.clone());
+                        }
+                        continue;
+                    }
                     // A heading's `#` goes with the space after it.
                     let heading = chars[from..to].iter().all(|&c| c == '#') && chars.get(to) == Some(&' ');
                     hide(from, to + usize::from(heading));
                 }
                 // `==🔴 text==`: the color's emoji goes too, as in the reader.
                 HighlightKind::Highlight if to - from > 4 && "🔴🟠🟡🟢🔵🟣".contains(chars[from + 2]) => {
-                    hide(from + 2, from + 3 + usize::from(chars.get(from + 3) == Some(&' ')));
+                    let swatch = (from + 2, from + 3 + usize::from(chars.get(from + 3) == Some(&' ')));
+                    if on_cursor_lines(from, to) {
+                        hide_in(&[swatch], from..to);
+                    } else {
+                        hide(swatch.0, swatch.1);
+                    }
                 }
                 // `[label](target)`: the brackets and the target go, the label reads.
                 HighlightKind::Link => {
@@ -549,13 +642,29 @@ impl Styler {
                         continue;
                     };
                     if to - from >= 2 {
-                        hide(from, from + 1);
-                        hide(to - 1, to);
-                        hide(next.range.start, next.range.end);
+                        let marks = [(from, from + 1), (to - 1, to), (next.range.start, next.range.end)];
+                        if on_cursor_lines(from, next.range.end) {
+                            hide_in(&marks, from..next.range.end);
+                        } else {
+                            for (a, b) in marks {
+                                hide(a, b);
+                            }
+                        }
                     }
                 }
                 _ => {}
             }
+        }
+        // What `reveal` compares the cursor with, when these were the cursor's lines.
+        let (lines_from, lines_to) = self.revealed.get();
+        if lines_from < base + range.end && base + range.start < lines_to.max(lines_from + 1) {
+            let total = self.buffer.char_count().max(0) as usize;
+            let cursor = self.cursor.get();
+            let absolute: Vec<Range<usize>> = elements.iter().map(|e| base + e.start..base + e.end).collect();
+            *self.open.borrow_mut() =
+                absolute.iter().filter(|e| is_open(e, cursor)).map(|e| e.start - lines_from..e.end - lines_from).collect();
+            *self.elements.borrow_mut() = absolute.iter().map(|e| e.start - lines_from..e.end - lines_from).collect();
+            self.elements_for.set(Some((lines_from, total)));
         }
     }
 
@@ -604,10 +713,11 @@ impl Styler {
         let one = |name: &str, look: Look| vec![self.tag(name, || look)];
         match span.kind {
             HighlightKind::Heading(level) => {
-                const SCALE: [f64; 6] = [1.75, 1.5, 1.25, 1.0, 1.0, 0.875];
+                // The reader's sizes, in one weight (docs/specs/look.md).
+                const SCALE: [f64; 6] = [1.6, 1.35, 1.12, 1.0, 1.0, 0.875];
                 const COLOR: [&str; 6] = ["heading1", "heading2", "heading3", "heading4", "pink", "purple"];
                 let at = (level.clamp(1, 6) - 1) as usize;
-                one(&format!("h{}", at + 1), Look { scale: Some(SCALE[at]), medium: at >= 3, ..fg(COLOR[at]) })
+                one(&format!("h{}", at + 1), Look { scale: Some(SCALE[at]), semibold: true, ..fg(COLOR[at]) })
             }
             HighlightKind::Markup | HighlightKind::BlockId => {
                 // On a highlight the marks dim in the highlight's own text color.
@@ -617,12 +727,12 @@ impl Styler {
                     one("markup", fg("faint"))
                 }
             }
-            HighlightKind::Bold => one("bold", Look { bold: true, ..fg("strong") }),
-            HighlightKind::Italic => one("italic", Look { italic: true, ..fg("italic") }),
+            HighlightKind::Bold => one("bold", Look { semibold: true, ..fg("strong") }),
+            HighlightKind::Italic => one("italic", Look { italic: true, ..Look::default() }),
             HighlightKind::Strike => one("strike", Look { strike: true, ..Look::default() }),
             HighlightKind::Highlight => {
                 let color = highlight_color(piece().chars().nth(2));
-                one(&format!("highlight:{color}"), Look { fg: Some(("text", 1.0)), bg: Some((color, 0.45)), ..Look::default() })
+                one(&format!("highlight:{color}"), Look { bg: Some((color, 0.32)), ..Look::default() })
             }
             HighlightKind::Code => one("code", Look { mono: true, bg: Some(("panel", 1.0)), scale: Some(0.86), ..fg("raw") }),
             HighlightKind::CodeBlock => {
@@ -646,23 +756,16 @@ impl Styler {
             HighlightKind::TaskOpen | HighlightKind::TaskOther => one("task-open", Look { mono: true, ..fg("accent") }),
             HighlightKind::TaskDone | HighlightKind::TaskCancelled => one("task-done", Look { strike: true, ..fg("faint") }),
             HighlightKind::ListMarker => {
-                // Each level of a list has its own color, as in the reader.
-                let line_start = chars[..span.range.start].iter().rposition(|c| *c == '\n').map_or(0, |i| i + 1);
-                let indent: usize = chars[line_start..span.range.end]
-                    .iter()
-                    .take_while(|c| **c == ' ' || **c == '\t')
-                    .map(|c| if *c == '\t' { 4 } else { 1 })
-                    .sum();
-                const COLORS: [&str; 4] = ["orange", "aqua", "pink", "chartreuse"];
-                let color = COLORS[(indent / 4) % COLORS.len()];
-                one(&format!("list:{color}"), Look { bold: true, ..fg(color) })
+                // One marker colour at every level, as in the reader.
+                one("list", Look { semibold: true, ..fg("accent") })
             }
-            HighlightKind::Quote => one("quote", Look { bg: Some(("orange", 0.07)), ..fg("quote") }),
+            // The text keeps its own colour, as in the reader; the tint stands for the bar.
+            HighlightKind::Quote => one("quote", Look { bg: Some(("orange", 0.07)), ..Look::default() }),
             HighlightKind::CalloutTitle => {
                 let text = piece();
                 let kind = text.split_once("[!").and_then(|(_, rest)| rest.split_once(']')).map_or("note", |(kind, _)| kind);
                 let color = callout_color(kind);
-                one(&format!("callout:{color}"), Look { bold: true, bg: Some((color, 0.12)), ..fg(color) })
+                one(&format!("callout:{color}"), Look { semibold: true, bg: Some((color, 0.1)), ..fg(color) })
             }
             HighlightKind::Comment | HighlightKind::Rule => one("faint", fg("faint")),
             HighlightKind::Math => one("math", Look { mono: true, bg: Some(("purple", 0.08)), ..fg("purple") }),
@@ -680,6 +783,8 @@ fn apply_look(tag: &gtk::TextTag, look: &Look, dark: bool, code_font: &str) {
     }
     if look.bold {
         tag.set_weight(glib::translate::IntoGlib::into_glib(pango::Weight::Bold));
+    } else if look.semibold {
+        tag.set_weight(glib::translate::IntoGlib::into_glib(pango::Weight::Semibold));
     } else if look.medium {
         tag.set_weight(glib::translate::IntoGlib::into_glib(pango::Weight::Medium));
     }
@@ -752,6 +857,25 @@ mod tests {
         assert_eq!(structure(text), ["---", "---", "```swift", "```", "$$ x $$\n", "a %% b\n"]);
         // A new line above a fence changes where it is, not the structure.
         assert_eq!(structure(&format!("\n{text}")), structure(text));
+    }
+
+    /// A caret is in an element from its first mark to after its last; a
+    /// selection, when it reaches into it (docs/specs/look.md).
+    #[test]
+    fn the_cursor_is_in_an_element_at_its_ends_too() {
+        let bold = 5..13;
+        assert!(is_open(&bold, (5, 5)) && is_open(&bold, (9, 9)) && is_open(&bold, (13, 13)));
+        assert!(!is_open(&bold, (4, 4)) && !is_open(&bold, (14, 14)));
+        assert!(is_open(&bold, (0, 6)) && is_open(&bold, (12, 20)));
+        assert!(!is_open(&bold, (0, 5)) && !is_open(&bold, (13, 20)));
+    }
+
+    #[test]
+    fn naz_soft_caps_the_dark_colours_only() {
+        let (dark, light) = (rgba_in("accent", 1.0, true, true), rgba_in("accent", 1.0, false, true));
+        let byte = |c: f32| (c * 255.0).round() as u32;
+        assert_eq!((byte(dark.red()), byte(dark.green()), byte(dark.blue())), (0xE9, 0xB8, 0x7D));
+        assert_eq!((byte(light.red()), byte(light.green()), byte(light.blue())), (0xA8, 0x52, 0x00));
     }
 
     #[test]

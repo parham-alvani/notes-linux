@@ -77,12 +77,14 @@ A selection inside one paragraph shows a bar over its start (under its end when 
 
 | Part | macOS | Linux | Android |
 | --- | --- | --- | --- |
-| Reader page in the new look | done (branch) | done (branch, the page only) | not started |
-| `appearance.dark_palette` | done (branch) | not started | not started |
-| New default size and measure | done (branch) | not started | not started |
-| Editor: sizes, weights, italic, line height | done (branch) | not started | not started |
-| Editor: highlight, callout, quote, list markers and current line in the new look | done (branch) | not started | not started |
-| Caret in the accent with a glide, per-element marks, format bar | done (branch; not in Neovim mode, whose cursor slides already) |
+| Reader page in the new look | done (branch) | done (branch) | not started |
+| `appearance.dark_palette` | done (branch) | done (branch) | not started |
+| New default size and measure | done (branch) | done (branch; the editor has no measure yet) | not started |
+| Editor: sizes, weights, italic, line height | done (branch) | done (branch) | not started |
+| Editor: highlight, callout, quote, list markers and current line in the new look | done (branch) | done (branch; a quote and a callout are a tint behind each line, since the view draws no panel) | not started |
+| Marks of one element at a time | done (branch) | done (branch) | not started |
+| Format bar | done (branch; not in Neovim mode) | done (branch; not in Neovim mode) | not started |
+| Caret in the accent, with a glide | done (branch; Neovim mode's cursor slides already) | not started (GtkTextView draws its own caret) | not started |
 | Editor: task box and date chips, a table as a grid | not started | not started | not started |
 | Reader: section bar, table header and sort, footnote popover | not started | not started | not started |
 | One palette file with generators | not started | not started | not started |

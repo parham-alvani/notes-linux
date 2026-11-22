@@ -150,6 +150,21 @@ pub fn present(parent: &impl IsA<gtk::Widget>, settings: Rc<RefCell<AppSettings>
     }
     looks.add(&theme);
     from_vault(&settings, "appearance.theme", &theme);
+    let soft = adw::SwitchRow::builder()
+        .title("Soft dark palette")
+        .subtitle("naz with its colour strength capped, for long sessions")
+        .active(settings.borrow().soft_palette())
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        soft.connect_active_notify(move |row| {
+            write("appearance.dark_palette", Value::String(if row.is_active() { "naz-soft" } else { "naz" }.into()));
+            (hooks.reader)();
+            (hooks.editor)();
+        });
+    }
+    looks.add(&soft);
+    from_vault(&settings, "appearance.dark_palette", &soft);
     let size = adw::SpinRow::with_range(10.0, 28.0, 1.0);
     size.set_title("Text size");
     size.set_value(settings.borrow().text_size() as f64);
@@ -374,6 +389,20 @@ fn editor_group(
     }
     group.add(&live);
     from_vault(settings, "editor.live_preview", &live);
+    let bar = adw::SwitchRow::builder()
+        .title("Format bar")
+        .subtitle("Bold, italic, highlight, code, strike and link, over the selected text")
+        .active(file.bool("editor.format_bar").unwrap_or(true))
+        .build();
+    {
+        let (write, hooks) = (write.clone(), hooks.clone());
+        bar.connect_active_notify(move |row| {
+            write("editor.format_bar", Value::Bool(row.is_active()));
+            (hooks.editor)();
+        });
+    }
+    group.add(&bar);
+    from_vault(settings, "editor.format_bar", &bar);
     let format = adw::SwitchRow::builder()
         .title("Format on leaving")
         .subtitle("A note you typed in is formatted with daftar-cli fmt when you leave the editor, never while you type")
