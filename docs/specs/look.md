@@ -28,6 +28,8 @@ A colour says what a thing is: a heading's level, bold text, code, a link, a cal
 
 There are three: Daylight (light), naz (dark) and naz, soft (dark). The values of Daylight and naz are those of `web/src/reader.css`, `Naz.kt`, `NSPalette` and `editor_style.rs`, as before.
 
+**Until one palette file makes these four, a colour is changed in all four in the same change**, and in this spec when the spec names it; naz, soft follows by its rule in each app. The four copies are the look's main risk of drift: a colour changed in one app only shows in that app and nowhere fails. The one palette file with generators is the plan to end this (the last row of the table at the end).
+
 ### naz, soft
 
 naz, soft is naz with the colour strength capped, for long sessions. It is made from naz by a rule, so it is never a second table to keep by hand:
@@ -504,7 +506,7 @@ The phone has no editor of a note's text today: it writes only its named edits (
 
 **The task box and the date chips** are the two sections above, with a tap for a click. A tap on the box changes the status and does not open the keyboard or move the caret; its target is at least 40 dp. A long press on the box opens the status sheet the phone has for a task.
 
-**Not on the phone in part 2:** a table as a grid, the code block's panel, the slash bar, focus mode and the link preview. The reader's parts (the section bar, the header that stays, the sort, the footnote popover, the soft change) are on the phone.
+**Not on the phone in part 2:** a table as a grid, the code block's panel, the slash bar, focus mode and the link preview. The reader's parts (the section bar, the header that stays, the sort, the footnote popover, the soft change) belong on the phone too, in its own Compose reader, since the shared reader page does not run there. They are not built yet; the table at the end says so.
 
 Settings: the phone reads `editor.live_preview` and `editor.format_bar` (shared) and shows them in its Settings.
 
@@ -548,6 +550,14 @@ Ported by name (snake case in Rust, camelCase in Swift and Kotlin). Each is a pu
 
 ## Where it stands
 
+The table says what is built. What is built is not all proven: until each of these is done, write "not proven" rather than "works" in a release note.
+
+- **Clicks in the real apps.** The task box, the table sort, the footnote popover and the slash bar were tried by unit tests only, never by a hand in a running app.
+- **The Linux reader on a real display.** It was run only under Xvfb in a container, where it drew the first paragraph only.
+- **naz, soft on the phone with the real vault.** The vault sets `dark_palette = "naz-soft"` since 2026-11-22; the phone has not been checked with it.
+- **The phone's screenshot test** `find marks every hit and the current one` failed once on `main` and passed on a second run of the same code: a flaky test, not a fixed one.
+
+
 | Part | macOS | Linux | Android |
 | --- | --- | --- | --- |
 | Reader in the new look | done | done | done (its own Compose reader: headings, callouts, highlights, italic and bold) |
@@ -565,10 +575,10 @@ Ported by name (snake case in Rust, camelCase in Swift and Kotlin). Each is a pu
 | Part 2: editor, the slash bar | done (SF Symbols for the icons; a block it inserts stands apart by a blank line) | done (an item with no Lucide drawing in the reader's bundle has a few letters for its icon) | not in part 2 |
 | Part 2: editor, focus mode (`editor.focus`) | done | done (a veil in the page's colour at 55% over the other paragraphs, which is each colour at 45%; a picture under a dimmed line is not dimmed) | not in part 2 |
 | Part 2: link preview, reader and editor | done in the reader and the editor (the card's head opens the note, not the heading the link names) | done, in the reader and the editor, with one rule for the first lines (`link_preview.rs`). In the editor the body is the editor's own view of the lines, so the head stays while it scrolls; for a heading or a block the note does not have, the editor's card shows the note's first lines and the reader's card says "The note is empty." | out of scope |
-| Part 2: reader, section bar | done | done | does not apply: the phone has its own Compose reader, and these are not built in it |
-| Part 2: reader, a table header that stays, and the sort | done | done | does not apply: the phone has its own Compose reader, and these are not built in it |
-| Part 2: reader, footnote popover | done (a card a click opened stays at its number while the note scrolls, and closes when the number leaves the view) | done (the same page) | does not apply: the phone has its own Compose reader, and these are not built in it |
-| Part 2: reader, the soft change | done (back to reading, a picture of the editor fades out over the page; only between two notes, not to or from a canvas, a picture or a base; a click or a plain key in the frame before the new note is drawn is dropped, since it would act on the note that leaves) | done (the same page; back to reading, a picture of the editor fades out over the page, which has the keys from the start; into the editor, the pane's stack crossfades in 120 ms) | does not apply: the phone has its own Compose reader, and these are not built in it |
+| Part 2: reader, section bar | done | done | not done: the phone's own Compose reader does not have it yet (the Android section above puts it on the phone) |
+| Part 2: reader, a table header that stays, and the sort | done | done | not done: the phone's own Compose reader does not have it yet (the Android section above puts it on the phone) |
+| Part 2: reader, footnote popover | done (a card a click opened stays at its number while the note scrolls, and closes when the number leaves the view) | done (the same page) | not done: the phone's own Compose reader does not have it yet (the Android section above puts it on the phone) |
+| Part 2: reader, the soft change | done (back to reading, a picture of the editor fades out over the page; only between two notes, not to or from a canvas, a picture or a base; a click or a plain key in the frame before the new note is drawn is dropped, since it would act on the note that leaves) | done (the same page; back to reading, a picture of the editor fades out over the page, which has the keys from the start; into the editor, the pane's stack crossfades in 120 ms) | not done: the phone's own Compose reader does not have it yet (the Android section above puts it on the phone) |
 | Part 2: Linux, the caret in the accent and the editor's measure | does not apply | done | does not apply |
 | Part 2: Android, the editor with part 1, the task box and date chips | does not apply | does not apply | done in 0.68.0: Edit in a note's menu; every key lays out the whole note, so a very long note may be slow |
 | One palette file with generators | not started | not started | not started |
