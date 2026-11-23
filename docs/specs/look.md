@@ -557,7 +557,6 @@ The table says what is built. What is built is not all proven: until each of the
 - **naz, soft on the phone with the real vault.** The vault sets `dark_palette = "naz-soft"` since 2026-11-22; the phone has not been checked with it.
 - **The phone's screenshot test** `find marks every hit and the current one` failed once on `main` and passed on a second run of the same code: a flaky test, not a fixed one.
 
-
 | Part | macOS | Linux | Android |
 | --- | --- | --- | --- |
 | Reader in the new look | done | done | done (its own Compose reader: headings, callouts, highlights, italic and bold) |
