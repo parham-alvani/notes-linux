@@ -1,6 +1,6 @@
 # Daftar outline rules: closing headings and sorting the headings under one
 
-Shared by Daftar for macOS (`notes-mac`, commit `723e125`), Android (`notes-droid`, commit `ebb7aef`) and Linux (`notes-linux`, branch `outline-close-and-sort`). Both features act on the outline, the list of a note's headings beside it; neither folds the note's own text.
+Shared by Daftar for macOS (`notes-mac`, commit `723e125`), Android (`notes-droid`, commit `ebb7aef`) and Linux (`notes-linux`, branch `outline-close-and-sort`). Both features act on the outline, the list of a note's headings beside it; neither folds the note's own text. A heading is sorted by the text the reader shows since Linux 0.31.1, macOS `fda9a89` and Android `3bd22c5`; before them, by its raw Markdown.
 
 ## 1. Closing a heading in the outline
 
