@@ -449,6 +449,7 @@ impl Reader {
         object.insert("palette".into(), json!(if settings.soft_palette() { "soft" } else { "naz" }));
         object.insert("readingLine".into(), json!(settings.reading_line()));
         object.insert("textWidth".into(), json!(settings.text_width()));
+        object.insert("blockWidth".into(), json!(settings.block_width()));
         object.insert("remoteImages".into(), json!(settings.remote_images()));
         object.insert("linkPreview".into(), json!(settings.link_preview()));
         object.insert("sectionBar".into(), json!(settings.section_bar()));

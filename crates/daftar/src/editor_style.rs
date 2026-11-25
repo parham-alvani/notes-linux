@@ -18,7 +18,7 @@ use gtk::{glib, pango};
 use daftar_core::text::direction;
 use daftar_core::{
     BlockState, CodeRole, Day, GridLine, GridRole, HighlightKind, HighlightSpan, LivePreview, MarkdownHighlighter, MarkdownTable,
-    PreviewAbove, PreviewBlock, PreviewParts,
+    PreviewAbove, PreviewBlock, PreviewParts, WideBlock,
 };
 
 /// A color of the palette by name: (dark, light), as `NSPalette.pairs`.
@@ -107,6 +107,9 @@ struct Look {
     /// A panel's lines: the room at the left and at the right of the text,
     /// in em, inside the measure.
     inset: Option<(f64, f64)>,
+    /// A table's rows this many px wide, wider than the measure: their
+    /// margins are the wide block's place in the pane (`Metrics::place`).
+    wide: Option<f64>,
     /// Room above the line, in em: a panel's first line.
     above: Option<f64>,
     /// Room under the line beyond the line gap, in em: a panel's last line.
@@ -130,9 +133,10 @@ struct Look {
 
 /// The sizes a tag's look is worked out from: the text size in px, the room
 /// at each side of the measure, and the width of a `[` in the note's font.
-/// A table is a grid only when it fits the line: `line` is the measure's
-/// width in px and `mono` the width of one letter of the code font, 0
-/// when they are not known yet.
+/// A table is a grid only when it fits: `line` is the measure's width in
+/// px and `mono` the width of one letter of the code font, 0 when they are
+/// not known yet. A table wider than the measure may grow up to `wide` px
+/// (`appearance.block_width`, 0 when off) in the pane, `pane` px wide.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Metrics {
     pub size: f64,
@@ -140,11 +144,13 @@ pub struct Metrics {
     pub bracket: f64,
     pub line: f64,
     pub mono: f64,
+    pub pane: f64,
+    pub wide: f64,
 }
 
 impl Default for Metrics {
     fn default() -> Self {
-        Metrics { size: 16.0, room: 32, bracket: 5.0, line: 0.0, mono: 0.0 }
+        Metrics { size: 16.0, room: 32, bracket: 5.0, line: 0.0, mono: 0.0, pane: 0.0, wide: 0.0 }
     }
 }
 
@@ -155,10 +161,22 @@ impl Metrics {
     }
 
     /// Whether a table whose widest line is [columns] letters of the code
-    /// font fits the line. One that does not is drawn as before: the view
-    /// cannot scroll one part of a note sideways, and a wrapped row is no grid.
+    /// font fits the line, or the room a wide block may have. One that does
+    /// not is drawn as before: the view cannot scroll one part of a note
+    /// sideways, and a wrapped row is no grid.
     pub fn fits(&self, columns: usize) -> bool {
-        self.line <= 0.0 || self.mono <= 0.0 || columns as f64 * self.mono <= self.line
+        if self.line <= 0.0 || self.mono <= 0.0 {
+            return true;
+        }
+        let width = columns as f64 * self.mono;
+        width <= self.line || self.place(width).is_some_and(|wide| width <= wide.width)
+    }
+
+    /// Where a block [width] px wide stands when it grows past the measure:
+    /// `None` when it keeps the measure. The least room at each side is the
+    /// editor's own, 32 px.
+    pub fn place(&self, width: f64) -> Option<WideBlock> {
+        WideBlock::place(width, self.line, self.pane, 32.0, self.wide)
     }
 }
 
@@ -438,7 +456,8 @@ impl Styler {
             self.dress();
             // A table is a grid only while it fits the line: with another
             // line, the tables of a note that has grids are looked at again.
-            if (old.line, old.mono) != (metrics.line, metrics.mono) && self.tags.borrow().contains_key("grid") {
+            let grids = self.tags.borrow().keys().any(|name| name.starts_with("grid"));
+            if (old.line, old.mono, old.pane, old.wide) != (metrics.line, metrics.mono, metrics.pane, metrics.wide) && grids {
                 self.restyle_all();
             }
         }
@@ -532,8 +551,25 @@ impl Styler {
                 self.buffer.apply_tag(tag, &iter(range.start), &iter(range.end));
             }
         };
+        let metrics = self.metrics.get();
         for line in grid {
-            let row = self.drawn_tag("grid", Drawn::Grid, || Look { mono: true, rows: Some((0.35, 0.35)), left: true, ..Look::default() });
+            // A table wider than the measure stands wider, centred in the pane.
+            let width = line.widest as f64 * metrics.mono;
+            let row = match metrics.place(width) {
+                Some(_) => {
+                    let wide = Some(width.ceil());
+                    self.drawn_tag(&format!("grid-wide-{}", line.widest), Drawn::Grid, || Look {
+                        mono: true,
+                        rows: Some((0.35, 0.35)),
+                        left: true,
+                        wide,
+                        ..Look::default()
+                    })
+                }
+                None => {
+                    self.drawn_tag("grid", Drawn::Grid, || Look { mono: true, rows: Some((0.35, 0.35)), left: true, ..Look::default() })
+                }
+            };
             // On the line's ending too, so the table's lines are one run.
             apply(&row, line.range.start..line.range.end + 1);
             let text = line.range.start..line.range.end.max(line.range.start + 1);
@@ -1497,6 +1533,19 @@ fn apply_look(tag: &gtk::TextTag, look: &Look, dark: bool, code_font: &str, metr
         let room = em * metrics.size - if look.bracket { metrics.bracket } else { 0.0 };
         tag.set_letter_spacing((room.max(0.0) * f64::from(pango::SCALE)).round() as i32);
     }
+    if let Some(width) = look.wide {
+        match metrics.place(width) {
+            Some(wide) => {
+                tag.set_left_margin(wide.offset.round() as i32);
+                tag.set_right_margin((metrics.pane - wide.offset - wide.width).round().max(0.0) as i32);
+            }
+            // The pane grew too narrow: the view's own margins, the measure's.
+            None => {
+                tag.set_property("left-margin-set", false);
+                tag.set_property("right-margin-set", false);
+            }
+        }
+    }
     if let Some((left, right)) = look.inset {
         tag.set_left_margin(metrics.room + (left * metrics.size).round() as i32);
         tag.set_right_margin(metrics.room + (right * metrics.size).round() as i32);
@@ -1600,10 +1649,15 @@ mod tests {
 
     #[test]
     fn the_looks_follow_the_text_size() {
-        let metrics = Metrics { size: 20.0, room: 100, bracket: 6.0, line: 700.0, mono: 10.0 };
+        let metrics = Metrics { size: 20.0, room: 100, bracket: 6.0, line: 700.0, mono: 10.0, ..Metrics::default() };
         assert_eq!(metrics.gap(), 13);
         // A table is a grid while its widest line fits the measure: 70 letters of 10 px in 700 px.
         assert!(metrics.fits(70) && !metrics.fits(71) && Metrics::default().fits(500));
+        // With wide blocks, up to 60 em (1200 px) of a pane of 1400 px, less 32 px at each side.
+        let wide = Metrics { pane: 1400.0, wide: 1200.0, ..metrics };
+        assert!(wide.fits(120) && !wide.fits(121));
+        assert_eq!(wide.place(900.0), Some(WideBlock { width: 900.0, offset: 250.0 }));
+        assert_eq!(wide.place(700.0), None);
         assert_eq!(Metrics::default().gap(), 10);
         // The reader's names for a status's and a chip's colour, in this palette.
         assert_eq!(palette_name("list-marker"), "accent");

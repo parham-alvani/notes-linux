@@ -86,6 +86,7 @@ pub mod vaults;
 pub mod web_clip;
 #[cfg(feature = "web")]
 pub mod web_fetch;
+pub mod wide_block;
 pub mod yaml;
 pub mod yaml_format;
 
@@ -163,4 +164,5 @@ pub use vault_replace::{ReplaceFailure, ReplaceMatch, ReplaceOptions, ReplacePat
 pub use vault_settings::{FoldSections, VaultSettings};
 pub use vaults::{VaultEntry, Vaults, VaultsFailure};
 pub use web_clip::{Clipping, Saved as Clipped, WebClip};
+pub use wide_block::WideBlock;
 pub use yaml::{Yaml, YamlNode};

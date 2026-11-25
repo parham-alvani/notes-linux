@@ -232,6 +232,9 @@ code_font = "JetBrains Mono"
 # The widest a line of text is in the reader, in em of the text size:
 # 35 is about 70 letters. 0 is the whole window.
 text_width = 35
+# The widest a table, a code block or a picture may grow past the
+# text, in em: 60 is about 120 letters. 0 keeps them in the text's width.
+block_width = 60
 # The reader's cursor marks the line being read in a paragraph of
 # many lines with a band: its strength, in percent of the accent
 # colour. 0 leaves it out, and j and k go a paragraph at a time.

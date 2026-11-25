@@ -29,6 +29,7 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [The Open Knowledge Format: concepts in the vault, and the vault as a bundle](open-knowledge-format.md) | Linux 0.28.0 (`daftar-cli` with the audit, the MCP tools and `okf export`), macOS 0.25.0 and Android 0.65.0 (sections 1 to 3) |
 | [Several vaults on the desktop: a list, and a change without a restart](several-vaults.md) | Linux 0.29.0 (with `daftar-cli vaults`), macOS 0.26.0; Android has several vaults already |
 | [Notification rules: an alert when a note lacks today's heading](notification-rules.md) | not released yet: built in Linux (`8c2e75e`, the app and `daftar-cli agenda --notify`), macOS (`0e8740d`) and Android (`36b6529`) |
+| [Wide blocks: tables, code and pictures wider than the prose](wide-blocks.md) | not released yet |
 | [Daftar's own settings in place of `.obsidian/`](no-obsidian-folder.md) | not released yet |
 | [More of a vault's own settings: the working day, tasks, the digest, the job search, rules and folders](more-vault-settings.md) | not released yet |
 | [The look of a note: reader, editor and cursors](look.md) | Part 1 in Linux 0.30.0, macOS 0.27.0 and Android 0.67.0; part 2 in Linux 0.31.0, macOS 0.28.0 and Android 0.68.0. The spec's last table says what each app still lacks |

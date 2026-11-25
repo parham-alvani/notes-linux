@@ -295,6 +295,11 @@ impl AppSettings {
         self.file.int("appearance.text_width").unwrap_or(35).max(0)
     }
 
+    /// The widest a wide block may be, in em; 0 is off (`docs/specs/wide-blocks.md`).
+    pub fn block_width(&self) -> i64 {
+        self.file.int("appearance.block_width").unwrap_or(60).max(0)
+    }
+
     /// The reading cursor's band on the line being read, in percent of the accent; 0 is none.
     pub fn reading_line(&self) -> i64 {
         self.file.int("appearance.reading_line").unwrap_or(18).clamp(0, 100)

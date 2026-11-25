@@ -675,9 +675,9 @@ impl Editor {
     /// when the pane's width, the text size or the setting changes, never on
     /// a key, and never while the view lays itself out.
     fn measure(&self) {
-        let (size, width) = {
+        let (size, width, blocks) = {
             let settings = self.settings.borrow();
-            (settings.text_size() as f64, settings.text_width() as f64)
+            (settings.text_size() as f64, settings.text_width() as f64, settings.block_width() as f64)
         };
         // The pane without the margin's marks: the room for text.
         let pane = self.view.hadjustment().map_or(0.0, |h| h.page_size());
@@ -694,7 +694,10 @@ impl Editor {
         letters.set_font_description(Some(&face));
         let mono = f64::from(letters.pixel_size().0) / 20.0;
         let line = if pane > 1.0 { pane - 2.0 * f64::from(room) } else { 0.0 };
-        self.styler.set_metrics(Metrics { size, room, bracket, line, mono });
+        // A wide table may grow past the measure (`docs/specs/wide-blocks.md`);
+        // with no measure there is nothing to grow past.
+        let wide = if width > 0.0 { blocks * size } else { 0.0 };
+        self.styler.set_metrics(Metrics { size, room, bracket, line, mono, pane: pane.max(0.0), wide });
     }
 
     /// The measure follows the pane's width, and the late chips the day.

@@ -144,6 +144,7 @@ const ALLOWED: &[(&str, Rule)] = &[
     ("appearance.font", Rule::Name),
     ("appearance.code_font", Rule::Name),
     ("appearance.text_width", Rule::Int(0, 400)),
+    ("appearance.block_width", Rule::Int(0, 400)),
     ("appearance.reading_line", Rule::Int(0, 100)),
     ("appearance.fold_sections", Rule::Choice(&["vault", "always", "never"])),
     ("appearance.link_preview", Rule::Bool),
