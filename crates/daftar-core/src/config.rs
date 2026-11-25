@@ -305,8 +305,11 @@ digest = true
 # The morning digest of the tasks due, as HH:MM.
 digest_time = "09:00"
 
-# A rule: at a time of the day, a note with no heading for today rings.
-# The heading is a moment.js format, as daily notes are named.
+# A rule of your own: at `at` each day, when the note has no heading
+# that starts with today's `heading` (a moment.js format, as a daily
+# note's name), an alert that opens the note. `title` is the note's
+# name and `message` says the heading it looks for when they are
+# left out. One section for each rule, named as you like.
 # [notifications.rules.diary]
 # note = "Diet/Diary.md"
 # heading = "D MMM YYYY · dddd"

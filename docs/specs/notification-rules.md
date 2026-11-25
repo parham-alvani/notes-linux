@@ -28,7 +28,7 @@ message = "Nothing is logged in the diary today."
 - `<id>` is one or more of `A`–`Z`, `a`–`z`, `0`–`9`, `_` and `-`. A section whose id has another character is no rule.
 - A rule with no `note`, `heading` or `at`, or with one that does not fit the table, is ignored as a whole; the other rules stand. A key the table does not name is left alone, so a later kind of rule can add keys.
 - The rules are read in the order the file writes their sections, the vault's first. A vault's rule and a computer's rule with the same id are one rule: each key is the vault's when the vault sets it (`docs/specs/vault-config.md`), as for every other setting.
-- A vault may set every key of a rule: a rule reads one note of the vault and starts nothing. `notifications.rules.<id>.note` is checked as an in-vault path, and a path that leaves the vault makes the rule ignored.
+- A vault may set every key of a rule: a rule reads one note of the vault and starts nothing. `notifications.rules.<id>.note` is checked as an in-vault path. A vault's path that leaves the vault is refused like any refused setting: the rule then stands only when the computer's own file sets a `note` for the same id.
 - `daftar-cli config` lists each key of each rule, with where its value came from.
 
 Each core has the type `NotificationRule` (`notification_rules.rs`, `NotificationRule.swift`, `NotificationRule.kt`) with the rules read from the settings (`NotificationRule::all`), the expected heading of a day (`expected`), whether a note's text has it (`is_missing`), and the title and body of its alert.
@@ -46,7 +46,7 @@ At `at` on day `D`, when the note has no heading for `D`, the app sends the aler
 - **Identifier**: `rule.<id>`, so a day's alert replaces the day before's.
 - **A click** opens the note.
 
-A rule is checked on every day. It rings at most once a day.
+A rule is checked on every day. It rings at most once a day. An alert already shown stays when the heading is written later; only an alert still ahead is taken away.
 
 ## 3. When each app checks
 
@@ -55,7 +55,7 @@ A rule is checked on every day. It rings at most once a day.
 | Linux (the app) | With the other alerts (`notifier.rs`): planned again whenever the vault changes, so a heading written before `at` takes the alert away. Rings while Daftar runs, at most ten minutes late. |
 | Linux and macOS (`daftar-cli agenda --notify`) | Each run (the timer runs it every minute) sends each rule that is due: `at` has come today, no more than ten minutes ago, the note has no heading for today, and `rule.<id>.<YYYY-MM-DD>` is not in the state file of sent alerts. |
 | macOS (the app) | A notification request for the next `at` per rule, planned with the other alerts whenever the vault changes; a request for a day whose heading is there already is not made, and one made is taken away when the heading appears. The system holds it while the app is closed, so a heading written on another device and not pulled yet does not take it away. |
-| Android | A job at the next `at` per rule (as `TaskDigestWorker`) that reads the note when it runs, so the check is at the time of the alert, after a sync. |
+| Android | A job at the next `at` per rule (`NotificationRuleWorker`, as `TaskDigestWorker`) that syncs first when background sync may run, then reads the note, so the check is at the time of the alert. The rules of every vault on the phone are read, each alert with the vault's own number and the tag `rule.<id>`; the phone has no `config.toml`, so a phone that does not follow the vault's settings has no rules. A rule planned up to ten minutes after its `at`, on a day not checked yet, is checked at once. Doze may run the job late. |
 
 ## 4. Tests every app must have
 
