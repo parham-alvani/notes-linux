@@ -496,13 +496,21 @@ impl Follows {
 
 fn verdict(key: &str, value: Option<&Value>, root: Option<&Path>) -> Verdict {
     let section = key.rsplit_once('.').map_or("", |(section, _)| section);
-    let Some((_, rule)) = ALLOWED.iter().find(|(allowed, _)| *allowed == key) else {
+    let rule_key = crate::notification_rules::id_of(key).and_then(|_| key.rsplit_once('.')).map(|(_, name)| name);
+    let found = match rule_key {
+        Some("note") => Some(Rule::InVault),
+        Some("at") => Some(Rule::Time),
+        Some("heading") => Some(Rule::Name),
+        Some(name) if crate::notification_rules::KEYS.contains(&name) => Some(Rule::Text),
+        _ => ALLOWED.iter().find(|(allowed, _)| *allowed == key).map(|(_, rule)| *rule),
+    };
+    let Some(rule) = found else {
         let refused =
             if section.is_empty() { TOP.contains(&key) } else { SECTIONS.contains(&section) && !OPEN_SECTIONS.contains(&section) };
         return if refused { Verdict::Refused } else { Verdict::Skipped };
     };
     let one_line = |text: &str| !text.chars().any(char::is_control);
-    let fits = match (*rule, value) {
+    let fits = match (rule, value) {
         (Rule::Bool, Some(Value::Bool(_))) => true,
         (Rule::OnlyFalse, Some(Value::Bool(on))) => !on,
         (Rule::Int(low, high), Some(Value::Int(number))) => (low..=high).contains(number),
@@ -519,7 +527,7 @@ fn verdict(key: &str, value: Option<&Value>, root: Option<&Path>) -> Verdict {
     if fits { Verdict::Used } else { Verdict::Skipped }
 }
 
-fn is_time(text: &str) -> bool {
+pub(crate) fn is_time(text: &str) -> bool {
     let Some((hour, minute)) = text.split_once(':') else { return false };
     let number = |part: &str, below: u32| part.len() == 2 && part.parse::<u32>().is_ok_and(|n| n < below);
     number(hour, 24) && number(minute, 60)

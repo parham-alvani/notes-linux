@@ -799,7 +799,9 @@ enum Command {
         /// Sends a desktop notification for each meeting of the week notes
         /// and each booked job event that starts within --before minutes,
         /// once (what was sent is kept in Daftar's state folder), with its
-        /// prep note; for a timer that runs it every minute.
+        /// prep note, and for each `[notifications.rules.<id>]` whose note
+        /// lacks today's heading at its time; for a timer that runs it
+        /// every minute.
         #[arg(long, conflicts_with_all = ["json", "waybar", "day"])]
         notify: bool,
         /// With --notify or --install-timer, the minutes of notice; else
@@ -1743,7 +1745,8 @@ fn run(cli: Cli) -> Result<(), String> {
             let lead = before.or_else(|| config(&root).int("notifications.meeting_lead")).unwrap_or(alerts::LEAD).max(0);
             let index = Vault::index(&root, None);
             let search = daftar_core::JobSearch::new(&index, &daftar_core::JobKeys::default(), |path| !hidden.contains(path));
-            alerts::run(&root, &search, lead, &chrono::Local, chrono::Utc::now())?;
+            let rules = daftar_core::NotificationRule::all(&config(&root));
+            alerts::run(&root, &search, &rules, lead, &chrono::Local, chrono::Utc::now())?;
         }
         Command::Agenda { day, json, waybar, .. } => {
             let (zone, now) = (chrono::Local, chrono::Utc::now());

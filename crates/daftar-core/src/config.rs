@@ -305,6 +305,15 @@ digest = true
 # The morning digest of the tasks due, as HH:MM.
 digest_time = "09:00"
 
+# A rule: at a time of the day, a note with no heading for today rings.
+# The heading is a moment.js format, as daily notes are named.
+# [notifications.rules.diary]
+# note = "Diet/Diary.md"
+# heading = "D MMM YYYY · dddd"
+# at = "21:00"
+# title = "Diary"
+# message = "Nothing is logged in the diary today."
+
 [terminal]
 # Empty is the login shell in $SHELL.
 shell = ""

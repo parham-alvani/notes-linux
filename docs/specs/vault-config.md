@@ -70,6 +70,10 @@ What a value from the vault must be, the same in every app:
 | `notifications.meetings`, `notifications.digest` | a boolean |
 | `notifications.meeting_lead` | 0 to 1440 |
 | `notifications.digest_time` | `HH:MM` |
+| `notifications.rules.<id>.note` | a path in the vault, as `home.image` (`notification-rules.md`) |
+| `notifications.rules.<id>.at` | `HH:MM` |
+| `notifications.rules.<id>.heading` | text of one line, not empty |
+| `notifications.rules.<id>.title`, `notifications.rules.<id>.message` | text of one line |
 | `terminal.font_size` | 9 to 24 |
 | `home.image`, `export.logo`, `scratchpad.note` (and `scratchpad.folder` on Linux) | a path in the vault, or empty |
 | `export.footer`, `capture.heading`, `capture.hotkey` | text of one line |

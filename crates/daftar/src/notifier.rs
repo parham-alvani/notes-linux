@@ -1,8 +1,8 @@
-//! Meeting alerts and the morning task digest, as the Mac's `Notifier` sends
+//! Meeting alerts, the morning task digest and the person's own rules
+//! (`docs/specs/notification-rules.md`), as the Mac's `Notifier` sends
 //! them, through the desktop's notifications. Unlike the Mac's, which the
 //! system holds while the app is closed, these are checked against the
-//! clock every few seconds: they ring while
-//! Daftar runs. They are planned again whenever the vault changes.
+//! clock every few seconds: they ring while Daftar runs. They are planned again whenever the vault changes.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,7 +13,7 @@ use chrono::Utc;
 use chrono::{DateTime, Duration, Local, NaiveTime, TimeZone};
 use gtk::{gio, glib};
 
-use daftar_core::{Day, JobKeys, JobSearch, Meeting};
+use daftar_core::{Day, JobKeys, JobSearch, Meeting, NotificationRule};
 
 use crate::store::VaultStore;
 use crate::today::{TaskGroups, plain, prep_for};
@@ -26,6 +26,7 @@ pub struct Wanted {
     pub lead: i64,
     pub digest: bool,
     pub digest_at: NaiveTime,
+    pub rules: Vec<NotificationRule>,
 }
 
 /// One notification to send at a time.
@@ -40,15 +41,19 @@ pub struct Alert {
     /// The note to prepare with, for a meeting with a company of the job
     /// search: the notification opens it.
     pub prep: Option<String>,
+    /// The note a rule is about: a click opens it.
+    pub note: Option<String>,
 }
 
 /// The alerts for [meetings] still ahead of [now], at most 40, each with
-/// the note [prep] gives it, and the next digest of [groups] when anything
-/// is due or late.
+/// the note [prep] gives it, the next digest of [groups] when anything
+/// is due or late, and each rule's next time when its note, as [read]
+/// gives it, lacks that day's heading.
 pub fn plan(
     meetings: &[Meeting],
     prep: impl Fn(&Meeting) -> Option<String>,
     groups: impl Fn(Day) -> TaskGroups,
+    read: impl Fn(&str) -> String,
     now: DateTime<Local>,
     wanted: &Wanted,
 ) -> Vec<Alert> {
@@ -73,14 +78,12 @@ pub fn plan(
                 body,
                 join: meeting.join.clone().filter(|url| url.starts_with("https://") || url.starts_with("http://")),
                 prep,
+                note: None,
             });
         }
     }
     if wanted.digest {
-        let mut at = Local.from_local_datetime(&now.date_naive().and_time(wanted.digest_at)).earliest().unwrap_or(now);
-        if at <= now {
-            at += Duration::days(1);
-        }
+        let at = next(wanted.digest_at, now);
         let groups = groups(Day::from(at.date_naive()));
         if !groups.today.is_empty() || !groups.overdue.is_empty() {
             let due = &groups.today;
@@ -92,10 +95,24 @@ pub fn plan(
                 lines.push(format!("{} overdue", groups.overdue.len()));
             }
             let title = if due.is_empty() { "Nothing due today".to_string() } else { format!("{} due today", due.len()) };
-            out.push(Alert { id: "digest".into(), at, title, body: lines.join("\n"), join: None, prep: None });
+            out.push(Alert { id: "digest".into(), at, title, body: lines.join("\n"), join: None, prep: None, note: None });
+        }
+    }
+    for rule in &wanted.rules {
+        let at = next(rule.at, now);
+        let day = Day::from(at.date_naive());
+        if rule.is_missing(&read(&rule.note), day) {
+            let note = Some(rule.note.clone());
+            out.push(Alert { id: rule.alert_id(), at, title: rule.title(), body: rule.body(day), join: None, prep: None, note });
         }
     }
     out
+}
+
+/// The next [time] of the day after [now]: today's, else tomorrow's.
+fn next(time: NaiveTime, now: DateTime<Local>) -> DateTime<Local> {
+    let at = Local.from_local_datetime(&now.date_naive().and_time(time)).earliest().unwrap_or(now);
+    if at <= now { at + Duration::days(1) } else { at }
 }
 
 /// The alerts planned last, rung by the wall clock: a check every
@@ -130,7 +147,8 @@ impl Notifier {
         let tasks = store.index().tasks();
         let jobs = JobSearch::new(&store.index(), &JobKeys::default(), |_| true);
         let prep = |meeting: &Meeting| prep_for(&jobs, meeting).map(|(_, path)| path);
-        let alerts = plan(&meetings, prep, |day| TaskGroups::new(tasks.clone(), day, 0), Local::now(), wanted);
+        let read = |note: &str| std::fs::read_to_string(store.root.join(note)).unwrap_or_default();
+        let alerts = plan(&meetings, prep, |day| TaskGroups::new(tasks.clone(), day, 0), read, Local::now(), wanted);
         *self.pending.borrow_mut() = alerts;
     }
 }
@@ -164,6 +182,9 @@ fn send(alert: &Alert) {
     let Some(app) = gio::Application::default() else { return };
     let notification = gio::Notification::new(&alert.title);
     notification.set_body(Some(&alert.body));
+    if let Some(note) = &alert.note {
+        notification.set_default_action_and_target_value("app.open-note", Some(&note.to_variant()));
+    }
     // The prep note first: a click opens it, and Join is a button beside.
     if let Some(prep) = &alert.prep {
         notification.set_default_action_and_target_value("app.open-note", Some(&prep.to_variant()));
@@ -176,7 +197,7 @@ fn send(alert: &Alert) {
             }
             notification.add_button_with_target_value("Join", "app.open-url", Some(&url.to_variant()));
         }
-        None if alert.prep.is_none() => notification.set_default_action("app.today"),
+        None if alert.prep.is_none() && alert.note.is_none() => notification.set_default_action("app.today"),
         None => {}
     }
     app.send_notification(Some(&alert.id), &notification);
@@ -192,6 +213,7 @@ impl Wanted {
                 .string("notifications.digest_time")
                 .and_then(|t| NaiveTime::parse_from_str(&t, "%H:%M").ok())
                 .unwrap_or(NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
+            rules: NotificationRule::all(file),
         }
     }
 }
@@ -219,7 +241,8 @@ mod tests {
     #[test]
     fn an_alert_rings_by_the_wall_clock_and_not_long_after() {
         let at = |h: u32, m: u32| Local.with_ymd_and_hms(2026, 11, 6, h, m, 0).unwrap();
-        let alert = |id: &str, when| Alert { id: id.into(), at: when, title: id.into(), body: String::new(), join: None, prep: None };
+        let alert =
+            |id: &str, when| Alert { id: id.into(), at: when, title: id.into(), body: String::new(), join: None, prep: None, note: None };
         let mut pending = vec![alert("soon", at(9, 55)), alert("slept", at(2, 0)), alert("later", at(18, 0))];
         let due = take_due(&mut pending, at(9, 56));
         assert_eq!(due.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["soon"]);
@@ -233,13 +256,13 @@ mod tests {
         let now = Local::now();
         let soon = (now + Duration::hours(1)).with_timezone(&Utc);
         let gone = (now - Duration::hours(1)).with_timezone(&Utc);
-        let wanted = Wanted { meetings: true, lead: 5, digest: false, digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap() };
+        let wanted = Wanted { meetings: true, lead: 5, digest: false, digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap(), rules: vec![] };
         let meetings = [
             meeting("Standup", soon, Some("https://meet.example.com/x")),
             meeting("Gone", gone, None),
             meeting("Odd", soon, Some("zoommtg://x")),
         ];
-        let alerts = plan(&meetings, |_| None, |_| TaskGroups::default(), now, &wanted);
+        let alerts = plan(&meetings, |_| None, |_| TaskGroups::default(), |_| String::new(), now, &wanted);
         assert_eq!(alerts.len(), 2);
         assert_eq!(alerts[0].title, "Standup");
         assert_eq!(alerts[0].at, soon.with_timezone(&Local) - Duration::minutes(5));
@@ -253,7 +276,7 @@ mod tests {
     fn a_meeting_with_a_company_names_its_prep_note() {
         let now = Local::now();
         let soon = (now + Duration::hours(1)).with_timezone(&Utc);
-        let wanted = Wanted { meetings: true, lead: 5, digest: false, digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap() };
+        let wanted = Wanted { meetings: true, lead: 5, digest: false, digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap(), rules: vec![] };
         let index = {
             let mut index = daftar_core::VaultIndex::default();
             let path = "Companies/Acme/Acme.md";
@@ -266,7 +289,8 @@ mod tests {
         };
         let jobs = JobSearch::new(&index, &JobKeys::default(), |_| true);
         let meetings = [meeting("Interview with Acme", soon, None), meeting("Standup", soon, None)];
-        let alerts = plan(&meetings, |m| prep_for(&jobs, m).map(|(_, path)| path), |_| TaskGroups::default(), now, &wanted);
+        let alerts =
+            plan(&meetings, |m| prep_for(&jobs, m).map(|(_, path)| path), |_| TaskGroups::default(), |_| String::new(), now, &wanted);
         assert_eq!(alerts[0].prep.as_deref(), Some("Companies/Acme/Interview Preparation.md"));
         assert!(alerts[0].body.ends_with(". Prep: Companies/Acme/Interview Preparation.md"), "{}", alerts[0].body);
         assert_eq!(alerts[1].prep, None);
@@ -275,15 +299,37 @@ mod tests {
     #[test]
     fn the_digest_lists_what_is_due() {
         let now = Local::now();
-        let wanted = Wanted { meetings: false, lead: 0, digest: true, digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap() };
+        let wanted = Wanted { meetings: false, lead: 0, digest: true, digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap(), rules: vec![] };
         let task = |raw: &str| VaultTask { path: "A.md".into(), task: TaskLine::parse(raw, 0, "").unwrap() };
         let groups =
             |_| TaskGroups { today: vec![task("- [ ] Call [[Sam Lee|Sam]]")], overdue: vec![task("- [ ] Late")], ..Default::default() };
-        let alerts = plan(&[], |_| None, groups, now, &wanted);
+        let alerts = plan(&[], |_| None, groups, |_| String::new(), now, &wanted);
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].title, "1 due today");
         assert_eq!(alerts[0].body, "• Call Sam\n1 overdue");
         assert!(alerts[0].at > now);
-        assert!(plan(&[], |_| None, |_| TaskGroups::default(), now, &wanted).is_empty());
+        assert!(plan(&[], |_| None, |_| TaskGroups::default(), |_| String::new(), now, &wanted).is_empty());
+    }
+
+    #[test]
+    fn a_rule_rings_at_its_time_when_the_note_lacks_the_day() {
+        let file = daftar_core::ConfigFile::new(
+            "[notifications]\nmeetings = false\ndigest = false\n\n[notifications.rules.diary]\nnote = \"Diet/Diary.md\"\nheading = \"YYYY-MM-DD\"\nat = \"21:00\"\n",
+        );
+        let wanted = Wanted::from(&file);
+        let at = |d: u32, h: u32| Local.with_ymd_and_hms(2026, 11, d, h, 0, 0).unwrap();
+        let none = |_: &str| String::new();
+        let alerts = plan(&[], |_| None, |_| TaskGroups::default(), none, at(25, 20), &wanted);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!((alerts[0].id.as_str(), alerts[0].at), ("rule.diary", at(25, 21)));
+        assert_eq!(alerts[0].title, "Diary");
+        assert_eq!(alerts[0].body, "No heading for today yet: 2026-11-25");
+        assert_eq!(alerts[0].note.as_deref(), Some("Diet/Diary.md"));
+        // Written before its time: nothing rings.
+        let written = |_: &str| "## 2026-11-25\n".to_string();
+        assert!(plan(&[], |_| None, |_| TaskGroups::default(), written, at(25, 20), &wanted).is_empty());
+        // After its time, it is tomorrow's, for tomorrow's heading.
+        let alerts = plan(&[], |_| None, |_| TaskGroups::default(), written, at(25, 22), &wanted);
+        assert_eq!((alerts[0].at, alerts[0].body.as_str()), (at(26, 21), "No heading for today yet: 2026-11-26"));
     }
 }

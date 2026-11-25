@@ -2,7 +2,9 @@
 //! with no app running, for a timer that runs it every minute. Each
 //! meeting of the week notes, and each booked `job_next` event, that starts
 //! within the lead time is sent once as a desktop notification, with its
-//! prep note when it is about a company of the job search; what was sent is
+//! prep note when it is about a company of the job search, and each rule
+//! of `[notifications.rules.<id>]` whose note lacks today's heading at its
+//! time (`docs/specs/notification-rules.md`); what was sent is
 //! kept in `notified-<hash>.json` in Daftar's state folder, beside the
 //! drill's state, so the next run sends it again never. `--install-timer`
 //! writes the systemd user units that run it.
@@ -15,7 +17,7 @@ use std::process::Command;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde_json::{Map, Value, json};
 
-use daftar_core::{Day, JobSearch, Meeting, reading_places};
+use daftar_core::{Day, JobSearch, Meeting, NotificationRule, reading_places};
 
 /// Minutes before a meeting, when neither `--before` nor
 /// `notifications.meeting_lead` says: the app's.
@@ -114,6 +116,30 @@ pub fn due<Tz: TimeZone>(events: &[Event], sent: &Sent, now: DateTime<Utc>, lead
         .collect()
 }
 
+/// The alerts of [rules] due at [now] and not in [sent]: a rule whose time
+/// came today on [zone]'s clock, no more than `LATE` minutes ago, and
+/// whose note, as [read] gives it, lacks today's heading. Each is keyed by
+/// its day, so it rings once a day.
+pub fn rule_alerts<Tz: TimeZone>(
+    rules: &[NotificationRule],
+    read: impl Fn(&str) -> String,
+    sent: &Sent,
+    now: DateTime<Utc>,
+    zone: &Tz,
+) -> Vec<Alert> {
+    let local = now.with_timezone(zone).naive_local();
+    let today = Day::from(local.date());
+    rules
+        .iter()
+        .filter_map(|rule| {
+            let start = zone.from_local_datetime(&local.date().and_time(rule.at)).earliest()?.with_timezone(&Utc);
+            let key = format!("{}.{today}", rule.alert_id());
+            let due = start <= now && now - start <= Duration::minutes(LATE) && !sent.keys.contains_key(&key);
+            (due && rule.is_missing(&read(&rule.note), today)).then(|| Alert { key, start, title: rule.title(), body: rule.body(today) })
+        })
+        .collect()
+}
+
 /// The alerts sent, by key, with the start of each: the state file's content.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sent {
@@ -167,15 +193,24 @@ impl Sent {
 
 /// Sends what is due for the vault at [root] at [now]: the meetings of the
 /// week notes from yesterday to tomorrow and the booked events of [jobs],
-/// [lead] minutes ahead, each once. Gives what it sent.
-pub fn run<Tz: TimeZone>(root: &Path, jobs: &JobSearch, lead: i64, zone: &Tz, now: DateTime<Utc>) -> Result<Vec<Alert>, String> {
+/// [lead] minutes ahead, and the [rules] at their time, each once. Gives
+/// what it sent.
+pub fn run<Tz: TimeZone>(
+    root: &Path,
+    jobs: &JobSearch,
+    rules: &[NotificationRule],
+    lead: i64,
+    zone: &Tz,
+    now: DateTime<Utc>,
+) -> Result<Vec<Alert>, String> {
     let today = Day::from(now.with_timezone(zone).date_naive());
     let mut meetings = crate::agenda::meetings(root, today);
     meetings.extend(crate::agenda::meetings(root, today.adding_days(1)));
     let events = events(&meetings, jobs, zone);
     let file = Sent::file(root);
     let mut sent = Sent::load(&file).pruned(now);
-    let alerts = due(&events, &sent, now, lead, zone);
+    let mut alerts = due(&events, &sent, now, lead, zone);
+    alerts.extend(rule_alerts(rules, |note| fs::read_to_string(root.join(note)).unwrap_or_default(), &sent, now, zone));
     let mut failure = None;
     for alert in &alerts {
         if let Err(error) = send(alert) {
@@ -378,6 +413,26 @@ mod tests {
         assert_eq!(titles(due(&events, &none, at("2026-11-16T00:05:00"), 5, &Utc)), ["Night sync"]);
         // A lead of nothing: at the start.
         assert_eq!(due(&events, &none, at("2026-11-15T09:00:00"), 0, &Utc)[0].body, "Now, at 09:00");
+    }
+
+    #[test]
+    fn a_rule_rings_once_at_its_time_when_the_note_lacks_today() {
+        let file = daftar_core::ConfigFile::new(
+            "[notifications.rules.diary]\nnote = \"Diet/Diary.md\"\nheading = \"D MMM YYYY · dddd\"\nat = \"21:00\"\n",
+        );
+        let rules = NotificationRule::all(&file);
+        let none = |_: &str| String::new();
+        let alerts = rule_alerts(&rules, none, &Sent::default(), at("2026-11-25T21:00:30"), &Utc);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].key, "rule.diary.2026-11-25");
+        assert_eq!((alerts[0].title.as_str(), alerts[0].body.as_str()), ("Diary", "No heading for today yet: 25 Nov 2026 · Wednesday"));
+        // Before its time, too late, sent already, or written: nothing.
+        assert!(rule_alerts(&rules, none, &Sent::default(), at("2026-11-25T20:59:00"), &Utc).is_empty());
+        assert!(rule_alerts(&rules, none, &Sent::default(), at("2026-11-25T21:11:00"), &Utc).is_empty());
+        let sent = Sent { keys: [(alerts[0].key.clone(), alerts[0].start)].into() };
+        assert!(rule_alerts(&rules, none, &sent, at("2026-11-25T21:01:00"), &Utc).is_empty());
+        let written = |_: &str| "### 25 Nov 2026 · Wednesday\n".to_string();
+        assert!(rule_alerts(&rules, written, &Sent::default(), at("2026-11-25T21:00:30"), &Utc).is_empty());
     }
 
     #[test]
