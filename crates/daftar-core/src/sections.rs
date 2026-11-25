@@ -7,6 +7,7 @@
 //! the outline, and sorting the headings under one.
 
 use crate::note_parser::{Heading, NoteParser};
+use crate::search::readable;
 use crate::text::standard_compare;
 
 pub struct Sections;
@@ -116,17 +117,20 @@ impl Sections {
 
     /// The text with the headings right under heading [index] in the order
     /// of their names, as a file manager orders them, each with its section.
-    /// The text before the first of them stays first. `None` when they are
+    /// A name is the text the reader shows: `[Ann](https://x.y)` sorts as
+    /// `Ann`, `[[Notes/Bo|Bo]]` as `Bo`, `**Cy**` as `Cy`. The text before the first of them stays first. `None` when they are
     /// in order already or there are fewer than two.
     pub fn sort_children(text: &str, index: usize) -> Option<String> {
         let start = Self::headings(text);
         if index >= start.len() {
             return None;
         }
-        let names: Vec<&str> = Self::children(index, &start).iter().map(|i| start[*i].text.as_str()).collect();
+        // A heading is sorted by the text the reader shows: a link by its
+        // text, with no emphasis marks.
+        let names: Vec<String> = Self::children(index, &start).iter().map(|i| readable(&start[*i].text)).collect();
         let mut sorted: Vec<usize> = (0..names.len()).collect();
         // A stable sort keeps equal names in their order.
-        sorted.sort_by(|a, b| standard_compare(names[*a], names[*b]));
+        sorted.sort_by(|a, b| standard_compare(&names[*a], &names[*b]));
         if names.len() < 2 || sorted.iter().enumerate().all(|(at, i)| at == *i) {
             return None;
         }
@@ -307,6 +311,14 @@ mod tests {
         // One heading under it, or none: nothing to sort.
         assert_eq!(Sections::sort_children(text, 6), None);
         assert_eq!(Sections::sort_children(text, 7), None);
+    }
+
+    #[test]
+    fn headings_sort_by_the_text_the_reader_shows() {
+        let text = "# Models\n## [Zoe](https://x.y/zoe)\n## Bea\n## [[People/Cy|Cy]]\n## **Al**\n## [Dee](<https://x.y/d_(e)>)\n";
+        let sorted = Sections::sort_children(text, 0).unwrap();
+        assert_eq!(sorted, "# Models\n## **Al**\n## Bea\n## [[People/Cy|Cy]]\n## [Dee](<https://x.y/d_(e)>)\n## [Zoe](https://x.y/zoe)\n");
+        assert_eq!(Sections::sort_children(&sorted, 0), None);
     }
 
     #[test]

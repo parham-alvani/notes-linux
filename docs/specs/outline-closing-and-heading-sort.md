@@ -16,7 +16,7 @@ Shared by Daftar for macOS (`notes-mac`, commit `723e125`), Android (`notes-droi
 ## 2. Sort Headings Under This
 
 - The children of a heading are the headings of the highest level in its section (the lines up to the next heading of its level or above).
-- The command puts them in the order of their names: natural (`Bean 9` before `Bean 10`) and case-insensitive (`apple` before `Tomato`), as Finder orders names, and stable for equal names.
+- The command puts them in the order of their names: natural (`Bean 9` before `Bean 10`) and case-insensitive (`apple` before `Tomato`), as Finder orders names, and stable for equal names. A heading's name is the text the reader shows, not its Markdown: a link is its text (`[Ann](https://x.y)` is `Ann`, `[[Notes/Bo|Bo]]` is `Bo`, `[[Cy]]` is `Cy`), and the marks of emphasis, highlight and code are left out (`**Al**` is `Al`). So a heading with a link sorts among the plain ones, not before them.
 - Each child moves with its whole section, the deeper headings and text under it included. The text between the heading and its first child stays where it is.
 - Every line of the note is still there once after a sort; a second sort changes nothing.
 - Nothing changes when the heading has fewer than two children, or they are in order already; the app says so: "“X” has fewer than two headings right under it.", "The headings under “X” are in order already."
@@ -61,3 +61,7 @@ Tall.
 - The children of `Plants` are `Tomato`, `apple`, `Bean 10`, `Bean 9`.
 - Sorting them gives the headings `Plants`, `apple`, `Bean 9`, `Bean 10`, `Tomato`, `Cherry tomato`, `Kitchen`, `Zucchini`; the text starts `# Plants\n\nIntro stays first.\n\n## apple\n\nGreen.\n`, and holds `## Tomato\n\nRed.\n\n### Cherry tomato\n` and `## Bean 9\nTall.\n`.
 - Sorting again changes nothing; `Kitchen` (one child) and `Zucchini` (none) have nothing to sort.
+
+With the note `# Models\n## [Zoe](https://x.y/zoe)\n## Bea\n## [[People/Cy|Cy]]\n## **Al**\n## [Dee](<https://x.y/d_(e)>)\n`:
+
+- Sorting the children of `Models` gives `**Al**`, `Bea`, `[[People/Cy|Cy]]`, `[Dee](<https://x.y/d_(e)>)`, `[Zoe](https://x.y/zoe)`; sorting again changes nothing.
