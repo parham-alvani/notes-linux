@@ -1534,16 +1534,13 @@ fn apply_look(tag: &gtk::TextTag, look: &Look, dark: bool, code_font: &str, metr
         tag.set_letter_spacing((room.max(0.0) * f64::from(pango::SCALE)).round() as i32);
     }
     if let Some(width) = look.wide {
-        match metrics.place(width) {
-            Some(wide) => {
-                tag.set_left_margin(wide.offset.round() as i32);
-                tag.set_right_margin((metrics.pane - wide.offset - wide.width).round().max(0.0) as i32);
-            }
+        if let Some(wide) = metrics.place(width) {
+            tag.set_left_margin(wide.offset.round() as i32);
+            tag.set_right_margin((metrics.pane - wide.offset - wide.width).round().max(0.0) as i32);
+        } else {
             // The pane grew too narrow: the view's own margins, the measure's.
-            None => {
-                tag.set_property("left-margin-set", false);
-                tag.set_property("right-margin-set", false);
-            }
+            tag.set_property("left-margin-set", false);
+            tag.set_property("right-margin-set", false);
         }
     }
     if let Some((left, right)) = look.inset {
