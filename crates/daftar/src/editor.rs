@@ -2180,7 +2180,7 @@ fn slash_snippets() -> Vec<Snippet> {
 /// `files.attachments` in its `.daftar.toml`, else `attachmentFolderPath`
 /// in `.obsidian/app.json`; the vault's root without one.
 pub fn attachment_folder(root: &Path) -> String {
-    daftar_core::Vault::attachment_folder(root)
+    Vault::attachment_folder(root)
 }
 
 /// Writes [text] to [file] through a temporary file and a rename, only while
