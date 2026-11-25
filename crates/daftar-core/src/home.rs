@@ -149,7 +149,7 @@ impl Beautitab {
                     _ => None,
                 },
                 show_greeting: flag("home.show_greeting", defaults.show_greeting),
-                greeting_text: own.string("home.greeting").map(|t| t.trim().to_string()).unwrap_or_default(),
+                greeting_text: own.string("home.greeting").map_or_default(|t| t.trim().to_string()),
                 show_search: flag("home.show_search", defaults.show_search),
                 show_recent_files: flag("home.show_recent", defaults.show_recent_files),
                 show_bookmarks: flag("home.show_bookmarks", defaults.show_bookmarks),
