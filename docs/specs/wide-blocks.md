@@ -48,7 +48,7 @@ The core of each app has the rule as one function, `WideBlock.place` (Swift), `W
 | Place | Rule |
 | --- | --- |
 | The reader (macOS and Linux share it, `web/src`) | Every wide block of section 2. |
-| The macOS editor | A table's grid, a code block's panel and a picture under its line. A code line wider than the measure wraps at `L`, not at `M`. |
+| The macOS editor | A picture under its line. A table's grid and a code block's panel keep the measure for now: TextKit puts a line wider than its text container at the container's edge, so they would need the container `L` wide and every other paragraph held to the measure by indents, a rewrite of the editor's layout. |
 | The Linux editor | A table's grid: `Metrics::fits` holds against `L`, and a wide grid's rows get the margins of its place. `R` is the editor's least room, 32 px. A code block's panel and a picture keep the measure for now: GtkTextView wraps a code block at the measure and draws a picture inside it. |
 | Android, the reader | Only where the screen is wider than the measure plus `2 R` (a tablet, a phone on its side); on a phone held upright `L = M` and nothing changes. |
 | Android, the editor | Not in this spec. |

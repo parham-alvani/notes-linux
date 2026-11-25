@@ -390,7 +390,8 @@ function math(md) {
     return true;
   });
 
-  md.renderer.rules.math_block = (tokens, idx) => `<div class="math math-block">${render(tokens[idx].content, true)}</div>\n`;
+  md.renderer.rules.math_block = (tokens, idx, options, env, self) =>
+    `<div class="math math-block"${self.renderAttrs(tokens[idx])}>${render(tokens[idx].content, true)}</div>\n`;
   md.renderer.rules.math_inline = (tokens, idx) => `<span class="math">${render(tokens[idx].content, false)}</span>`;
 }
 
@@ -745,6 +746,42 @@ function headings(md) {
   });
 }
 
+/**
+ * The blocks that may grow past the measure (`docs/specs/wide-blocks.md` in
+ * notes-linux) carry `data-wide`: a table, a fenced block, a diagram and
+ * `$$` math at the note's top, and a picture alone in its paragraph there or
+ * in a top-level `[!figure]`. Inside a list, a quote or another callout they
+ * keep the measure. The page grows them only when the setting asks.
+ */
+function wideBlocks(md) {
+  md.core.ruler.push("wide_blocks", (state) => {
+    let figure = false;
+    state.tokens.forEach((token, i) => {
+      if (token.type === "callout_open" && token.level === 0) figure = token.meta.callout === "figure";
+      else if (token.type === "callout_close" && token.level === 0) figure = false;
+      const top = token.level === 0;
+      const block = top && (token.type === "table_open" || token.type === "math_block");
+      const picture = token.type === "paragraph_open" && (top || (figure && token.level === 1)) && pictureAlone(state.env, state.tokens[i + 1]);
+      if (block || picture) {
+        token.attrSet("data-wide", "");
+      } else if (top && token.type === "fence") {
+        token.meta = { ...token.meta, wide: true };
+      }
+    });
+  });
+}
+
+/** Whether a paragraph's [inline] token holds one picture and nothing else. */
+function pictureAlone(env, inline) {
+  const shown = (inline?.children ?? []).filter((child) => !(child.type === "text" && !child.content.trim()) && child.type !== "softbreak");
+  if (shown.length !== 1) return false;
+  const [child] = shown;
+  if (child.type === "image") return true;
+  if (child.type !== "wikiembed") return false;
+  const path = linkOf(env, child.meta.target);
+  return Boolean(path && IMAGE.test(path));
+}
+
 /** Source lines on blocks, so the reader can scroll to a line. */
 function sourceLines(md) {
   md.core.ruler.push("source_lines", (state) => {
@@ -777,20 +814,21 @@ function fences(md) {
   md.renderer.rules.fence = (tokens, idx, options, env, self) => {
     const token = tokens[idx];
     const lang = token.info.trim().split(/\s+/)[0].toLowerCase();
-    if (lang === "mermaid") return `<pre class="mermaid">${escapeHtml(token.content)}</pre>\n`;
+    const wide = token.meta?.wide ? " data-wide" : "";
+    if (lang === "mermaid") return `<pre class="mermaid"${wide}>${escapeHtml(token.content)}</pre>\n`;
     // The app runs the query on its index; the page fills the result in.
     if (lang === "tasks") return `<div class="tasks-query" data-source="${escapeHtml(token.content)}"></div>\n`;
     if (lang === "base") return `<div class="base-query" data-source="${escapeHtml(token.content)}"></div>\n`;
     if (lang === "math" || lang === "latex") {
-      return `<div class="math math-block">${tex(token.content, true)}</div>\n`;
+      return `<div class="math math-block"${wide}>${tex(token.content, true)}</div>\n`;
     }
     // A `^id` line under the block names it: the id goes on its outer tag.
     const id = token.attrGet("id");
     if (id) {
       token.attrs = token.attrs.filter(([name]) => name !== "id");
-      return base(tokens, idx, options, env, self).replace(/^<(\w+)/, `<$1 id="${escapeHtml(id)}"`);
+      return base(tokens, idx, options, env, self).replace(/^<(\w+)/, `<$1 id="${escapeHtml(id)}"${wide}`);
     }
-    return base(tokens, idx, options, env, self);
+    return wide ? base(tokens, idx, options, env, self).replace(/^<pre/, "<pre data-wide") : base(tokens, idx, options, env, self);
   };
 }
 
@@ -822,7 +860,7 @@ function images(md) {
 
 export function createRenderer() {
   const md = new MarkdownIt({ html: true, linkify: true, breaks: false, typographer: false });
-  md.use(rawHtml).use(images).use(footnote).use(wikilinks).use(highlights).use(tags).use(math).use(callouts).use(tasks).use(blockIds).use(direction).use(isolateDates).use(headings).use(sourceLines).use(fences);
+  md.use(rawHtml).use(images).use(footnote).use(wikilinks).use(highlights).use(tags).use(math).use(callouts).use(tasks).use(blockIds).use(direction).use(isolateDates).use(headings).use(sourceLines).use(wideBlocks).use(fences);
   return md;
 }
 

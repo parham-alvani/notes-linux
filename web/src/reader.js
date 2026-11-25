@@ -97,6 +97,11 @@ async function drawDiagram(mermaid, node) {
   if (!remoteImagesShown()) node.textContent = withoutRemotePictures(node.textContent);
   try {
     await mermaid.run({ nodes: [node] });
+    // Mermaid draws at the box's width up to its own (`max-width`): its own
+    // is made its width, so a diagram wider than the measure can grow past
+    // it (wide blocks) and is still scaled down to the box it is given.
+    const svg = node.querySelector(":scope > svg");
+    if (svg && /px$/.test(svg.style.maxWidth)) Object.assign(svg.style, { width: svg.style.maxWidth, maxWidth: "100%" });
   } catch (error) {
     node.classList.add("mermaid-error");
   }
@@ -987,6 +992,11 @@ function decorate(root) {
     });
     pre.replaceWith(block);
     block.append(head, pre);
+    // The panel is what grows past the measure, not the code in it.
+    if (pre.hasAttribute("data-wide")) {
+      pre.removeAttribute("data-wide");
+      block.dataset.wide = "";
+    }
     // The block stands where the code was: it is what a later drawing compares.
     if (pre.source !== undefined) Object.assign(block, { source: pre.source, line: pre.line });
   });
@@ -1268,6 +1278,24 @@ const tableHead = {
     this.table = null;
   },
 };
+
+/**
+ * Wide blocks (`docs/specs/wide-blocks.md` in notes-linux): a table, a code
+ * block or a picture grows past the measure up to `--block-width`, centred
+ * in the pane, when the page has a measure and the limit is wider than it.
+ * `reader.css` does the rest; Quick Look never sets the class, and print keeps the measure.
+ */
+const widths = { text: 35, block: 0 };
+function wideBlocks(note) {
+  if (typeof note.textWidth === "number") widths.text = note.textWidth;
+  if (typeof note.blockWidth === "number") widths.block = note.blockWidth;
+  document.documentElement.classList.toggle("wide-blocks", widths.text > 0 && widths.block > widths.text);
+}
+
+// The pane's width without its scroll bar, which `100vw` counts: the room
+// wide blocks are centred in. The body is as wide as that, and is heard when
+// a scroll bar comes or goes as well as when the window is resized.
+new ResizeObserver(([entry]) => document.documentElement.style.setProperty("--pane-width", `${entry.contentRect.width}px`)).observe(document.body);
 
 /** The thin bar at the top that fills as the note is read. */
 function progress() {
@@ -1633,6 +1661,8 @@ window.daftar = {
     root.setProperty("--font-features", note.fontText?.startsWith("-apple-system") === false ? "normal" : '"ss01" 1, "ss07" 1, "cv07" 1');
     if (note.fontCode) root.setProperty("--font-mono", note.fontCode);
     if (typeof note.textWidth === "number") root.setProperty("--text-width", note.textWidth > 0 ? `${note.textWidth}em` : "none");
+    if (typeof note.blockWidth === "number") root.setProperty("--block-width", note.blockWidth > 0 ? `${note.blockWidth}em` : "none");
+    wideBlocks(note);
     setRemoteImages(note.remoteImages);
     if (typeof note.readingLine === "number") {
       reading.strength = Math.max(0, Math.min(100, note.readingLine));

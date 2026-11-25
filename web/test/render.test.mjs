@@ -110,13 +110,33 @@ test("a block id on its own line names the table, quote or code above it", () =>
   assert.match(table, /<p[^>]*>After<\/p>/);
   assert.match(render("> A quote\n\n^q1"), /<blockquote id="\^q1"/);
   assert.match(render("> [!tip] Title\n> Body\n\n^c1"), /<div class="callout"[^>]*id="\^c1"/);
-  assert.match(render("```js\nx\n```\n\n^code1"), /<pre id="\^code1"><code class="language-js">/);
+  assert.match(render("```js\nx\n```\n\n^code1"), /<pre id="\^code1" data-wide><code class="language-js">/);
   // After a paragraph it is a paragraph of its own, as Obsidian shows it.
   assert.match(render("Text\n\n^p1"), /<p[^>]*>\^p1<\/p>/);
 });
 
 test("mermaid is left for the page to draw", () => {
-  assert.match(render("```mermaid\ngraph TD; A-->B\n```"), /<pre class="mermaid">graph TD; A--&gt;B/);
+  assert.match(render("```mermaid\ngraph TD; A-->B\n```"), /<pre class="mermaid" data-wide>graph TD; A--&gt;B/);
+});
+
+test("whichBlocksAreWide -- a table, a fence, math and a picture alone at the top, not in a sentence or a quote", () => {
+  const wide = (text) => /^<[^>]*data-wide/.test(render(text, { links: { "x.svg": "uploads/x.svg" } }).trim());
+  assert.ok(wide("| a | b |\n|---|---|\n| 1 | 2 |"));
+  assert.ok(wide("```go\nx := 1\n```"));
+  assert.ok(wide("```mermaid\ngraph TD\n```"));
+  assert.ok(wide("$$\nx^2\n$$"));
+  assert.ok(wide("![[x.svg]]"));
+  assert.ok(wide("![[x.svg|600]]"));
+  assert.ok(wide("![a](uploads/a.png)"));
+  assert.ok(!wide("see ![[x.svg]] here"));
+  assert.ok(!wide("> | a | b |\n> |---|---|\n> | 1 | 2 |"));
+  assert.doesNotMatch(render("> | a | b |\n> |---|---|\n> | 1 | 2 |"), /data-wide/);
+  assert.doesNotMatch(render("- item\n\n  ```go\n  x\n  ```"), /data-wide/);
+  assert.doesNotMatch(render("> [!note]\n> ![[x.svg]]", { links: { "x.svg": "uploads/x.svg" } }), /data-wide/);
+  // A figure's picture grows; its caption stays in the measure.
+  const figure = render("> [!figure] A chart\n> ![[x.svg]]", { links: { "x.svg": "uploads/x.svg" } });
+  assert.match(figure, /<p[^>]*data-wide[^>]*><img src="vault:\/\/\/uploads\/x.svg"/);
+  assert.doesNotMatch(figure, /<figcaption[^>]*data-wide/);
 });
 
 test("a tasks query is left for the app to answer", () => {
@@ -325,7 +345,7 @@ test("math KaTeX cannot draw is shown as its source, and the note is drawn", () 
     assert.match(html, /<code class="math-error">\{\{/);
     assert.match(html, /after/);
   }
-  assert.match(render("```math\n\\frac{1}{2}\n```"), /class="math math-block"><span class="katex-display">/);
+  assert.match(render("```math\n\\frac{1}{2}\n```"), /class="math math-block" data-wide><span class="katex-display">/);
 });
 
 test("a box with nothing after it is a task, and a box glued to its text is not", () => {

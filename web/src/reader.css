@@ -594,6 +594,42 @@ table:not(.properties) thead th:first-child { border-start-start-radius: 11px; }
 table:not(.properties) thead th:last-child { border-start-end-radius: 11px; }
 table:not(.properties) tbody tr:hover { background: color-mix(in oklch, var(--accent) 7%, transparent); }
 
+/* Wide blocks (docs/specs/wide-blocks.md in notes-linux; `WideBlock.place`
+   in DaftarCore): a table, a code block, a diagram, `$$` math or a picture
+   alone in its paragraph, at the note's top, grows past the measure to its
+   own width, up to --block-width em or the pane less its room at each side,
+   centred in the pane. One that fits stays where it was; one wider than the
+   limit scrolls in its box or is scaled down, as before. #note is centred,
+   so the pane's centre is the measure's, and a block that grew moves back
+   by half of what it grew. The page is left to right, so a block wider than
+   #note overflows to the right whatever its own direction: the one rule
+   centres a Persian block too. The page sets .wide-blocks only when the
+   limit is wider than the measure; Quick Look never does, and print keeps
+   the measure. */
+@property --wide-measure { syntax: "<length>"; inherits: true; initial-value: 0px; }
+@property --wide-limit { syntax: "<length>"; inherits: true; initial-value: 0px; }
+@media screen {
+  .wide-blocks #note {
+    --wide-room: 2.5em;
+    --wide-measure: min(var(--text-width, 35em), var(--pane-width, 100vw) - 2 * var(--wide-room));
+    --wide-limit: max(var(--wide-measure), min(var(--block-width, 0px), var(--pane-width, 100vw) - 2 * var(--wide-room)));
+  }
+  .wide-blocks #note > [data-wide],
+  .wide-blocks #note > figure.figure > .callout-content > p[data-wide] {
+    box-sizing: border-box;
+    width: max-content;
+    max-width: var(--wide-limit);
+    translate: min(0px, (var(--wide-measure) - 100%) / 2);
+  }
+  /* A panel, a diagram, math and a picture's paragraph were as wide as the
+     measure: they never get narrower. A table stays as wide as its columns. */
+  .wide-blocks #note > :not(table)[data-wide],
+  .wide-blocks #note > figure.figure > .callout-content > p[data-wide] { min-width: 100%; }
+}
+@media screen and (max-width: 719.98px) {
+  .wide-blocks #note { --wide-room: 16px; }
+}
+
 /* Properties as a card. */
 table.properties {
   display: table; border-collapse: separate;
