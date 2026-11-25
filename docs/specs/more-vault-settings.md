@@ -47,6 +47,10 @@ A rule (`notification-rules.md`) gets one more optional key, and two more kinds.
 
 A rule has exactly one of `heading`, `query` and `quiet_days`; with none or more than one it is ignored. `note` is required with `heading` and `quiet_days` and is not read with `query`.
 
+- A query rule with no `title` is titled `Tasks`. Its body is `N tasks: ` and the first three tasks' text joined with `, `; it says `tasks` also when N is 1.
+- A quiet rule's body gives the real number of days since the change, `No change for 15 days`. When the note does not exist, the body is `No such note: <path>`.
+- `message`, when set, is the body of every kind of rule.
+
 ## 6. Rules for a folder
 
 A section `[folders."<folder>"]` sets three things for the notes under that folder. The folder is a path in the vault, quoted, with no `/` at the end: `[folders."Personal"]`, `[folders."Companies/Snapp"]`.

@@ -11,13 +11,17 @@ The apps began as readers of an Obsidian vault, so a few of their settings are r
 | `app.json` `attachmentFolderPath` | `files.attachments` | a path in the vault: `"uploads"` |
 | `app.json` `userIgnoreFilters` | `files.ignore` | a list of strings, the same filters: `["uploads/"]` |
 | `daily-notes.json` `format`, `folder`, `template` | `daily.format`, `daily.folder`, `daily.template` | the same strings: `"YYYY-[W]ww"`, `""`, `""` |
-| `templates.json` `folder` | `templates.folder` | a path in the vault |
+| `templates.json` `folder`, `dateFormat`, `timeFormat` | `templates.folder`, `templates.date_format`, `templates.time_format` | a path in the vault; the two moment formats |
 | `types.json` `types` | the section `[properties.types]` | one `key = "type"` line for each property: `aliases = "aliases"`, `job_next = "datetime"` |
 | `plugins/obsidian-tasks-plugin/data.json` `statusSettings` | one section `[tasks.statuses.<id>]` for each status that is not one of the four every vault has | `symbol = "r"`, `name = "In Review"`, `next = "x"`, `type = "IN_PROGRESS"`; `<id>` as a rule's (letters, digits, `_`, `-`) |
 | `plugins/beautitab/data.json` | `home.greeting`, `home.clock` (`"12-hour"`, `"24-hour"` or `"system"`), `home.show_time`, `home.show_greeting`, `home.show_search`, `home.show_recent`, `home.show_bookmarks`, `home.show_quote`; the picture stays `home.image` | the plugin's values under these names |
 | `plugins/beautitab/data.json` `customQuotes` | `.daftar/quotes.json` | `[{"text": "…", "author": "…"}]` |
 | `plugins/iconic/data.json` | `.daftar/icons.json` | the same JSON as Iconic's file (`fileIcons`, `folderIcons`, `folderRules`, `fileRules`), so it moves as it is |
 | `bookmarks.json` | `.daftar/bookmarks.json` | the same JSON as Obsidian's |
+
+The `home.*` switches, the greeting and the clock are one setting: when any of them is set, the plugin's file is not read for the others. `home.image` and `.daftar/quotes.json` are each a setting of their own.
+
+`migrate-obsidian` stops on a file of `.obsidian/` it does not know; a leftover of a plugin, such as `plugins/obsidian-git/obsidian_askpass.sh`, is deleted by hand first.
 
 The four statuses every vault has (` ` Todo, `x` Done, `/` In Progress, `-` Cancelled) need no section; a section with one of their symbols changes its name or next symbol.
 
