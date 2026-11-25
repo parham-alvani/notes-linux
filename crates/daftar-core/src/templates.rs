@@ -45,7 +45,15 @@ impl Templates {
         Templates::new(get("folder"), get("dateFormat"), get("timeFormat"))
     }
 
+    /// The settings of the vault at [root]: `[templates]` in its
+    /// `.daftar.toml` when it sets any key there, else
+    /// `.obsidian/templates.json`.
     pub fn read(root: &Path) -> Templates {
+        let own = crate::OwnSettings::read(root);
+        if own.sets_any(&["templates.folder", "templates.date_format", "templates.time_format"]) {
+            let get = |key: &str| own.string(key).unwrap_or_default();
+            return Templates::new(&get("templates.folder"), &get("templates.date_format"), &get("templates.time_format"));
+        }
         std::fs::read_to_string(root.join(".obsidian/templates.json")).map_or_default(|t| Templates::from_json(&t))
     }
 

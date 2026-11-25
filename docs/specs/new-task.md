@@ -15,7 +15,7 @@ A new task is one line, written from the form's fields by `TaskLine.written` (Sw
 - `- [<status>] `, then the text, then the signifiers in the Tasks plugin's order, as Edit Task writes them: the `[reason:: …]` field, the priority, `🔁 rule`, `🏁` `⛔` `🆔`, then the dates `➕ 🛫 ⏳ 📅 ❌ ✅`, each with its `YYYY-MM-DD`. It is exactly what Edit Task's `edited` writes for the line `- [<status>]`.
 - The text is trimmed, and its line breaks become single spaces: a task is one line. No text, no task: nothing is written and the form cannot be saved.
 - A status that cannot stand in a box (a line break, `]`) is written as ` `.
-- **Created is today by default** (`➕ <today>`), as the Tasks plugin's "set created date" does. The person may change it or turn it off. No other date is set by default.
+- **Created is today by default** (`➕ <today>`), as the Tasks plugin's "set created date" does. The person may change it or turn it off. No other date is set by default, unless `tasks.default_scheduled` is more than 0: then the form starts with `⏳` that many days after today ([more-vault-settings.md](more-vault-settings.md), section 2), which the person may change or clear too.
 
 ## 2. Where it goes
 

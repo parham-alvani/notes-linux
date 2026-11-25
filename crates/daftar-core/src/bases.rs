@@ -354,8 +354,20 @@ impl<'a> BaseEngine<'a> {
         BaseEngine::new(index, Local::now(), BaseEngine::types(root), move |path| BaseEngine::stat_file(root, path))
     }
 
-    /// The property types in a vault's `.obsidian/types.json`.
+    /// The property types of a vault: `[properties.types]` in its
+    /// `.daftar.toml` when it has the section, else `.obsidian/types.json`.
     pub fn types(root: &Path) -> HashMap<String, String> {
+        let own = crate::OwnSettings::read(root);
+        let written = own.keys_under("properties.types.");
+        if !written.is_empty() {
+            return written
+                .into_iter()
+                .filter_map(|(name, value)| match value {
+                    Some(crate::Value::String(kind)) if !kind.trim().is_empty() => Some((crate::config::unquoted(&name).to_string(), kind)),
+                    _ => None,
+                })
+                .collect();
+        }
         let Ok(text) = std::fs::read_to_string(root.join(".obsidian/types.json")) else { return HashMap::new() };
         let Ok(serde_json::Value::Object(object)) = serde_json::from_str(&text) else { return HashMap::new() };
         match object.get("types") {

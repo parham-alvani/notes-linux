@@ -29,7 +29,7 @@ pub fn upcoming(root: &Path, search: &JobSearch, keys: &JobKeys, now: NaiveDateT
 /// The MCP's `job_pipeline`: the stages, the channels and the events ahead,
 /// each under its heading, in one answer.
 pub fn pipeline(root: &Path, index: &VaultIndex, keep: impl Fn(&str) -> bool, days: Option<i64>) -> Vec<String> {
-    let keys = JobKeys::default();
+    let keys = JobKeys::of(daftar_core::Settings::read(root).file());
     let search = JobSearch::new(index, &keys, keep);
     let mut lines = vec!["stages (stage, applications):".to_string()];
     lines.extend(stages(&search));

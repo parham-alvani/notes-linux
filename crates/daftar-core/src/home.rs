@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::OwnSettings;
+
 /// One of the person's own quotes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Quote {
@@ -85,8 +87,7 @@ impl Beautitab {
                 })
                 .collect()
         });
-        let source = root.get("quoteSource").and_then(Value::as_str);
-        out.show_quote = flag("showQuote").unwrap_or(false) && (source.is_none() || source == Some("My quotes")) && !out.quotes.is_empty();
+        out.show_quote = quote_wanted(&root) && !out.quotes.is_empty();
         let local = root.get("localBackgrounds").and_then(Value::as_array).cloned().unwrap_or_default();
         let local = local.iter().filter_map(|item| match item {
             Value::String(text) => Some(text.clone()),
@@ -103,9 +104,102 @@ impl Beautitab {
         out
     }
 
-    /// The settings of the vault at [root]; the defaults when there are none.
+    /// The settings of the vault at [root] (`docs/specs/no-obsidian-folder.md`):
+    /// the page's `[home]` keys of its `.daftar.toml` when it sets any, the
+    /// quotes of `.daftar/quotes.json` when it is there, and the picture of
+    /// `home.image`, each else Beautitab's own; the defaults when there are
+    /// none.
     pub fn read(root: &Path) -> Beautitab {
-        std::fs::read_to_string(root.join(".obsidian/plugins/beautitab/data.json")).map_or_default(|json| Beautitab::from_json(&json))
+        let json = std::fs::read_to_string(root.join(OwnSettings::OBSIDIAN).join(Self::OBSIDIAN)).ok();
+        let plugin = json.as_deref().map_or_default(Beautitab::from_json);
+        let wants_quote = json.and_then(|json| serde_json::from_str::<Value>(&json).ok()).and_then(|v| v.as_object().map(quote_wanted));
+        let quotes = std::fs::read_to_string(root.join(OwnSettings::FOLDER).join(Self::QUOTES)).ok().map(|json| quotes_of(&json));
+        Self::with_settings(plugin, wants_quote.unwrap_or(false), &OwnSettings::read(root), quotes)
+    }
+
+    /// Beautitab's file in `.obsidian/`.
+    pub const OBSIDIAN: &'static str = "plugins/beautitab/data.json";
+    /// The quotes' file in `.daftar/`.
+    pub const QUOTES: &'static str = "quotes.json";
+    /// The page's keys of `[home]`, the picture aside.
+    pub const KEYS: [&'static str; 8] = [
+        "home.greeting",
+        "home.clock",
+        "home.show_time",
+        "home.show_greeting",
+        "home.show_search",
+        "home.show_recent",
+        "home.show_bookmarks",
+        "home.show_quote",
+    ];
+
+    /// [plugin], Beautitab's settings (whose switch asks for a quote when
+    /// [wants_quote]), under what [own] sets and [quotes],
+    /// `.daftar/quotes.json`'s when it is there. The page's keys are one
+    /// setting: when [own] sets any of them, all of them are its own.
+    pub fn with_settings(plugin: Beautitab, wants_quote: bool, own: &OwnSettings, quotes: Option<Vec<Quote>>) -> Beautitab {
+        let mut out = if own.sets_any(&Self::KEYS) {
+            let defaults = Beautitab::default();
+            let flag = |key: &str, default: bool| own.bool(key).unwrap_or(default);
+            Beautitab {
+                show_time: flag("home.show_time", defaults.show_time),
+                twenty_four_hour: match own.string("home.clock").as_deref() {
+                    Some("24-hour") => Some(true),
+                    Some("12-hour") => Some(false),
+                    _ => None,
+                },
+                show_greeting: flag("home.show_greeting", defaults.show_greeting),
+                greeting_text: own.string("home.greeting").map(|t| t.trim().to_string()).unwrap_or_default(),
+                show_search: flag("home.show_search", defaults.show_search),
+                show_recent_files: flag("home.show_recent", defaults.show_recent_files),
+                show_bookmarks: flag("home.show_bookmarks", defaults.show_bookmarks),
+                show_quote: flag("home.show_quote", false),
+                quotes: plugin.quotes,
+                backgrounds: plugin.backgrounds,
+            }
+        } else {
+            Beautitab { show_quote: wants_quote, ..plugin }
+        };
+        if let Some(quotes) = quotes {
+            out.quotes = quotes;
+        }
+        out.show_quote = out.show_quote && !out.quotes.is_empty();
+        if let Some(image) = own.string("home.image").filter(|image| !image.trim().is_empty()) {
+            out.backgrounds = vec![image.trim().to_string()];
+        }
+        out
+    }
+}
+
+/// Whether Beautitab's settings ask for one of the person's own quotes.
+fn quote_wanted(root: &serde_json::Map<String, Value>) -> bool {
+    let source = root.get("quoteSource").and_then(Value::as_str);
+    root.get("showQuote").and_then(Value::as_bool).unwrap_or(false) && (source.is_none() || source == Some("My quotes"))
+}
+
+/// The quotes of `.daftar/quotes.json`, `[{"text": "…", "author": "…"}]`:
+/// one with no text is left out.
+pub fn quotes_of(json: &str) -> Vec<Quote> {
+    serde_json::from_str::<Value>(json).ok().and_then(|v| v.as_array().cloned()).map_or_default(|items| {
+        items
+            .iter()
+            .filter_map(|item| {
+                let text = item.get("text")?.as_str()?.trim();
+                if text.is_empty() {
+                    return None;
+                }
+                let author = item.get("author").and_then(Value::as_str).unwrap_or("").trim();
+                Some(Quote { text: text.to_string(), author: author.to_string() })
+            })
+            .collect()
+    })
+}
+
+impl Beautitab {
+    /// The quotes as `.daftar/quotes.json` writes them.
+    pub fn quotes_json(quotes: &[Quote]) -> String {
+        let items: Vec<Value> = quotes.iter().map(|q| serde_json::json!({ "text": q.text, "author": q.author })).collect();
+        serde_json::to_string_pretty(&Value::Array(items)).unwrap_or_default() + "\n"
     }
 }
 
@@ -207,6 +301,34 @@ mod tests {
         assert!(settings.show_quote);
         assert_eq!(settings.quotes, vec![Quote { text: "Less, but better.".into(), author: "Dieter Rams".into() }]);
         assert_eq!(settings.backgrounds, vec!["Attachments/sea.webp", "/tmp/a.png", "b.jpg"]);
+    }
+
+    #[test]
+    fn home_from_the_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        std::fs::create_dir_all(root.join(".daftar")).unwrap();
+        std::fs::write(root.join(".daftar.toml"), "[home]\ngreeting = \"Hello, Parham.\"\nclock = \"12-hour\"\nshow_quote = true\n")
+            .unwrap();
+        std::fs::write(root.join(".daftar/quotes.json"), r#"[{"text": "Less, but better.", "author": "Dieter Rams"}]"#).unwrap();
+        let home = Beautitab::read(root);
+        assert_eq!(home.greeting_text, "Hello, Parham.");
+        assert_eq!(home.twenty_four_hour, Some(false));
+        assert!(home.show_quote && home.show_time && home.show_search);
+        assert_eq!(home.quotes, vec![Quote { text: "Less, but better.".into(), author: "Dieter Rams".into() }]);
+        // Beautitab's file is not read for a key the vault's settings leave out: they are one setting.
+        std::fs::create_dir_all(root.join(".obsidian/plugins/beautitab")).unwrap();
+        std::fs::write(root.join(".obsidian/plugins/beautitab/data.json"), r#"{"showInlineSearch": false, "greetingText": "Hi"}"#).unwrap();
+        assert!(Beautitab::read(root).show_search);
+        assert_eq!(Beautitab::read(root).greeting_text, "Hello, Parham.");
+        // With no `[home]` keys, Beautitab's; the quotes stay `.daftar/`'s.
+        std::fs::write(root.join(".daftar.toml"), "[home]\nimage = \"uploads/Home.webp\"\n").unwrap();
+        let plugin = Beautitab::read(root);
+        assert!(!plugin.show_search && !plugin.show_quote);
+        assert_eq!(plugin.greeting_text, "Hi");
+        assert_eq!(plugin.quotes.len(), 1);
+        // The picture is `home.image`.
+        assert_eq!(plugin.backgrounds, ["uploads/Home.webp"]);
     }
 
     #[test]

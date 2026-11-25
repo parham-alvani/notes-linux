@@ -3,8 +3,10 @@
 //! meeting of the week notes, and each booked `job_next` event, that starts
 //! within the lead time is sent once as a desktop notification, with its
 //! prep note when it is about a company of the job search, and each rule
-//! of `[notifications.rules.<id>]` whose note lacks today's heading at its
-//! time (`docs/specs/notification-rules.md`); what was sent is
+//! of `[notifications.rules.<id>]` that rings at its time: a note that lacks
+//! today's heading (`docs/specs/notification-rules.md`), a query that finds
+//! open tasks, a note that has not changed for its days
+//! (`docs/specs/more-vault-settings.md`); what was sent is
 //! kept in `notified-<hash>.json` in Daftar's state folder, beside the
 //! drill's state, so the next run sends it again never. `--install-timer`
 //! writes the systemd user units that run it.
@@ -17,7 +19,7 @@ use std::process::Command;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde_json::{Map, Value, json};
 
-use daftar_core::{Day, JobSearch, Meeting, NotificationRule, reading_places};
+use daftar_core::{Day, JobSearch, Meeting, NotificationRule, RuleLook, VaultTask, reading_places};
 
 /// Minutes before a meeting, when neither `--before` nor
 /// `notifications.meeting_lead` says: the app's.
@@ -117,16 +119,10 @@ pub fn due<Tz: TimeZone>(events: &[Event], sent: &Sent, now: DateTime<Utc>, lead
 }
 
 /// The alerts of [rules] due at [now] and not in [sent]: a rule whose time
-/// came today on [zone]'s clock, no more than `LATE` minutes ago, and
-/// whose note, as [read] gives it, lacks today's heading. Each is keyed by
-/// its day, so it rings once a day.
-pub fn rule_alerts<Tz: TimeZone>(
-    rules: &[NotificationRule],
-    read: impl Fn(&str) -> String,
-    sent: &Sent,
-    now: DateTime<Utc>,
-    zone: &Tz,
-) -> Vec<Alert> {
+/// came today on [zone]'s clock, no more than `LATE` minutes ago, on one of
+/// its days, and that rings as [look] sees the vault. Each is keyed by its
+/// day, so it rings once a day.
+pub fn rule_alerts<Tz: TimeZone>(rules: &[NotificationRule], look: &RuleLook, sent: &Sent, now: DateTime<Utc>, zone: &Tz) -> Vec<Alert> {
     let local = now.with_timezone(zone).naive_local();
     let today = Day::from(local.date());
     rules
@@ -135,7 +131,8 @@ pub fn rule_alerts<Tz: TimeZone>(
             let start = zone.from_local_datetime(&local.date().and_time(rule.at)).earliest()?.with_timezone(&Utc);
             let key = format!("{}.{today}", rule.alert_id());
             let due = start <= now && now - start <= Duration::minutes(LATE) && !sent.keys.contains_key(&key);
-            (due && rule.is_missing(&read(&rule.note), today)).then(|| Alert { key, start, title: rule.title(), body: rule.body(today) })
+            let rung = if due { rule.alert(today, look)? } else { return None };
+            Some(Alert { key, start, title: rung.title, body: rung.body })
         })
         .collect()
 }
@@ -198,6 +195,7 @@ impl Sent {
 pub fn run<Tz: TimeZone>(
     root: &Path,
     jobs: &JobSearch,
+    tasks: &[VaultTask],
     rules: &[NotificationRule],
     lead: i64,
     zone: &Tz,
@@ -210,7 +208,10 @@ pub fn run<Tz: TimeZone>(
     let file = Sent::file(root);
     let mut sent = Sent::load(&file).pruned(now);
     let mut alerts = due(&events, &sent, now, lead, zone);
-    alerts.extend(rule_alerts(rules, |note| fs::read_to_string(root.join(note)).unwrap_or_default(), &sent, now, zone));
+    let read = |note: &str| fs::read_to_string(root.join(note)).unwrap_or_default();
+    let all = || tasks.to_vec();
+    let changed = |note: &str| daftar_core::notification_rules::last_change(root, note);
+    alerts.extend(rule_alerts(rules, &RuleLook { read: &read, tasks: &all, changed: &changed }, &sent, now, zone));
     let mut failure = None;
     for alert in &alerts {
         if let Err(error) = send(alert) {
@@ -421,7 +422,9 @@ mod tests {
             "[notifications.rules.diary]\nnote = \"Diet/Diary.md\"\nheading = \"D MMM YYYY · dddd\"\nat = \"21:00\"\n",
         );
         let rules = NotificationRule::all(&file);
-        let none = |_: &str| String::new();
+        let (empty, no_tasks, never) = (|_: &str| String::new(), Vec::new, |_: &str| None);
+        let none = RuleLook { read: &empty, tasks: &no_tasks, changed: &never };
+        let none = &none;
         let alerts = rule_alerts(&rules, none, &Sent::default(), at("2026-11-25T21:00:30"), &Utc);
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "rule.diary.2026-11-25");
@@ -431,8 +434,9 @@ mod tests {
         assert!(rule_alerts(&rules, none, &Sent::default(), at("2026-11-25T21:11:00"), &Utc).is_empty());
         let sent = Sent { keys: [(alerts[0].key.clone(), alerts[0].start)].into() };
         assert!(rule_alerts(&rules, none, &sent, at("2026-11-25T21:01:00"), &Utc).is_empty());
-        let written = |_: &str| "### 25 Nov 2026 · Wednesday\n".to_string();
-        assert!(rule_alerts(&rules, written, &Sent::default(), at("2026-11-25T21:00:30"), &Utc).is_empty());
+        let today = |_: &str| "### 25 Nov 2026 · Wednesday\n".to_string();
+        let written = RuleLook { read: &today, tasks: &no_tasks, changed: &never };
+        assert!(rule_alerts(&rules, &written, &Sent::default(), at("2026-11-25T21:00:30"), &Utc).is_empty());
     }
 
     #[test]

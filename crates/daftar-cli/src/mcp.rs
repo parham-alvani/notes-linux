@@ -256,6 +256,7 @@ impl Server {
                             .filter_map(|a| crate::memory::Rules::active_pair(a))
                             .collect(),
                         quiet_days: args.0.get("quiet_days").and_then(Value::as_i64).or(vault.quiet_days),
+                        open_stages: Some(crate::memory::open_stages(root)),
                     }),
                     orphans: vault.orphans.then(|| vault.orphan_skip.clone()),
                     okf: vault.okf,
@@ -451,7 +452,7 @@ pub(crate) fn vault_brief(
     }
     lines.push(format!("\n{} more open tasks fall in the next {} days.", due.ahead, daftar_core::due_tasks::AHEAD_DAYS));
 
-    let keys = JobKeys::default();
+    let keys = JobKeys::of(daftar_core::Settings::read(root).file());
     let search = JobSearch::new(index, &keys, |path| !hidden.contains(path));
     let events = search.upcoming(now, Some(now + chrono::Duration::days(7)));
     lines.push(format!("\n## Job search: booked in the next 7 days ({})", events.len()));
@@ -495,6 +496,7 @@ pub(crate) fn vault_brief(
             prep_notes: vault.prep_notes,
             active: vault.active.iter().filter_map(|a| crate::memory::Rules::active_pair(a)).collect(),
             quiet_days: vault.quiet_days,
+            open_stages: Some(crate::memory::open_stages(root)),
         }),
         orphans: vault.orphans.then(|| vault.orphan_skip.clone()),
         okf: vault.okf,

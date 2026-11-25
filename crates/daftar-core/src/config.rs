@@ -263,6 +263,30 @@ persian_calendar = false
 # "spain", "catalonia" or "barcelona", each keeping the days of the one
 # before it. Empty is none.
 place = ""
+# The working day, HH:MM-HH:MM: Today's timeline and `daftar-cli agenda`
+# count the free time inside it.
+working_day = "09:00-18:00"
+
+[tasks]
+# Days after today a new task is scheduled (⏳) in the New Task form;
+# 0 adds no ⏳.
+default_scheduled = 0
+
+# A status of the vault's own, beside the four every vault has (todo,
+# done, in progress, cancelled), each in a section of the vault's
+# .daftar.toml: `type` is TODO, IN_PROGRESS, DONE, CANCELLED or NON_TASK.
+# `daftar-cli migrate-obsidian` writes them from the Tasks plugin.
+# [tasks.statuses.in_review]
+# symbol = "r"
+# name = "In Review"
+# next = "x"
+# type = "IN_PROGRESS"
+
+[jobs]
+# The job_stage values that wait on the company, and the ones that end a
+# process: the job board, `daftar-cli jobs` and the audit read them.
+waiting = ["applied"]
+closed = ["rejected", "withdrawn", "declined", "closed"]
 
 [editor]
 # Away from the cursor's line, the marks (**, ==, [[ ]], #, a link's
@@ -307,6 +331,9 @@ meeting_lead = 5
 digest = true
 # The morning digest of the tasks due, as HH:MM.
 digest_time = "09:00"
+# Tasks query lines every task the digest counts must match, as
+# ["path does not include Elaheh"]; empty counts every task due.
+digest_filter = []
 
 # A rule of your own: at `at` each day, when the note has no heading
 # that starts with today's `heading` (a moment.js format, as a daily
@@ -319,6 +346,18 @@ digest_time = "09:00"
 # at = "21:00"
 # title = "Diary"
 # message = "Nothing is logged in the diary today."
+#
+# `days` rings only on those days. In place of `heading`, `query` rings
+# when Tasks query lines find open tasks (no `note`), and `quiet_days`
+# when the note has not changed for that many days.
+# [notifications.rules.review]
+# query = ["due before tomorrow", "not done"]
+# at = "18:00"
+# days = ["mon", "tue", "wed", "thu", "fri"]
+# [notifications.rules.plan]
+# note = "Plan.md"
+# quiet_days = 14
+# at = "10:00"
 
 [terminal]
 # Empty is the login shell in $SHELL.
@@ -328,9 +367,18 @@ font_size = 13
 [home]
 # The picture behind the home page, which a tab with no note shows: an
 # absolute path, a ~ path or a path in the vault, of a PNG, JPEG or WebP
-# file. Empty is no picture. The rest of the page follows Obsidian's
-# Beautitab plugin settings in the vault.
+# file. Empty is no picture.
 image = ""
+# The rest of the page, from the vault's .daftar.toml (else Obsidian's
+# Beautitab plugin there), with its quotes in .daftar/quotes.json:
+# greeting = "Hello, {{greeting}}."
+# clock = "system"
+# show_time = true
+# show_greeting = true
+# show_search = true
+# show_recent = true
+# show_bookmarks = false
+# show_quote = false
 
 [scratchpad]
 # Ctrl+Alt+S: today's scratch note, `<folder>/YYYY-MM-DD.md`, made empty
@@ -354,6 +402,29 @@ heading = ""
 hidden = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", "CLAUDE.local.md"]
 # Show the hidden and the excluded files anyway (Ctrl+Shift+.).
 show_hidden = false
+# In the vault's .daftar.toml (else Obsidian's .obsidian/app.json): the
+# folder a pasted picture goes to, and the files left out of the lists.
+# attachments = "uploads"
+# ignore = ["uploads/"]
+
+# What Obsidian's daily notes, templates and property types said, in the
+# vault's .daftar.toml (`daftar-cli migrate-obsidian` writes them):
+# [daily]
+# format = "YYYY-MM-DD"
+# folder = ""
+# template = ""
+# [templates]
+# folder = "Templates"
+# [properties.types]
+# job_next = "datetime"
+
+# Rules for the notes under a folder: their direction ("rtl", "ltr" or
+# "auto"), whether they open folded, and a new note's template. The
+# nearest folder wins, key by key.
+# [folders."Personal"]
+# direction = "rtl"
+# folded = false
+# template = "Templates/Day.md"
 
 [wakatime]
 # Send the time spent in each note to WakaTime, with wakatime-cli and the
@@ -385,16 +456,54 @@ landscape = false
 }
 
 fn split(path: &str) -> (&str, &str) {
-    match path.rsplit_once('.') {
-        Some((section, key)) => (section, key),
+    match last_dot(path) {
+        Some(at) => (&path[..at], &path[at + 1..]),
         None => ("", path),
+    }
+}
+
+/// The byte offset of the last `.` of [path] outside double quotes, so a
+/// quoted name may hold dots: `folders."Notes.old".folded`.
+pub(crate) fn last_dot(path: &str) -> Option<usize> {
+    let mut quoted = false;
+    let mut last = None;
+    for (at, c) in path.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '.' if !quoted => last = Some(at),
+            _ => {}
+        }
+    }
+    last
+}
+
+/// A name of a dotted key or header as written, its quotes taken off:
+/// `"Companies/Snapp"` is `Companies/Snapp`.
+pub fn unquoted(name: &str) -> &str {
+    let name = name.trim();
+    name.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')).unwrap_or(name)
+}
+
+/// A name as a dotted key writes it: bare when TOML allows, else quoted.
+pub fn key_name(name: &str) -> String {
+    if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        name.to_string()
+    } else {
+        quoted(name)
     }
 }
 
 fn header(line: &str) -> Option<&str> {
     let rest = line.strip_prefix('[')?;
-    let end = rest.find(']')?;
-    Some(rest[..end].trim())
+    // The first `]` outside quotes, so a quoted name may hold one.
+    let mut quoted = false;
+    let end = rest.char_indices().find(|&(_, c)| {
+        if c == '"' {
+            quoted = !quoted;
+        }
+        c == ']' && !quoted
+    })?;
+    Some(rest[..end.0].trim())
 }
 
 fn assignment(line: &str) -> Option<(&str, &str)> {
@@ -534,6 +643,17 @@ mod tests {
         assert_eq!(file.int("a.size"), Some(1));
         assert_eq!(file.int("b.size"), Some(2));
         assert_eq!(file.int("size"), None);
+    }
+
+    #[test]
+    fn a_quoted_name_is_one_part_of_the_key() {
+        let mut file = ConfigFile::new("[folders.\"Notes.old\"]\nfolded = true\n\n[folders.\"A]B\"]\ndirection = \"rtl\"\n");
+        assert_eq!(file.bool("folders.\"Notes.old\".folded"), Some(true));
+        assert_eq!(file.string("folders.\"A]B\".direction").as_deref(), Some("rtl"));
+        file.set("folders.\"Notes.old\".template", Value::String("T.md".into()));
+        assert_eq!(file.text(), "[folders.\"Notes.old\"]\nfolded = true\ntemplate = \"T.md\"\n\n[folders.\"A]B\"]\ndirection = \"rtl\"\n");
+        assert_eq!(unquoted("\"Companies/Snapp\""), "Companies/Snapp");
+        assert_eq!((key_name("job_next"), key_name("my key")), ("job_next".to_string(), "\"my key\"".to_string()));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! The icons and colours the Iconic plugin gives files and folders, read from
-//! `.obsidian/plugins/iconic/data.json`, so the tree here looks like the tree
-//! in Obsidian and on the phone.
+//! `.daftar/icons.json`, else `.obsidian/plugins/iconic/data.json`, the same
+//! JSON (`docs/specs/no-obsidian-folder.md`), so the tree here looks like the
+//! tree on the phone.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -44,9 +45,16 @@ impl Iconic {
     /// The colours Iconic offers by name, in its order.
     pub const COLORS: [&'static str; 9] = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray"];
 
+    /// Where the icons are read from and written to: `.daftar/icons.json`
+    /// when it is there or the vault has no `.obsidian/`, else Iconic's own.
     pub fn file(root: &Path) -> std::path::PathBuf {
-        root.join(".obsidian/plugins/iconic/data.json")
+        crate::OwnSettings::file(root, Self::NAME, Self::OBSIDIAN)
     }
+
+    /// The file's name in `.daftar/`.
+    pub const NAME: &'static str = "icons.json";
+    /// Iconic's file in `.obsidian/`.
+    pub const OBSIDIAN: &'static str = "plugins/iconic/data.json";
 
     pub fn load(root: &Path) -> Iconic {
         fs::read_to_string(Self::file(root)).map_or_default(|text| Self::parse(&text))

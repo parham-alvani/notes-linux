@@ -287,7 +287,21 @@ pub fn present(
     let entry = gtk::Entry::builder().activates_default(true).build();
     let chosen: Rc<std::cell::RefCell<Option<String>>> = Rc::new(std::cell::RefCell::new(None));
     // A new note can start from one of the Templates plugin's notes.
-    let templates = if matches!(action, Action::NewNote { .. }) { store.template_notes() } else { vec![] };
+    let mut templates = if matches!(action, Action::NewNote { .. }) { store.template_notes() } else { vec![] };
+    // The folder's own template (`folders."<folder>".template`) is chosen at first.
+    let folder_template = match &action {
+        Action::NewNote { folder } => {
+            let settings = daftar_core::Settings::read(&store.root);
+            daftar_core::FolderRules::of(settings.file(), &format!("{folder}/")).template.and_then(|path| {
+                let path = if path.ends_with(".md") { path } else { format!("{path}.md") };
+                if !templates.contains(&path) && store.index().files.contains(&path) {
+                    templates.push(path.clone());
+                }
+                templates.iter().position(|t| *t == path)
+            })
+        }
+        _ => None,
+    };
     let template = gtk::DropDown::from_strings(
         &std::iter::once("No template".to_string())
             .chain(templates.iter().map(|t| short_name(t)))
@@ -303,6 +317,9 @@ pub fn present(
             extra.append(&entry);
             if !templates.is_empty() {
                 extra.append(&template);
+            }
+            if let Some(at) = folder_template {
+                template.set_selected(u32::try_from(at + 1).unwrap_or(0));
             }
         }
         Action::Extract { folder, text } => {

@@ -85,6 +85,15 @@ impl FoldSections {
             FoldSections::Never => false,
         }
     }
+
+    /// Whether a note opens folded, with what the vault says and what its
+    /// folder says over it ([folder], `folders."<folder>".folded`).
+    pub fn folds_note(self, vault: VaultSettings, folder: Option<bool>) -> bool {
+        match (self, folder) {
+            (FoldSections::Vault, Some(folded)) => folded,
+            _ => self.folds(vault),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -24,9 +24,9 @@ pub struct VaultStore {
     pub search: Arc<SearchIndex>,
     /// Told after the app wrote a note, for the sync that follows an edit.
     wrote: RefCell<Option<Box<dyn Fn()>>>,
-    /// Obsidian's `.obsidian/bookmarks.json`.
+    /// The bookmarks: `.daftar/bookmarks.json`, else Obsidian's `.obsidian/bookmarks.json`.
     pub bookmarks: RefCell<Bookmarks>,
-    /// The Iconic plugin's icons and colors.
+    /// The icons and colors: `.daftar/icons.json`, else the Iconic plugin's.
     pub iconic: RefCell<Iconic>,
     /// Where each note was being read, and when.
     pub places: Rc<PlaceBook>,

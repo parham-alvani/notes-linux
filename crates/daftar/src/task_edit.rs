@@ -4,7 +4,7 @@
 //! and the save is refused when it changed meanwhile. The Mac's
 //! `TaskEditSheet`. With `present_new` it makes a task instead (New Task,
 //! Ctrl+Alt+T): the same form, with the note and the section it goes in,
-//! and today as its created date.
+//! today as its created date, and ⏳ `tasks.default_scheduled` days on.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -205,8 +205,12 @@ fn open(parent: &impl IsA<gtk::Widget>, store: Rc<VaultStore>, mode: Mode, save_
 
     let dialog = adw::Dialog::builder().title(title).content_width(680).child(&content).build();
     let error = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["t-red", "tint"]).visible(false).build();
-    let read_now =
-        if new { Ok(TaskFields { created: Some(Day::today().to_string()), ..TaskFields::default() }) } else { read(&store, path, line) };
+    // A new task: ➕ today, and ⏳ `tasks.default_scheduled` days on (docs/specs/more-vault-settings.md).
+    let read_now = if new {
+        Ok(TaskFields::new_task(Day::today(), daftar_core::Settings::read(&store.root).file()))
+    } else {
+        read(&store, path, line)
+    };
     let before = match read_now {
         Ok(fields) => fields,
         Err(message) => {

@@ -630,9 +630,35 @@ impl Default for TaskFields {
     }
 }
 
+impl TaskFields {
+    /// What the New Task form starts with on [today] (`docs/specs/new-task.md`):
+    /// ➕ today, and ⏳ `tasks.default_scheduled` days after it when [file],
+    /// the settings in use, says more than 0 (`docs/specs/more-vault-settings.md`).
+    pub fn new_task(today: Day, file: &crate::ConfigFile) -> TaskFields {
+        let days = file.int("tasks.default_scheduled").filter(|days| (1..=365).contains(days));
+        TaskFields {
+            created: Some(today.to_string()),
+            scheduled: days.map(|days| today.adding_days(days).to_string()),
+            ..TaskFields::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_task_is_scheduled() {
+        let today = Day::parse("2026-11-25").unwrap();
+        let fields = TaskFields::new_task(today, &crate::ConfigFile::new("[tasks]\ndefault_scheduled = 3\n"));
+        let line = |fields: &TaskFields| TaskLine::written(&TaskFields { text: "Call".into(), ..fields.clone() }).unwrap();
+        assert_eq!((fields.created.as_deref(), fields.scheduled.as_deref()), (Some("2026-11-25"), Some("2026-11-28")));
+        assert_eq!(line(&fields), "- [ ] Call ➕ 2026-11-25 ⏳ 2026-11-28");
+        let plain = TaskFields::new_task(today, &crate::ConfigFile::new("[tasks]\ndefault_scheduled = 0\n"));
+        assert_eq!(line(&plain), "- [ ] Call ➕ 2026-11-25");
+        assert_eq!(TaskFields::new_task(today, &crate::ConfigFile::new("")), plain);
+    }
 
     fn toggled(raw: &str, today: &str) -> Vec<String> {
         TaskLine::toggled(raw, today).unwrap()

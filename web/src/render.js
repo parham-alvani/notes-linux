@@ -650,7 +650,9 @@ function blockAbove(tokens, end) {
  * front matter. Found from the text as it reads, not as it is written, so
  * `- [x] سلام` and `[[Note|سلام]]` are right to left; and a list, a quote or
  * a table takes its first item's, so its marks stand on the same side. A
- * block with no letter is `auto`.
+ * block with no letter is `auto`. A note whose folder sets its direction
+ * (`env.direction`, "rtl" or "ltr": docs/specs/more-vault-settings.md,
+ * section 6) has that one on every block.
  */
 function direction(md) {
   const blocks = new Set(["paragraph_open", "heading_open", "bullet_list_open", "ordered_list_open", "list_item_open", "blockquote_open", "table_open", "th_open", "td_open"]);
@@ -658,6 +660,10 @@ function direction(md) {
     const tokens = state.tokens;
     for (let i = 0; i < tokens.length; i++) {
       if (!blocks.has(tokens[i].type)) continue;
+      if (state.env.direction === "rtl" || state.env.direction === "ltr") {
+        tokens[i].attrSet("dir", state.env.direction);
+        continue;
+      }
       let found = null;
       for (let j = i + 1, depth = 0; j < tokens.length && depth >= 0 && !found; j++) {
         depth += tokens[j].nesting;
@@ -876,10 +882,10 @@ export function renderInline(text, { path = "", links = {} } = {}) {
  * note to the vault path it resolves to; one that is missing is drawn as a
  * broken link.
  */
-export function render(text, { path = "", links = {} } = {}) {
+export function render(text, { path = "", links = {}, direction = "auto" } = {}) {
   const lineOffset = frontMatterLines(text);
   const body = text.split("\n").slice(lineOffset).join("\n");
-  return shared.render(stripComments(body), { path, links, lineOffset });
+  return shared.render(stripComments(body), { path, links, lineOffset, direction });
 }
 
 let remoteImages = true;

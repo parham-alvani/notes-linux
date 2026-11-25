@@ -29,6 +29,7 @@ mod mcp;
 mod meaning;
 mod memory;
 mod mentions;
+mod migrate;
 mod okf;
 mod report;
 mod review;
@@ -866,6 +867,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Moves the vault's settings out of Obsidian's folder: each setting of
+    /// `.obsidian/` into `.daftar.toml` or a file of `.daftar/`, a key set
+    /// there already left as it is, a line each for what moved.
+    MigrateObsidian {
+        /// Say what it would do, and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Then delete `.obsidian/`, only when every file in it moved: a
+        /// file the move does not know is named, and the folder stays.
+        #[arg(long)]
+        remove: bool,
+    },
     /// The vault as a language server on stdin and stdout, for Neovim, Helix
     /// and other editors: the lint and the audit as diagnostics, formatting,
     /// `[[` completion, a link's note, hover and references, and renaming a
@@ -1640,6 +1653,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     prep_notes: prep_note,
                     active: active.iter().filter_map(|a| memory::Rules::active_pair(a)).collect(),
                     quiet_days,
+                    open_stages: Some(memory::open_stages(&root)),
                 }),
                 orphans,
                 okf,
@@ -1719,7 +1733,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Command::Jobs { channels, upcoming } => {
             let index = Vault::index(&root, None);
-            let keys = daftar_core::JobKeys::default();
+            let keys = daftar_core::JobKeys::of(&config(&root));
             let search = daftar_core::JobSearch::new(&index, &keys, |path| !hidden.contains(path));
             let lines = if channels {
                 jobs::channels(&search)
@@ -1744,9 +1758,10 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Agenda { notify: true, before, .. } => {
             let lead = before.or_else(|| config(&root).int("notifications.meeting_lead")).unwrap_or(alerts::LEAD).max(0);
             let index = Vault::index(&root, None);
-            let search = daftar_core::JobSearch::new(&index, &daftar_core::JobKeys::default(), |path| !hidden.contains(path));
-            let rules = daftar_core::NotificationRule::all(&config(&root));
-            alerts::run(&root, &search, &rules, lead, &chrono::Local, chrono::Utc::now())?;
+            let settings = config(&root);
+            let search = daftar_core::JobSearch::new(&index, &daftar_core::JobKeys::of(&settings), |path| !hidden.contains(path));
+            let rules = daftar_core::NotificationRule::all(&settings);
+            alerts::run(&root, &search, &hidden.tasks(&index), &rules, lead, &chrono::Local, chrono::Utc::now())?;
         }
         Command::Agenda { day, json, waybar, .. } => {
             let (zone, now) = (chrono::Local, chrono::Utc::now());
@@ -1755,9 +1770,11 @@ fn run(cli: Cli) -> Result<(), String> {
                 None => Day::today(),
             };
             let index = Vault::index(&root, None);
-            let keys = daftar_core::JobKeys::default();
+            let settings = config(&root);
+            let keys = daftar_core::JobKeys::of(&settings);
             let search = daftar_core::JobSearch::new(&index, &keys, |path| !hidden.contains(path));
-            let agenda = agenda::Agenda::new(&root, &hidden.tasks(&index), &search, &keys, day, &zone, now);
+            let working = daftar_core::timeline::working_day(&settings);
+            let agenda = agenda::Agenda::new(&root, &hidden.tasks(&index), &search, &keys, day, &zone, now, working);
             match (json, waybar) {
                 (true, _) => out!("{}", agenda.json()),
                 (_, true) => out!("{}", agenda.waybar()),
@@ -1766,7 +1783,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Command::Ics { days, output } => {
             let index = Vault::index(&root, None);
-            let search = daftar_core::JobSearch::new(&index, &daftar_core::JobKeys::default(), |path| !hidden.contains(path));
+            let search = daftar_core::JobSearch::new(&index, &daftar_core::JobKeys::of(&config(&root)), |path| !hidden.contains(path));
             let events = ics::events(&hidden.tasks(&index), &search, Day::today(), days);
             ics::put(&ics::calendar(&events, chrono::Utc::now()), output.as_deref())?;
         }
@@ -1813,6 +1830,11 @@ fn run(cli: Cli) -> Result<(), String> {
                 for entry in &entries {
                     out!("{}\t{}\t{}", entry.key, entry.value.as_ref().map_or_default(daftar_core::Value::toml), entry.from.name());
                 }
+            }
+        }
+        Command::MigrateObsidian { dry_run, remove } => {
+            for line in migrate::run(&root, dry_run, remove)? {
+                out!("{line}");
             }
         }
         Command::Lsp => lsp::run(&root, cli.hidden)?,
@@ -1942,7 +1964,8 @@ fn writes(command: &Command) -> bool {
         | Command::RenameTag { dry_run, .. }
         | Command::Replace { dry_run, .. }
         | Command::SortTasks { dry_run, .. }
-        | Command::Images { dry_run, .. } => !dry_run,
+        | Command::Images { dry_run, .. }
+        | Command::MigrateObsidian { dry_run, .. } => !dry_run,
         Command::Fmt { check, stdin, .. } => !check && !stdin,
         Command::Lint { fix, .. } => *fix,
         Command::Check { fix, dry_run, .. } | Command::Mentions { fix, dry_run, .. } => *fix && !dry_run,
@@ -1984,7 +2007,8 @@ fn repository(root: &std::path::Path) -> Result<Git, String> {
 }
 
 /// The vault given, else the one the current folder is in (the nearest
-/// folder up with `.obsidian`, as git finds its repository), else the app's.
+/// folder up with `.daftar.toml`, `.daftar` or `.obsidian`, as git finds
+/// its repository), else the app's.
 fn vault(given: Option<PathBuf>) -> Result<PathBuf, String> {
     let root = match given {
         // A folder, as before, or the name of a vault of the list.
@@ -2050,9 +2074,13 @@ fn vault_lines(known: &daftar_core::Vaults, json: bool) -> Vec<String> {
         .collect()
 }
 
-/// The vault [folder] is in: itself or the nearest folder up with `.obsidian`.
+/// The vault [folder] is in: itself or the nearest folder up with
+/// Daftar's `.daftar.toml` or `.daftar/`, or Obsidian's `.obsidian/`.
 fn vault_around(folder: &std::path::Path) -> Option<PathBuf> {
-    folder.ancestors().find(|f| f.join(".obsidian").is_dir()).map(PathBuf::from)
+    folder
+        .ancestors()
+        .find(|f| f.join(daftar_core::VaultSettings::FILE).is_file() || f.join(".daftar").is_dir() || f.join(".obsidian").is_dir())
+        .map(PathBuf::from)
 }
 
 /// A note named as a path in the vault, or as a link would name it.

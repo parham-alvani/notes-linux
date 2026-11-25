@@ -905,10 +905,17 @@ impl Git {
             Some(computer) => computer.clone(),
             None => std::fs::read_to_string(ConfigFile::default_path()).unwrap_or_default(),
         };
-        for key in Settings::of(&self.root, &computer).refused() {
+        let settings = Settings::of(&self.root, &computer);
+        for key in settings.refused() {
             found.push(Diagnosis::warning(
                 "vault-config-refused",
                 &format!("{key} in .daftar.toml is not the vault's to set: it is ignored"),
+            ));
+        }
+        for line in crate::notification_rules::DigestFilter::of(settings.file()).not_understood() {
+            found.push(Diagnosis::warning(
+                "digest-filter-not-understood",
+                &format!("notifications.digest_filter has a line the Tasks query language does not read, so it is left out: {line}"),
             ));
         }
         Ok(found)

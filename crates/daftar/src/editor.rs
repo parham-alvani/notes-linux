@@ -369,6 +369,13 @@ impl Editor {
         self.close_card();
         self.auto_closed.set(None);
         self.apply_fonts();
+        // The base direction its folder gives the note; `auto` is each line's own.
+        let direction = daftar_core::FolderRules::of(&self.settings.borrow().file, path).direction;
+        self.view.set_direction(match direction {
+            daftar_core::Direction::Rtl => gtk::TextDirection::Rtl,
+            daftar_core::Direction::Ltr => gtk::TextDirection::Ltr,
+            daftar_core::Direction::Auto => gtk::TextDirection::None,
+        });
         self.buffer.begin_irreversible_action();
         self.buffer.set_text(&text);
         self.buffer.end_irreversible_action();
@@ -2169,15 +2176,11 @@ fn slash_snippets() -> Vec<Snippet> {
     EditorCommands::slash_commands(Day::today(), &chrono::Local::now().format("%H:%M").to_string())
 }
 
-/// Where a pasted picture goes: Obsidian's attachment folder for the vault,
-/// `attachmentFolderPath` in `.obsidian/app.json`; the vault's root without one.
+/// Where a pasted picture goes: the vault's attachment folder,
+/// `files.attachments` in its `.daftar.toml`, else `attachmentFolderPath`
+/// in `.obsidian/app.json`; the vault's root without one.
 pub fn attachment_folder(root: &Path) -> String {
-    let Ok(text) = fs::read_to_string(root.join(".obsidian/app.json")) else { return String::new() };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return String::new() };
-    match json.get("attachmentFolderPath").and_then(|v| v.as_str()) {
-        Some(folder) if !folder.is_empty() && folder != "/" && !folder.starts_with("./") => folder.trim_end_matches('/').to_string(),
-        _ => String::new(),
-    }
+    daftar_core::Vault::attachment_folder(root)
 }
 
 /// Writes [text] to [file] through a temporary file and a rename, only while

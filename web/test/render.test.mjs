@@ -93,6 +93,12 @@ test("every block takes its own direction", () => {
   assert.match(render("12:30"), /<p dir="auto"/);
 });
 
+test("a folder's direction is every block's", () => {
+  assert.match(render("Hello", { direction: "rtl" }), /<p dir="rtl"/);
+  assert.match(render("سلام", { direction: "ltr" }), /<p dir="ltr"/);
+  assert.match(render("Hello", { direction: "auto" }), /<p dir="ltr"/);
+});
+
 test("a block id is hidden and names its paragraph", () => {
   assert.match(render("Some text ^abc-1"), /<p id="\^abc-1"[^>]*>Some text<\/p>/);
 });

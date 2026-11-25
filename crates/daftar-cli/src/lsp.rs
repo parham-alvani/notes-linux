@@ -442,6 +442,7 @@ impl Server {
                 prep_notes: vault.prep_notes,
                 active: vault.active.iter().filter_map(|a| crate::memory::Rules::active_pair(a)).collect(),
                 quiet_days: vault.quiet_days,
+                open_stages: Some(crate::memory::open_stages(&self.root)),
             }),
             orphans: vault.orphans.then(|| vault.orphan_skip.clone()),
             okf: vault.okf,
@@ -700,12 +701,13 @@ impl Server {
             }));
         }
         let mut bookmarks = Bookmarks::load(&self.root);
-        let file = ".obsidian/bookmarks.json";
+        let path = Bookmarks::file(&self.root);
+        let file = path.strip_prefix(&self.root).map_or_default(|p| p.to_string_lossy().replace('\\', "/"));
         if bookmarks.follow(&moves, None)
-            && let (Ok(new), Ok(old)) = (bookmarks.text(), fs::read_to_string(self.root.join(file)))
+            && let (Ok(new), Ok(old)) = (bookmarks.text(), fs::read_to_string(&path))
             && let Some(edit) = position::line_edit(&old, &new)
         {
-            changes.push(json!({ "textDocument": { "uri": self.uri_of(file), "version": null }, "edits": [edit] }));
+            changes.push(json!({ "textDocument": { "uri": self.uri_of(&file), "version": null }, "edits": [edit] }));
         }
         Ok(json!({ "documentChanges": changes }))
     }

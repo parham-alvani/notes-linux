@@ -134,6 +134,10 @@ enum Rule {
     /// A path in the vault, or empty for none: relative, with no `..`,
     /// and not a link out.
     InVault,
+    /// `HH:MM-HH:MM`, the start before the end.
+    Span,
+    /// One character: a task status's symbol.
+    Char,
 }
 
 /// The keys a vault may set, each with what its value must be.
@@ -178,7 +182,68 @@ const ALLOWED: &[(&str, Rule)] = &[
     ("capture.heading", Rule::Text),
     ("files.hidden", Rule::List),
     ("files.show_hidden", Rule::Bool),
+    // What `.obsidian/` held (docs/specs/no-obsidian-folder.md).
+    ("files.attachments", Rule::InVault),
+    ("files.ignore", Rule::List),
+    ("daily.format", Rule::Text),
+    ("daily.folder", Rule::InVault),
+    ("daily.template", Rule::InVault),
+    ("templates.folder", Rule::InVault),
+    ("templates.date_format", Rule::Text),
+    ("templates.time_format", Rule::Text),
+    ("home.greeting", Rule::Text),
+    ("home.clock", Rule::Choice(&["12-hour", "24-hour", "system"])),
+    ("home.show_time", Rule::Bool),
+    ("home.show_greeting", Rule::Bool),
+    ("home.show_search", Rule::Bool),
+    ("home.show_recent", Rule::Bool),
+    ("home.show_bookmarks", Rule::Bool),
+    ("home.show_quote", Rule::Bool),
+    // docs/specs/more-vault-settings.md.
+    ("calendar.working_day", Rule::Span),
+    ("tasks.default_scheduled", Rule::Int(0, 365)),
+    ("notifications.digest_filter", Rule::List),
+    ("jobs.waiting", Rule::List),
+    ("jobs.closed", Rule::List),
 ];
+
+/// What a key of a section with names in it must be: a task status
+/// (`tasks.statuses.<id>.<key>`), a property's type
+/// (`properties.types.<name>`), a folder's rules
+/// (`folders."<folder>".<key>`) and a notification rule
+/// (`notifications.rules.<id>.<key>`).
+fn named_rule(key: &str) -> Option<Rule> {
+    if let Some((_, name)) = crate::task_status::status_key(key) {
+        return match name {
+            "symbol" | "next" => Some(Rule::Char),
+            "name" => Some(Rule::Name),
+            "type" => Some(Rule::Choice(&["TODO", "IN_PROGRESS", "DONE", "CANCELLED", "NON_TASK"])),
+            _ => None,
+        };
+    }
+    if key.strip_prefix("properties.types.").is_some_and(|name| !name.is_empty() && crate::config::last_dot(name).is_none()) {
+        return Some(Rule::Name);
+    }
+    if let Some((_, name)) = crate::folder_rules::folder_key(key) {
+        return match name {
+            "direction" => Some(Rule::Choice(&["rtl", "ltr", "auto"])),
+            "folded" => Some(Rule::Bool),
+            "template" => Some(Rule::InVault),
+            _ => None,
+        };
+    }
+    let name = crate::notification_rules::id_of(key).and_then(|_| key.rsplit_once('.')).map(|(_, name)| name)?;
+    match name {
+        "note" => Some(Rule::InVault),
+        "at" => Some(Rule::Time),
+        "heading" => Some(Rule::Name),
+        // Lists the rule judges itself: an empty `days`, or a word that is no day, makes it no rule.
+        "days" | "query" => Some(Rule::List),
+        "quiet_days" => Some(Rule::Int(1, 3650)),
+        name if crate::notification_rules::KEYS.contains(&name) => Some(Rule::Text),
+        _ => None,
+    }
+}
 
 /// The keys at the top of `config.toml`, never the vault's to say.
 const TOP: &[&str] = &["vault", "vaults", "vault_settings"];
@@ -496,15 +561,8 @@ impl Follows {
 }
 
 fn verdict(key: &str, value: Option<&Value>, root: Option<&Path>) -> Verdict {
-    let section = key.rsplit_once('.').map_or("", |(section, _)| section);
-    let rule_key = crate::notification_rules::id_of(key).and_then(|_| key.rsplit_once('.')).map(|(_, name)| name);
-    let found = match rule_key {
-        Some("note") => Some(Rule::InVault),
-        Some("at") => Some(Rule::Time),
-        Some("heading") => Some(Rule::Name),
-        Some(name) if crate::notification_rules::KEYS.contains(&name) => Some(Rule::Text),
-        _ => ALLOWED.iter().find(|(allowed, _)| *allowed == key).map(|(_, rule)| *rule),
-    };
+    let section = crate::config::last_dot(key).map_or("", |at| &key[..at]);
+    let found = named_rule(key).or_else(|| ALLOWED.iter().find(|(allowed, _)| *allowed == key).map(|(_, rule)| *rule));
     let Some(rule) = found else {
         let refused =
             if section.is_empty() { TOP.contains(&key) } else { SECTIONS.contains(&section) && !OPEN_SECTIONS.contains(&section) };
@@ -523,9 +581,29 @@ fn verdict(key: &str, value: Option<&Value>, root: Option<&Path>) -> Verdict {
         (Rule::Time, Some(Value::String(time))) => is_time(time),
         (Rule::InVault, Some(Value::String(path))) => in_vault(path, root),
         (Rule::Target, Some(Value::String(path))) => path == "daily" || (!path.trim().is_empty() && in_vault(path, root)),
+        (Rule::Span, Some(Value::String(span))) => working_day(span).is_some(),
+        (Rule::Char, Some(Value::String(text))) => text.chars().count() == 1 && one_line(text),
         _ => false,
     };
     if fits { Verdict::Used } else { Verdict::Skipped }
+}
+
+/// `calendar.working_day`, `HH:MM-HH:MM`, in minutes of the day: the start
+/// before the end. None for a value that does not fit.
+pub fn working_day(text: &str) -> Option<(u32, u32)> {
+    let (start, end) = text.trim().split_once('-')?;
+    let minutes = |time: &str| {
+        let time = time.trim();
+        is_time(time).then(|| time[..2].parse::<u32>().unwrap_or(0) * 60 + time[3..].parse::<u32>().unwrap_or(0))
+    };
+    let (start, end) = (minutes(start)?, minutes(end)?);
+    (start < end).then_some((start, end))
+}
+
+/// Whether [key] of `.daftar.toml` may be [value] in the vault at [root]:
+/// a key the vault may set, with a value that fits it.
+pub(crate) fn holds(key: &str, value: &Value, root: Option<&Path>) -> bool {
+    matches!(verdict(key, Some(value), root), Verdict::Used)
 }
 
 pub(crate) fn is_time(text: &str) -> bool {

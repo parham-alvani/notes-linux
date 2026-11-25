@@ -221,8 +221,9 @@ impl VaultIndex {
 /// The files of a vault on disk: which ones count, and how they are read.
 pub struct Vault;
 
-/// Folders never read: the app's settings, git, dependencies, the trash.
-const SKIPPED: [&str; 5] = [".obsidian", ".git", ".trash", "node_modules", ".github"];
+/// Folders never read: the app's settings (Daftar's and Obsidian's), git,
+/// dependencies, the trash.
+const SKIPPED: [&str; 6] = [".daftar", ".obsidian", ".git", ".trash", "node_modules", ".github"];
 
 /// The names a folder's logo may have, best first: a drawing before a picture.
 pub const LOGO_NAMES: [&str; 5] = ["logo.svg", "logo.png", "logo.webp", "logo.jpg", "logo.jpeg"];
@@ -339,7 +340,7 @@ impl Vault {
     /// [update] on [index] itself, with no copy of it: a vault of 20,000
     /// notes takes a sixth of a second to copy, at every change.
     pub fn update_in_place(index: &mut VaultIndex, changed: &BTreeSet<String>, root: &Path, search: Option<&SearchIndex>) {
-        if changed.contains(TaskStatuses::PATH) {
+        if changed.iter().any(|path| TaskStatuses::reads(path)) {
             TaskStatuses::set_current(TaskStatuses::load(root));
         }
         let mut reread: Vec<String> = Vec::new();
@@ -585,16 +586,20 @@ impl ExcludedFiles {
         Vault::tree(&shown, &empty)
     }
 
+    /// The vault's filters: `files.ignore` in its `.daftar.toml`, else
+    /// `userIgnoreFilters` in Obsidian's `.obsidian/app.json`.
     pub fn load(root: &Path) -> ExcludedFiles {
-        let filters = fs::read(root.join(".obsidian/app.json"))
-            .ok()
-            .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
-            .and_then(|json| {
-                json.get("userIgnoreFilters")?
-                    .as_array()
-                    .map(|list| list.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
-            })
-            .unwrap_or_default();
+        let filters = crate::OwnSettings::read(root).strings("files.ignore").unwrap_or_else(|| {
+            fs::read(root.join(".obsidian/app.json"))
+                .ok()
+                .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
+                .and_then(|json| {
+                    json.get("userIgnoreFilters")?
+                        .as_array()
+                        .map(|list| list.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
+                })
+                .unwrap_or_default()
+        });
         ExcludedFiles::new(&filters)
     }
 
@@ -655,16 +660,20 @@ impl ExcludedFiles {
 }
 
 impl Vault {
-    /// Where a new picture goes: Obsidian's attachment folder for the vault,
-    /// `attachmentFolderPath` in `.obsidian/app.json`; the vault's root
-    /// without one, or with one beside the note (`./`), as the app pastes.
+    /// Where a new picture goes: the vault's attachment folder,
+    /// `files.attachments` in its `.daftar.toml`, else `attachmentFolderPath`
+    /// in Obsidian's `.obsidian/app.json`; the vault's root without one, or
+    /// with one beside the note (`./`), as the app pastes.
     pub fn attachment_folder(root: &Path) -> String {
-        let Ok(text) = fs::read_to_string(root.join(".obsidian/app.json")) else { return String::new() };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return String::new() };
-        match json.get("attachmentFolderPath").and_then(|v| v.as_str()) {
-            Some(folder) if !folder.is_empty() && folder != "/" && !folder.starts_with("./") => folder.trim_matches('/').to_string(),
-            _ => String::new(),
-        }
+        let folder = crate::OwnSettings::read(root).string("files.attachments").unwrap_or_else(|| {
+            fs::read_to_string(root.join(".obsidian/app.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|json| json.get("attachmentFolderPath")?.as_str().map(String::from))
+                .unwrap_or_default()
+        });
+        let folder = folder.trim();
+        if folder.is_empty() || folder == "/" || folder.starts_with("./") { String::new() } else { folder.trim_matches('/').to_string() }
     }
 }
 
@@ -708,6 +717,18 @@ mod tests {
 
     fn names(nodes: &[TreeNode]) -> Vec<&str> {
         nodes.iter().map(|n| n.name.as_str()).collect()
+    }
+
+    #[test]
+    fn the_folder_is_skipped() {
+        let root = make_vault();
+        fs::create_dir_all(root.path().join(".daftar")).unwrap();
+        fs::write(root.path().join(".daftar/Note.md"), "# Not a note of the vault\n").unwrap();
+        fs::write(root.path().join(".daftar/icons.json"), "{}").unwrap();
+        let index = Vault::index(root.path(), None);
+        assert!(index.files.iter().all(|path| !path.starts_with(".daftar")));
+        assert!(!index.notes.contains_key(".daftar/Note.md"));
+        assert!(!Vault::counts(".daftar/Note.md"));
     }
 
     #[test]

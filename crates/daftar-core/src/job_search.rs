@@ -52,6 +52,21 @@ impl Default for JobKeys {
     }
 }
 
+impl JobKeys {
+    /// The keys with the stages of [file], the settings in use:
+    /// `jobs.waiting` and `jobs.closed` when set, else the defaults. The
+    /// property names do not change.
+    pub fn of(file: &crate::ConfigFile) -> JobKeys {
+        let defaults = JobKeys::default();
+        let stages = |key: &str| file.strings(key).map(|list| list.into_iter().map(|s| s.trim().to_lowercase()).collect::<Vec<_>>());
+        JobKeys {
+            waiting: stages("jobs.waiting").unwrap_or_else(|| defaults.waiting.clone()),
+            closed: stages("jobs.closed").unwrap_or_else(|| defaults.closed.clone()),
+            ..defaults
+        }
+    }
+}
+
 /// One company's application, from its note's front matter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Application {
@@ -391,6 +406,24 @@ mod tests {
         assert_eq!(row("unknown").applications, 1);
         assert!((row("LinkedIn").rate() - 50.0).abs() < 1e-9);
         assert_eq!(channels[0].channel, "Ashby");
+    }
+
+    #[test]
+    fn the_stages_are_the_settings() {
+        let index = index(
+            &[
+                ("Companies/Ghost/Ghost.md", "---\njob_stage: ghosted\n---\n"),
+                ("Companies/Gone/Gone.md", "---\njob_stage: withdrawn\n---\n"),
+            ],
+            &[],
+        );
+        let keys = JobKeys::of(&crate::ConfigFile::new("[jobs]\nclosed = [\"rejected\", \"ghosted\"]\n"));
+        assert_eq!(keys.waiting, ["applied"]);
+        let search = JobSearch::new(&index, &keys, |_| true);
+        let closed: Vec<(&str, bool)> = search.applications.iter().map(|a| (a.company.as_str(), a.closed)).collect();
+        assert_eq!(closed, [("Ghost", true), ("Gone", false)]);
+        // With no setting, the defaults.
+        assert_eq!(JobKeys::of(&crate::ConfigFile::new("")), JobKeys::default());
     }
 
     #[test]

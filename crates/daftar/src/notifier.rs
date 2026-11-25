@@ -13,7 +13,7 @@ use chrono::Utc;
 use chrono::{DateTime, Duration, Local, NaiveTime, TimeZone};
 use gtk::{gio, glib};
 
-use daftar_core::{Day, JobKeys, JobSearch, Meeting, NotificationRule};
+use daftar_core::{Day, DigestFilter, JobKeys, JobSearch, Meeting, NotificationRule, RuleLook};
 
 use crate::store::VaultStore;
 use crate::today::{TaskGroups, plain, prep_for};
@@ -27,6 +27,10 @@ pub struct Wanted {
     pub digest: bool,
     pub digest_at: NaiveTime,
     pub rules: Vec<NotificationRule>,
+    /// `notifications.digest_filter`: the tasks the digest counts.
+    pub digest_filter: DigestFilter,
+    /// The job search's stages (`jobs.waiting`, `jobs.closed`).
+    pub jobs: JobKeys,
 }
 
 /// One notification to send at a time.
@@ -47,13 +51,14 @@ pub struct Alert {
 
 /// The alerts for [meetings] still ahead of [now], at most 40, each with
 /// the note [prep] gives it, the next digest of [groups] when anything
-/// is due or late, and each rule's next time when its note, as [read]
-/// gives it, lacks that day's heading.
+/// is due or late, and each rule's next time when it rings then, as [look]
+/// sees the vault: a note that lacks that day's heading, a query that finds
+/// open tasks, a note that has not changed for its days.
 pub fn plan(
     meetings: &[Meeting],
     prep: impl Fn(&Meeting) -> Option<String>,
     groups: impl Fn(Day) -> TaskGroups,
-    read: impl Fn(&str) -> String,
+    look: &RuleLook,
     now: DateTime<Local>,
     wanted: &Wanted,
 ) -> Vec<Alert> {
@@ -101,9 +106,8 @@ pub fn plan(
     for rule in &wanted.rules {
         let at = next(rule.at, now);
         let day = Day::from(at.date_naive());
-        if rule.is_missing(&read(&rule.note), day) {
-            let note = Some(rule.note.clone());
-            out.push(Alert { id: rule.alert_id(), at, title: rule.title(), body: rule.body(day), join: None, prep: None, note });
+        if let Some(rung) = rule.alert(day, look) {
+            out.push(Alert { id: rule.alert_id(), at, title: rung.title, body: rung.body, join: None, prep: None, note: rung.note });
         }
     }
     out
@@ -145,10 +149,14 @@ impl Notifier {
     pub fn plan(&self, store: &VaultStore, wanted: &Wanted) {
         let meetings: Vec<Meeting> = store.calendar_days(Day::today(), 3).into_iter().flat_map(|day| day.meetings).collect();
         let tasks = store.index().tasks();
-        let jobs = JobSearch::new(&store.index(), &JobKeys::default(), |_| true);
+        let jobs = JobSearch::new(&store.index(), &wanted.jobs, |_| true);
         let prep = |meeting: &Meeting| prep_for(&jobs, meeting).map(|(_, path)| path);
         let read = |note: &str| std::fs::read_to_string(store.root.join(note)).unwrap_or_default();
-        let alerts = plan(&meetings, prep, |day| TaskGroups::new(tasks.clone(), day, 0), read, Local::now(), wanted);
+        let all = || tasks.clone();
+        let changed = |note: &str| daftar_core::notification_rules::last_change(&store.root, note);
+        let look = RuleLook { read: &read, tasks: &all, changed: &changed };
+        let groups = |day| TaskGroups::new(wanted.digest_filter.keep(tasks.clone(), day), day, 0);
+        let alerts = plan(&meetings, prep, groups, &look, Local::now(), wanted);
         *self.pending.borrow_mut() = alerts;
     }
 }
@@ -214,6 +222,8 @@ impl Wanted {
                 .and_then(|t| NaiveTime::parse_from_str(&t, "%H:%M").ok())
                 .unwrap_or(NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
             rules: NotificationRule::all(file),
+            digest_filter: DigestFilter::of(file),
+            jobs: JobKeys::of(file),
         }
     }
 }
@@ -251,18 +261,41 @@ mod tests {
     }
     use daftar_core::{TaskLine, VaultTask};
 
+    fn empty(_: &str) -> String {
+        String::new()
+    }
+
+    fn no_tasks() -> Vec<VaultTask> {
+        Vec::new()
+    }
+
+    fn never(_: &str) -> Option<Day> {
+        None
+    }
+
+    /// A vault where no rule finds anything to ring for but a missing heading.
+    const NOTHING: RuleLook<'static> = RuleLook { read: &empty, tasks: &no_tasks, changed: &never };
+
     #[test]
     fn meetings_ahead_ring_before_they_start() {
         let now = Local::now();
         let soon = (now + Duration::hours(1)).with_timezone(&Utc);
         let gone = (now - Duration::hours(1)).with_timezone(&Utc);
-        let wanted = Wanted { meetings: true, lead: 5, digest: false, digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap(), rules: vec![] };
+        let wanted = Wanted {
+            meetings: true,
+            lead: 5,
+            digest: false,
+            digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            rules: vec![],
+            digest_filter: DigestFilter::default(),
+            jobs: JobKeys::default(),
+        };
         let meetings = [
             meeting("Standup", soon, Some("https://meet.example.com/x")),
             meeting("Gone", gone, None),
             meeting("Odd", soon, Some("zoommtg://x")),
         ];
-        let alerts = plan(&meetings, |_| None, |_| TaskGroups::default(), |_| String::new(), now, &wanted);
+        let alerts = plan(&meetings, |_| None, |_| TaskGroups::default(), &NOTHING, now, &wanted);
         assert_eq!(alerts.len(), 2);
         assert_eq!(alerts[0].title, "Standup");
         assert_eq!(alerts[0].at, soon.with_timezone(&Local) - Duration::minutes(5));
@@ -276,7 +309,15 @@ mod tests {
     fn a_meeting_with_a_company_names_its_prep_note() {
         let now = Local::now();
         let soon = (now + Duration::hours(1)).with_timezone(&Utc);
-        let wanted = Wanted { meetings: true, lead: 5, digest: false, digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap(), rules: vec![] };
+        let wanted = Wanted {
+            meetings: true,
+            lead: 5,
+            digest: false,
+            digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            rules: vec![],
+            digest_filter: DigestFilter::default(),
+            jobs: JobKeys::default(),
+        };
         let index = {
             let mut index = daftar_core::VaultIndex::default();
             let path = "Companies/Acme/Acme.md";
@@ -289,8 +330,7 @@ mod tests {
         };
         let jobs = JobSearch::new(&index, &JobKeys::default(), |_| true);
         let meetings = [meeting("Interview with Acme", soon, None), meeting("Standup", soon, None)];
-        let alerts =
-            plan(&meetings, |m| prep_for(&jobs, m).map(|(_, path)| path), |_| TaskGroups::default(), |_| String::new(), now, &wanted);
+        let alerts = plan(&meetings, |m| prep_for(&jobs, m).map(|(_, path)| path), |_| TaskGroups::default(), &NOTHING, now, &wanted);
         assert_eq!(alerts[0].prep.as_deref(), Some("Companies/Acme/Interview Preparation.md"));
         assert!(alerts[0].body.ends_with(". Prep: Companies/Acme/Interview Preparation.md"), "{}", alerts[0].body);
         assert_eq!(alerts[1].prep, None);
@@ -299,16 +339,24 @@ mod tests {
     #[test]
     fn the_digest_lists_what_is_due() {
         let now = Local::now();
-        let wanted = Wanted { meetings: false, lead: 0, digest: true, digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap(), rules: vec![] };
+        let wanted = Wanted {
+            meetings: false,
+            lead: 0,
+            digest: true,
+            digest_at: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            rules: vec![],
+            digest_filter: DigestFilter::default(),
+            jobs: JobKeys::default(),
+        };
         let task = |raw: &str| VaultTask { path: "A.md".into(), task: TaskLine::parse(raw, 0, "").unwrap() };
         let groups =
             |_| TaskGroups { today: vec![task("- [ ] Call [[Sam Lee|Sam]]")], overdue: vec![task("- [ ] Late")], ..Default::default() };
-        let alerts = plan(&[], |_| None, groups, |_| String::new(), now, &wanted);
+        let alerts = plan(&[], |_| None, groups, &NOTHING, now, &wanted);
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].title, "1 due today");
         assert_eq!(alerts[0].body, "• Call Sam\n1 overdue");
         assert!(alerts[0].at > now);
-        assert!(plan(&[], |_| None, |_| TaskGroups::default(), |_| String::new(), now, &wanted).is_empty());
+        assert!(plan(&[], |_| None, |_| TaskGroups::default(), &NOTHING, now, &wanted).is_empty());
     }
 
     #[test]
@@ -318,18 +366,18 @@ mod tests {
         );
         let wanted = Wanted::from(&file);
         let at = |d: u32, h: u32| Local.with_ymd_and_hms(2026, 11, d, h, 0, 0).unwrap();
-        let none = |_: &str| String::new();
-        let alerts = plan(&[], |_| None, |_| TaskGroups::default(), none, at(25, 20), &wanted);
+        let alerts = plan(&[], |_| None, |_| TaskGroups::default(), &NOTHING, at(25, 20), &wanted);
         assert_eq!(alerts.len(), 1);
         assert_eq!((alerts[0].id.as_str(), alerts[0].at), ("rule.diary", at(25, 21)));
         assert_eq!(alerts[0].title, "Diary");
         assert_eq!(alerts[0].body, "No heading for today yet: 2026-11-25");
         assert_eq!(alerts[0].note.as_deref(), Some("Diet/Diary.md"));
         // Written before its time: nothing rings.
-        let written = |_: &str| "## 2026-11-25\n".to_string();
-        assert!(plan(&[], |_| None, |_| TaskGroups::default(), written, at(25, 20), &wanted).is_empty());
+        let today = |_: &str| "## 2026-11-25\n".to_string();
+        let written = RuleLook { read: &today, tasks: &no_tasks, changed: &never };
+        assert!(plan(&[], |_| None, |_| TaskGroups::default(), &written, at(25, 20), &wanted).is_empty());
         // After its time, it is tomorrow's, for tomorrow's heading.
-        let alerts = plan(&[], |_| None, |_| TaskGroups::default(), written, at(25, 22), &wanted);
+        let alerts = plan(&[], |_| None, |_| TaskGroups::default(), &written, at(25, 22), &wanted);
         assert_eq!((alerts[0].at, alerts[0].body.as_str()), (at(26, 21), "No heading for today yet: 2026-11-26"));
     }
 }

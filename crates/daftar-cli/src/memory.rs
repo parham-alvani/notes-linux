@@ -8,7 +8,9 @@
 //! preparation note's call that has been held gets a `> [!done]` callout.
 //! With `quiet_days`, a note whose state property says it is still going
 //! (`job_stage: applied`) warns when nothing in it is dated within that
-//! many days: the process went quiet, and the note should say so.
+//! many days: the process went quiet, and the note should say so. With no
+//! such state listed, a note whose `job_stage` is set and is none of the
+//! vault's closed stages (`jobs.closed`) is going.
 
 use std::sync::LazyLock;
 
@@ -28,6 +30,16 @@ pub struct Rules {
     pub active: Vec<(String, String)>,
     /// How many days a going note may have nothing newer dated in it.
     pub quiet_days: Option<i64>,
+    /// With no [active] pairs: the stage property and the stages that end
+    /// a process (`jobs.closed`); a note whose stage is another one is going.
+    pub open_stages: Option<(String, Vec<String>)>,
+}
+
+/// The stage property and the closed stages of the vault at [root], from
+/// the settings in use (`docs/specs/more-vault-settings.md`, section 4).
+pub fn open_stages(root: &std::path::Path) -> (String, Vec<String>) {
+    let keys = daftar_core::JobKeys::of(daftar_core::Settings::read(root).file());
+    (keys.stage, keys.closed)
 }
 
 impl Rules {
@@ -118,7 +130,13 @@ fn quiet(lines: &[&str], body: usize, rules: &Rules, days: i64, today: NaiveDate
     for (i, line) in lines[..body].iter().enumerate() {
         let Some((key, value)) = line.split_once(':') else { continue };
         let (key, value) = (key.trim(), value.trim().trim_matches(['"', '\'']));
-        if rules.active.iter().any(|(k, v)| k == key && v == value) {
+        let open = || {
+            rules.active.is_empty()
+                && rules.open_stages.as_ref().is_some_and(|(stage, closed)| {
+                    stage == key && !value.is_empty() && !closed.iter().any(|c| c.eq_ignore_ascii_case(value))
+                })
+        };
+        if rules.active.iter().any(|(k, v)| k == key && v == value) || open() {
             going = Some((i, format!("{key}: {value}")));
         }
         see(value);
@@ -201,6 +219,7 @@ mod tests {
             prep_notes: vec!["Interview Preparation".into()],
             active: Vec::new(),
             quiet_days: None,
+            open_stages: None,
         }
     }
 
@@ -253,6 +272,15 @@ mod tests {
         // A recent entry, or a stage that is over, is not quiet.
         assert!(found(&quiet.replace("**2026-09-20:**", "**2026-10-20:**")).is_empty());
         assert!(found(&quiet.replace("applied\n", "rejected\n")).is_empty());
+        // With no states listed, every stage that is not a closed one is going: the vault's `jobs.closed`.
+        let stages = Rules {
+            quiet_days: Some(30),
+            open_stages: Some(("job_stage".into(), vec!["rejected".into(), "ghosted".into()])),
+            ..tests::rules()
+        };
+        let by_stage = |text: &str| problems("A.md", text, &stages, now()).into_iter().map(|(l, r, _)| (l, r)).collect::<Vec<_>>();
+        assert_eq!(by_stage(&quiet.replace("applied\n", "withdrawn\n")), [(2, "memory-quiet")]);
+        assert!(by_stage(&quiet.replace("applied\n", "ghosted\n")).is_empty());
         // Nothing dated at all says nothing.
         assert!(found("---\njob_stage: applied\n---\nText\n").is_empty());
         assert_eq!(Rules::active_pair("job_stage = screening"), Some(("job_stage".into(), "screening".into())));

@@ -13,7 +13,6 @@ use std::path::Path;
 use chrono::{DateTime, Duration, NaiveDateTime, TimeZone, Utc};
 use serde_json::{Value, json};
 
-use daftar_core::timeline::WORKING_DAY;
 use daftar_core::{Application, CalendarWeek, Day, DueTasks, JobKeys, JobSearch, Meeting, Timeline, TimelineEntry, VaultTask};
 
 /// How near a meeting's start makes Waybar's class `soon`, in minutes.
@@ -63,7 +62,9 @@ pub enum What {
 impl Agenda {
     /// The agenda of [day] seen in [zone] at [now]: the week notes are read
     /// from [root], the timed and due tasks are [tasks] (the hidden ones
-    /// already left out), the events [jobs]'.
+    /// already left out), the events [jobs]', the free time inside
+    /// [working] (`calendar.working_day`).
+    #[expect(clippy::too_many_arguments, reason = "the day, its clock and the vault's parts, each a parameter so the tests fix them")]
     pub fn new<Tz: TimeZone>(
         root: &Path,
         tasks: &[VaultTask],
@@ -72,9 +73,10 @@ impl Agenda {
         day: Day,
         zone: &Tz,
         now: DateTime<Utc>,
+        working: (u32, u32),
     ) -> Agenda {
         let meetings = meetings(root, day);
-        let timeline = Timeline::new(day, &meetings, tasks, zone, Some(now), WORKING_DAY);
+        let timeline = Timeline::new(day, &meetings, tasks, zone, Some(now), working);
         let local_now = Some(now.with_timezone(zone).naive_local()).filter(|n| n.date() == day.date());
         let clock = |at: DateTime<Utc>| at.with_timezone(zone).naive_local().format("%H:%M").to_string();
         let company =
@@ -303,6 +305,7 @@ fn markup(text: &str) -> String {
 mod tests {
     use super::*;
     use daftar_core::Vault;
+    use daftar_core::timeline::WORKING_DAY;
 
     /// A made-up vault on Sunday 15 November 2026: a week note with a
     /// standup, an interview with Acme and a night call from Saturday, a
@@ -335,7 +338,7 @@ mod tests {
         let keys = JobKeys::default();
         let jobs = JobSearch::new(&index, &keys, |_| true);
         let now = NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M").unwrap().and_utc();
-        Agenda::new(root, &index.tasks(), &jobs, &keys, Day::parse("2026-11-15").unwrap(), &Utc, now)
+        Agenda::new(root, &index.tasks(), &jobs, &keys, Day::parse("2026-11-15").unwrap(), &Utc, now, WORKING_DAY)
     }
 
     #[test]
@@ -403,7 +406,8 @@ mod tests {
         let index = Vault::index(root.path(), None);
         let jobs = JobSearch::new(&index, &JobKeys::default(), |_| true);
         let now = NaiveDateTime::parse_from_str("2026-11-16T08:00", "%Y-%m-%dT%H:%M").unwrap().and_utc();
-        let other = Agenda::new(root.path(), &index.tasks(), &jobs, &JobKeys::default(), Day::parse("2026-11-15").unwrap(), &Utc, now);
+        let other =
+            Agenda::new(root.path(), &index.tasks(), &jobs, &JobKeys::default(), Day::parse("2026-11-15").unwrap(), &Utc, now, WORKING_DAY);
         assert_eq!(other.json()["now"], Value::Null);
         assert_eq!(other.waybar()["text"], "23:00 Night call");
     }

@@ -21,8 +21,15 @@ pub const TASK_MINUTES: u32 = 30;
 /// The shortest free time shown, as the week notes count it.
 pub const SHORTEST_FREE: u32 = 15;
 
-/// The working day the week notes count free time in: 09:00 to 18:00.
+/// The working day the week notes count free time in: 09:00 to 18:00,
+/// unless `calendar.working_day` says otherwise.
 pub const WORKING_DAY: (u32, u32) = (9 * 60, 18 * 60);
+
+/// The working day of [file], the settings in use: `calendar.working_day`
+/// (`HH:MM-HH:MM`, the start before the end), else `WORKING_DAY`.
+pub fn working_day(file: &crate::ConfigFile) -> (u32, u32) {
+    file.string("calendar.working_day").and_then(|text| crate::settings::working_day(&text)).unwrap_or(WORKING_DAY)
+}
 
 static TIME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([0-9]{1,2}):([0-9]{2})(?: ?[-–] ?([0-9]{1,2}):([0-9]{2}))?(?:\s+|$)").unwrap());
@@ -263,6 +270,19 @@ mod tests {
     }
 
     const DAY: &str = "2026-11-14";
+
+    #[test]
+    fn the_working_day_is_the_setting() {
+        let file = crate::ConfigFile::new("[calendar]\nworking_day = \"08:00-16:30\"\n");
+        let working = working_day(&file);
+        assert_eq!(working, (480, 990));
+        let day = Timeline::new(Day::parse("2026-11-25").unwrap(), &[], &[], &Utc, None, working);
+        assert_eq!(day.free, [(480, 990)]);
+        // An end before the start, or no value, is the default.
+        assert_eq!(working_day(&crate::ConfigFile::new("[calendar]\nworking_day = \"18:00-09:00\"\n")), WORKING_DAY);
+        assert_eq!(working_day(&crate::ConfigFile::new("")), WORKING_DAY);
+        assert_eq!(working_day(&crate::ConfigFile::new("[calendar]\nworking_day = \"9-17\"\n")), WORKING_DAY);
+    }
 
     #[test]
     fn a_task_time_is_read_from_the_start_of_its_text() {

@@ -1695,7 +1695,7 @@ window.daftar = {
     const html =
       (note.title ? `<h1 class="inline-title" dir="${RTL_FIRST.test(note.title) ? "rtl" : "auto"}">${escape(note.title)}</h1>` : "") +
       renderProperties(note.properties, note) +
-      render(note.text, { path: note.path, links: note.links });
+      render(note.text, { path: note.path, links: note.links, direction: note.direction });
     timing.mark("rendered");
     // Another note than the one on the page comes with a soft change; the
     // same note drawn again (a change on disk, a tick, a setting) and a

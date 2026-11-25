@@ -142,7 +142,7 @@ impl Today {
         match day {
             Some(day) if day.meetings.is_empty() => meetings_card.append(&muted("No meetings today.")),
             Some(day) => {
-                let jobs = JobSearch::new(&store.index(), &JobKeys::default(), |_| true);
+                let jobs = JobSearch::new(&store.index(), &JobKeys::of(daftar_core::Settings::read(&store.root).file()), |_| true);
                 for meeting in &day.meetings {
                     let prep = prep_for(&jobs, meeting).map(|(company, path)| {
                         let button = gtk::Button::builder()
@@ -226,7 +226,7 @@ impl Today {
             &store.listed_tasks(),
             &Local,
             Some(Utc::now()),
-            daftar_core::timeline::WORKING_DAY,
+            daftar_core::timeline::working_day(daftar_core::Settings::read(&store.root).file()),
         );
         let timed = timeline.items.iter().any(|i| matches!(i.entry, daftar_core::TimelineEntry::Task(..)));
         if !noted && !timed {

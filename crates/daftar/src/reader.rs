@@ -390,7 +390,9 @@ impl Reader {
                 // The person's folds for the note, or null when none is kept: then the
                 // page folds every section where notes open folded (docs/specs/folded-sections.md).
                 "folds": store.places.kept_folds(&request.path),
-                "folded": self.folds_sections(&store.root),
+                "folded": self.folds_sections(&store.root, &request.path),
+                // The base direction its folder gives it (docs/specs/more-vault-settings.md, section 6).
+                "direction": daftar_core::FolderRules::of(&self.settings.borrow().file, &request.path).direction.name(),
                 "detected": detected,
             })
         };
@@ -433,11 +435,14 @@ impl Reader {
         self.send(note, self.settings.borrow(), request, keep_scroll);
     }
 
-    /// Whether notes open folded: the app's setting, or the vault's word in
-    /// its `.daftar.toml`, read at each asking, so a pull that changes it
+    /// Whether the note at [path] opens folded: the app's setting, or the
+    /// word of its folder (`folders."<folder>".folded`) and else of the vault
+    /// in its `.daftar.toml`, read at each asking, so a pull that changes it
     /// is followed by the next note shown.
-    fn folds_sections(&self, root: &Path) -> bool {
-        self.settings.borrow().fold_sections().folds(daftar_core::VaultSettings::read(root))
+    fn folds_sections(&self, root: &Path, path: &str) -> bool {
+        let settings = self.settings.borrow();
+        let folder = daftar_core::FolderRules::of(&settings.file, path).folded;
+        settings.fold_sections().folds_note(daftar_core::VaultSettings::read(root), folder)
     }
 
     /// Hands [note] to the page with the settings it draws with.
@@ -686,7 +691,7 @@ impl Reader {
                 let store = self.state.borrow().store.clone();
                 if let Some(store) = store {
                     // Where notes open folded, "none shut" is a choice to keep too.
-                    let explicit = self.folds_sections(&store.root);
+                    let explicit = self.folds_sections(&store.root, &shown.path);
                     store.places.set_folds(&shown.path, folds, explicit);
                 }
             }

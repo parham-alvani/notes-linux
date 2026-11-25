@@ -37,6 +37,8 @@ A repository is text that other people and other computers can change. It must n
 | `export.footer`, `export.contents`, `export.landscape` | yes |
 | `scratchpad.*`, `capture.*` | yes; a path is in the vault by the same rule |
 | `files.hidden`, `files.show_hidden` | yes |
+| `files.attachments`, `files.ignore`, `daily.*`, `templates.*`, `properties.types.*`, `tasks.statuses.*`, `home.greeting`, `home.clock`, `home.show_*` | yes ([no-obsidian-folder.md](no-obsidian-folder.md)); a path is in the vault by the same rule |
+| `calendar.working_day`, `tasks.default_scheduled`, `notifications.digest_filter`, `jobs.waiting`, `jobs.closed`, `folders."<folder>".*` | yes ([more-vault-settings.md](more-vault-settings.md)) |
 | `vault`, `vault_settings` | never |
 | `editor.vim_mode`, `editor.neovide`, `editor.nvim`, `editor.nvim_config`, `terminal.shell` | never: they name or start a program |
 | `wakatime.*` | never: it sends the notes' paths to a service |
@@ -80,6 +82,20 @@ What a value from the vault must be, the same in every app:
 | `export.contents`, `export.landscape`, `files.show_hidden` | a boolean |
 | `capture.target` | `daily`, or a path in the vault |
 | `files.hidden` | a list of one-line texts |
+| `files.attachments`, `daily.folder`, `daily.template`, `templates.folder`, `folders."<folder>".template` | a path in the vault, or empty |
+| `files.ignore`, `notifications.digest_filter`, `jobs.waiting`, `jobs.closed` | a list of one-line texts |
+| `daily.format`, `templates.date_format`, `templates.time_format`, `home.greeting` | text of one line |
+| `home.clock` | `12-hour`, `24-hour` or `system` |
+| `home.show_time`, `home.show_greeting`, `home.show_search`, `home.show_recent`, `home.show_bookmarks`, `home.show_quote`, `folders."<folder>".folded` | a boolean |
+| `properties.types.<name>` | text of one line that is not blank |
+| `tasks.statuses.<id>.symbol`, `.next` | one character |
+| `tasks.statuses.<id>.name` | text of one line that is not blank |
+| `tasks.statuses.<id>.type` | `TODO`, `IN_PROGRESS`, `DONE`, `CANCELLED` or `NON_TASK` |
+| `calendar.working_day` | `HH:MM-HH:MM`, the start before the end |
+| `tasks.default_scheduled` | 0 to 365 |
+| `folders."<folder>".direction` | `rtl`, `ltr` or `auto` |
+| `notifications.rules.<id>.days`, `notifications.rules.<id>.query` | a list of one-line texts |
+| `notifications.rules.<id>.quiet_days` | 1 to 3650 |
 
 Whether a clone is read-only, its address and its key are never the vault's to say: they are one clone's, in its git config ([a read-only vault](read-only-vault.md)).
 

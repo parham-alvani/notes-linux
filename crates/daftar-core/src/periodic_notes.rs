@@ -221,9 +221,21 @@ impl DailyNotes {
         DailyNotes::new(get("folder"), get("format"), get("template"))
     }
 
-    /// The settings of the vault at [root].
+    /// The settings of the vault at [root]: `[daily]` in its `.daftar.toml`
+    /// when it sets any of the three, else `.obsidian/daily-notes.json`.
     pub fn read(root: &Path) -> DailyNotes {
-        std::fs::read_to_string(root.join(".obsidian/daily-notes.json")).map_or_default(|t| DailyNotes::from_json(&t))
+        Self::from_settings(&crate::OwnSettings::read(root)).unwrap_or_else(|| {
+            std::fs::read_to_string(root.join(".obsidian/daily-notes.json")).map_or_default(|t| DailyNotes::from_json(&t))
+        })
+    }
+
+    /// `daily.format`, `daily.folder` and `daily.template` of [own]; None
+    /// when it sets none of them.
+    pub fn from_settings(own: &crate::OwnSettings) -> Option<DailyNotes> {
+        own.sets_any(&["daily.format", "daily.folder", "daily.template"]).then(|| {
+            let get = |key: &str| own.string(key).unwrap_or_default();
+            DailyNotes::new(&get("daily.folder"), &get("daily.format"), &get("daily.template"))
+        })
     }
 }
 

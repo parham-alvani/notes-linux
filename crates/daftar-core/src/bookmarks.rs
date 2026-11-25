@@ -1,4 +1,5 @@
-//! Obsidian's bookmarks, `.obsidian/bookmarks.json`: files, folders,
+//! The bookmarks, `.daftar/bookmarks.json`, else Obsidian's
+//! `.obsidian/bookmarks.json`, the same JSON: files, folders,
 //! searches, headings and groups of them. Daftar shows the files and
 //! folders and adds or removes files; every other item is written back as
 //! it was read, keys in their order, so the file stays Obsidian's.
@@ -51,8 +52,11 @@ impl Bookmarks {
         Bookmarks { items, unreadable: false }
     }
 
-    fn file(root: &Path) -> PathBuf {
-        root.join(".obsidian/bookmarks.json")
+    /// Where the bookmarks are read from and written to:
+    /// `.daftar/bookmarks.json` when it is there or the vault has no
+    /// `.obsidian/`, else Obsidian's.
+    pub fn file(root: &Path) -> PathBuf {
+        crate::OwnSettings::file(root, "bookmarks.json", "bookmarks.json")
     }
 
     /// No file is no bookmarks yet; a file that does not read is `unreadable`.
