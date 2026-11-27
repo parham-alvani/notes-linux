@@ -45,7 +45,7 @@ install: app
     install -Dm644 data/me.parham1995.notes.desktop ~/.local/share/applications/me.parham1995.notes.desktop
     install -Dm644 data/me.parham1995.notes.png ~/.local/share/icons/hicolor/256x256/apps/me.parham1995.notes.png
 
-# Cuts a release: `just release 0.2.0` sets the version everywhere, commits, tags and pushes. The tag's CI publishes the binaries, and the tap's daily bump moves the daftar-cli formula to them.
+# Cuts a release: `just release 0.2.0` sets the version everywhere, commits, tags and pushes. The tag's CI publishes the binaries, then starts the tap's bump and moves the AUR packages to them.
 release version:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -58,15 +58,26 @@ release version:
     git tag -a "v{{version}}" -m "v{{version}}"
     git push -q origin HEAD "v{{version}}"
 
-# Moves the AUR packages, daftar-bin and daftar-cli-bin, to the released VERSION and pushes them to the AUR, which needs your AUR SSH key. Run it once the release's binaries are up.
-aur:
+# Moves the AUR packages, daftar-bin and daftar-cli-bin, to the released VERSION, pushes them to the AUR and commits them here. The tag's CI runs it; by hand it needs your AUR SSH key, once the release's binaries are up.
+aur: aur-update aur-push
+
+# Moves packaging/aur's PKGBUILDs to a released version, VERSION by default, with new checksums and .SRCINFO. makepkg refuses to run as root.
+aur-update version=`cat VERSION`:
     #!/usr/bin/env bash
     set -euo pipefail
-    version=$(cat VERSION)
     for pkg in daftar-bin daftar-cli-bin; do
       dir=packaging/aur/$pkg
-      sed -i -E "s/^pkgver=.*/pkgver=$version/; s/^pkgrel=.*/pkgrel=1/" $dir/PKGBUILD
+      sed -i -E "s/^pkgver=.*/pkgver={{version}}/; s/^pkgrel=.*/pkgrel=1/" $dir/PKGBUILD
       (cd $dir && updpkgsums && makepkg --printsrcinfo > .SRCINFO && rm -f ./*.tar.gz LICENSE-*)
+    done
+
+# Pushes packaging/aur's PKGBUILDs to the AUR, which needs an AUR SSH key, and commits them here.
+aur-push:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(sed -n 's/^pkgver=//p' packaging/aur/daftar-bin/PKGBUILD)
+    for pkg in daftar-bin daftar-cli-bin; do
+      dir=packaging/aur/$pkg
       work=$(mktemp -d)
       git clone -q "ssh://aur@aur.archlinux.org/$pkg.git" "$work"
       cp $dir/PKGBUILD $dir/.SRCINFO "$work"/
@@ -76,4 +87,5 @@ aur:
       rm -rf "$work"
     done
     git add packaging/aur
-    git diff --cached --quiet || { git commit -qm "aur: $version"; git push -q origin HEAD; }
+    # A commit may have reached main since the tag.
+    git diff --cached --quiet || { git commit -qm "aur: $version"; git pull -q --rebase; git push -q origin HEAD; }
