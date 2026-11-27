@@ -79,6 +79,9 @@ jobs:
     steps:
       - run: pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita webkitgtk-6.0 gtksourceview5 vte4 sqlite nodejs npm just git github-cli
       - uses: actions/checkout@v7
+      # The container's root does not own the checkout, and git, which gh
+      # and `just aur-push` run, refuses a repository of another user.
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: The tag matches VERSION
         run: test "v$(cat VERSION)" = "${GITHUB_REF_NAME}"
       - run: just app
@@ -92,6 +95,7 @@ jobs:
       # again, and the release stays a draft until every file is there and
       # checked, so the AUR and the tap never read a release with a file missing.
       - name: Publish
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -193,6 +197,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: main
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: The AUR's key
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
