@@ -20,7 +20,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 md-5 = "0.11.0"
 mermaid-rs-renderer = { version = "0.3.1", default-features = false }
 mitex = "0.2.4"
-notify = "8.2.2"
+notify = "9.0.0"
 percent-encoding = "2.3.2"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
 rayon = "1.12.0"
