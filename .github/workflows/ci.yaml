@@ -214,7 +214,9 @@ jobs:
           useradd -m builder
           chown -R builder packaging/aur
           su builder -c "just aur-update ${GITHUB_REF_NAME#v}"
+      # $RUNNER_TEMP, not ${{ runner.temp }}: in a container the expression
+      # is the host's path, which the container does not have.
       - name: Push them to the AUR and to main
-        env:
-          GIT_SSH_COMMAND: ssh -i ${{ runner.temp }}/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=${{ runner.temp }}/aur_hosts
-        run: just aur-push
+        run: |
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/aur_hosts"
+          just aur-push
