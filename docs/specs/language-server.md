@@ -1,10 +1,10 @@
 # The language server: Daftar's rules in any editor
 
-`daftar-cli lsp` is a Language Server Protocol server for the vault, so Neovim, Helix or any editor with a client gets the lint, the audit, formatting, link completion, a link's note, hover, references and renaming a note with its links, by the same rules as the app. It is `daftar-cli`'s, in Rust (`crates/daftar-cli/src/lsp.rs`); Daftar for macOS runs `daftar-cli` and so has it too, and Android, where `daftar-cli` cannot run, has none.
+`daftar-cli lsp` is a Language Server Protocol server for the vault, so Neovim, Helix or any editor with a client gets the lint, the audit, formatting, link completion, a link's note, hover, references, renaming a note with its links, a note's outline and a search of notes by name, by the same rules as the app. It is `daftar-cli`'s, in Rust (`crates/daftar-cli/src/lsp.rs`); Daftar for macOS runs `daftar-cli` and so has it too, and Android, where `daftar-cli` cannot run, has none.
 
 ## 1. Running it
 
-`daftar-cli lsp` speaks the base protocol on stdin and stdout: each message is a `Content-Length` header, a blank line and a JSON-RPC 2.0 body. It answers in order, one message at a time, with no thread of its own; what it has to say beside an answer (diagnostics) goes out after it. It logs to stderr. The vault is found as for every command: `--vault`, else the vault the current folder is in (the nearest folder up with `.obsidian`), else `vault` in `~/.config/daftar/config.toml`; the client's `rootUri` is not read. `--hidden` lists the hidden files too, as elsewhere.
+`daftar-cli lsp` speaks the base protocol on stdin and stdout: each message is a `Content-Length` header, a blank line and a JSON-RPC 2.0 body. A message over 64 MB is refused before it is read, and the server stops. It answers in order, one message at a time, with no thread of its own; what it has to say beside an answer (diagnostics) goes out after it. It logs to stderr. The vault is found as for every command: `--vault`, else the vault the current folder is in (the nearest folder up with `.obsidian`), else `vault` in `~/.config/daftar/config.toml`; the client's `rootUri` is not read. `--hidden` lists the hidden files too, as elsewhere.
 
 In Neovim:
 
@@ -26,6 +26,7 @@ The lifecycle is the protocol's: `initialize` builds the index (`Vault::index`) 
 | `completionProvider` | trigger characters `[` and `#` |
 | `definitionProvider`, `referencesProvider`, `hoverProvider` | true |
 | `renameProvider` | with `prepareProvider` |
+| `documentSymbolProvider`, `workspaceSymbolProvider` | true |
 
 When the client can register file watching (`workspace.didChangeWatchedFiles.dynamicRegistration`), the server asks, after `initialized`, to be told of every file (`**/*`). A file the watcher names, and a note saved, is read again into the index; a change to `.markdownlint.jsonc` reads the whole index and the lint's config again.
 
@@ -68,7 +69,12 @@ A link is `[[target#anchor|alias]]`, `![[embed]]`, or `[text](path#anchor)` with
 
 `textDocument/rename` with a new name moves the note, and every link to it follows, as the app's Rename does (`VaultMoves::plan` and `VaultMoves::relinked`). A name stays in the note's folder; a name with `/` is a path from the vault's folder; `.md` is added. A name that is empty, has one of `/ \ : # ^ [ ] |`, starts with `.`, or goes up with `..`, and a name another file has, are refused. The server writes nothing: the answer is one workspace edit with `documentChanges`, first a `rename` of the file, then for each note whose links change the one edit of its changed lines (on the client's text and version when it is open, `null` otherwise; the moved note's own edit is on its new URI), and the vault's bookmarks (`.obsidian/bookmarks.json`) when one follows the note. A client without `rename` in `workspace.workspaceEdit.resourceOperations` is refused with `-32803` and a message saying so.
 
-## 9. Tests every implementation must have
+## 9. Symbols
+
+- **The outline** (`textDocument/documentSymbol`) is the note's headings, from the client's text, as a tree of `DocumentSymbol`s: a heading goes under the nearest heading above it of a lower level. Its `name` is the heading's text, `detail` its `#` marks, `kind` 15 (string), `selectionRange` the heading's line and `range` its whole section, to the end of the line before the next heading of its level or above, or to the end of the note.
+- **A search of notes** (`workspace/symbol`) is the quick switcher's rank of the notes (`.md` only, the hidden ones left out) for the query, 50 at most; an empty query gives the notes changed last. Each is a `SymbolInformation` with the note's name, `kind` 1 (file), its first line as the location and its folder as `containerName`.
+
+## 10. Tests every implementation must have
 
 1. Framing: messages with `Content-Length` (and another header) are answered in order, and nothing is read after `exit`.
 2. A request before `initialize` is `-32002`, after `shutdown` `-32600`; an unknown method `-32601`; a body that is not JSON `-32700`.
@@ -80,4 +86,6 @@ A link is `[[target#anchor|alias]]`, `![[embed]]`, or `[text](path#anchor)` with
 8. Hover shows a heading's section, or the note.
 9. References on a note list each link to it, two in one line, at their ranges.
 10. Rename on `[[Plants#Mint]]` to `Herbs`: the range is the target, the placeholder `Plants`; the edit renames `Garden/Plants.md` to `Garden/Herbs.md` and rewrites the links of the open note (with its version), of a closed one (`null`), and the bookmarks; nothing is written. Anywhere else it renames this note; a path moves it; a bad name and a taken one are refused; a client without resource operations is refused.
-11. UTF-16: Persian, an emoji, a unit between an emoji's halves and past the end of a line convert both ways; a URI with Persian and a space is a vault path again, and one outside the vault is none.
+11. The outline of `# Plants` with `## Basil` and `## Mint` is one symbol whose children are the two, each over its section, `Basil` ending on the blank line before `## Mint`.
+12. A search of `seeds` finds `Seeds.md` and `Projects/Seeds.md`, each with its folder, and no file that is not a note.
+13. UTF-16: Persian, an emoji, a unit between an emoji's halves and past the end of a line convert both ways; a URI with Persian and a space is a vault path again, and one outside the vault is none.

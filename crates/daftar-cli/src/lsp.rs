@@ -10,8 +10,10 @@
 //! formats it as `fmt` does; completes `[[` with the notes as the quick
 //! switcher ranks them and `[[Note#` with its headings; goes to a link's
 //! note, heading or block; shows its first lines on hover; lists the links
-//! to a note; and renames a note with every link to it, as a workspace edit
-//! the editor applies (`VaultMoves::relinked`): the server writes no file.
+//! to a note; renames a note with every link to it, as a workspace edit
+//! the editor applies (`VaultMoves::relinked`): the server writes no file;
+//! and gives a note's headings as its outline and the notes by name as the
+//! vault's symbols.
 //! The index (`Vault::index`) is built at `initialize` and read again for
 //! the files a save or the editor's file watcher names.
 
@@ -61,6 +63,10 @@ fn is_drive(path: &str) -> bool {
 
 /// How many notes a completion offers; the editor asks again as more is typed.
 const COMPLETIONS: usize = 50;
+/// LSP's `SymbolKind`s: a note is a file, a heading a string, as Markdown
+/// servers give them.
+const SYMBOL_FILE: u64 = 1;
+const SYMBOL_STRING: u64 = 15;
 /// How many lines of a note a hover shows.
 const HOVER_LINES: usize = 15;
 
@@ -247,6 +253,8 @@ impl Server {
                 "referencesProvider": true,
                 "hoverProvider": true,
                 "renameProvider": { "prepareProvider": true },
+                "documentSymbolProvider": true,
+                "workspaceSymbolProvider": true,
             },
             "serverInfo": { "name": "daftar", "version": env!("CARGO_PKG_VERSION") },
         })
@@ -274,6 +282,8 @@ impl Server {
             "textDocument/hover" => self.hover(params),
             "textDocument/prepareRename" => self.prepare_rename(params),
             "textDocument/rename" => self.rename(params),
+            "textDocument/documentSymbol" => self.document_symbols(params),
+            "workspace/symbol" => Ok(self.workspace_symbols(params["query"].as_str().unwrap_or_default())),
             _ => Err((METHOD_NOT_FOUND, format!("no method {method}"))),
         }
     }
@@ -539,8 +549,10 @@ impl Server {
     /// The files [query] finds, as the quick switcher ranks them (the notes
     /// changed last when it is empty), each with how a link names it: its
     /// name when no other file has it, else its path, without `.md`.
-    fn notes_for(&self, query: &str) -> Vec<(String, String)> {
-        let files: Vec<&String> = self.index.files.iter().filter(|p| !self.hidden.contains(p)).collect();
+    /// The files that [keep] takes, as the quick switcher ranks them for
+    /// [query]: by name and alias, the notes changed last first.
+    fn ranked(&self, query: &str, keep: impl Fn(&str) -> bool) -> Vec<String> {
+        let files: Vec<&String> = self.index.files.iter().filter(|p| !self.hidden.contains(p) && keep(p)).collect();
         let candidates: Vec<Candidate> = files
             .iter()
             .map(|path| {
@@ -551,11 +563,15 @@ impl Server {
         let mut recent: Vec<&daftar_core::NoteEntry> = self.index.notes.values().filter(|n| !self.hidden.contains(&n.path)).collect();
         recent.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.path.cmp(&b.path)));
         let recent: Vec<String> = recent.into_iter().take(COMPLETIONS).map(|n| n.path.clone()).collect();
+        QuickSwitcher::rank(query, &candidates, &recent, COMPLETIONS)
+    }
+
+    fn notes_for(&self, query: &str) -> Vec<(String, String)> {
         let mut names: HashMap<String, usize> = HashMap::new();
         for path in &self.index.files {
             *names.entry(slugs::fold(&Vault::title(path))).or_default() += 1;
         }
-        QuickSwitcher::rank(query, &candidates, &recent, COMPLETIONS)
+        self.ranked(query, |_| true)
             .into_iter()
             .map(|path| {
                 let title = Vault::title(&path);
@@ -564,6 +580,68 @@ impl Server {
                 (path, written)
             })
             .collect()
+    }
+
+    // Symbols.
+
+    /// The note's headings as a tree, each over its section: the editor's
+    /// outline and its list of symbols.
+    fn document_symbols(&self, params: &Value) -> Result<Value, Failure> {
+        let (_, text) = self.document(params)?;
+        let headings = Sections::headings(&text);
+        let line_count = text.split('\n').count();
+        let symbol = |index: usize| {
+            let heading = &headings[index];
+            let last = Sections::end(index, &headings, line_count).saturating_sub(1).max(heading.line);
+            let title = position::line(&text, heading.line);
+            json!({
+                "name": heading.text,
+                "detail": "#".repeat(heading.level),
+                "kind": SYMBOL_STRING,
+                "range": { "start": position::at(heading.line, 0), "end": position::at(last, position::utf16_len(position::line(&text, last))) },
+                "selectionRange": position::on_line(heading.line, 0, position::utf16_len(title)),
+                "children": [],
+            })
+        };
+        // Each heading goes under the nearest one above it of a lower level.
+        let mut roots: Vec<Value> = Vec::new();
+        let mut open: Vec<(usize, Value)> = Vec::new();
+        let close = |open: &mut Vec<(usize, Value)>, roots: &mut Vec<Value>| {
+            let (_, done) = open.pop().expect("a heading is open");
+            match open.last_mut() {
+                Some((_, parent)) => parent["children"].as_array_mut().expect("children are a list").push(done),
+                None => roots.push(done),
+            }
+        };
+        for (index, heading) in headings.iter().enumerate() {
+            while open.last().is_some_and(|(level, _)| *level >= heading.level) {
+                close(&mut open, &mut roots);
+            }
+            open.push((heading.level, symbol(index)));
+        }
+        while !open.is_empty() {
+            close(&mut open, &mut roots);
+        }
+        Ok(Value::Array(roots))
+    }
+
+    /// The notes whose name or alias matches [query], as the quick switcher
+    /// ranks them: the editor's search of symbols across the vault.
+    fn workspace_symbols(&self, query: &str) -> Value {
+        let symbols: Vec<Value> = self
+            .ranked(query, Vault::is_note)
+            .into_iter()
+            .map(|path| {
+                let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
+                json!({
+                    "name": Vault::title(&path),
+                    "kind": SYMBOL_FILE,
+                    "location": { "uri": self.uri_of(&path), "range": position::on_line(0, 0, 0) },
+                    "containerName": folder,
+                })
+            })
+            .collect();
+        Value::Array(symbols)
     }
 
     // Links.
@@ -998,6 +1076,35 @@ mod tests {
         assert_eq!(client.at("textDocument/definition", "Note.md", 0, 62), Value::Null);
         assert_eq!(client.at("textDocument/definition", "Note.md", 0, 75)["range"]["start"]["line"], 4);
         assert_eq!(client.at("textDocument/definition", "Note.md", 0, 2), Value::Null);
+    }
+
+    #[test]
+    fn the_outline_is_the_headings_as_a_tree() {
+        let dir = vault();
+        let mut client = Client::new(dir.path(), true);
+        client.open("Garden/Plants.md", None);
+        let uri = client.uri("Garden/Plants.md");
+        let symbols = client.result("textDocument/documentSymbol", json!({ "textDocument": { "uri": uri } }));
+        let plants = &symbols[0];
+        assert_eq!(symbols.as_array().unwrap().len(), 1);
+        assert_eq!(plants["name"], "Plants");
+        assert_eq!(plants["range"], json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 11, "character": 0 } }));
+        let children: Vec<&str> = plants["children"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+        assert_eq!(children, ["Basil", "Mint"]);
+        assert_eq!(plants["children"][0]["range"]["end"], json!({ "line": 7, "character": 0 }));
+        assert_eq!(plants["children"][1]["selectionRange"]["end"], json!({ "line": 8, "character": 7 }));
+    }
+
+    #[test]
+    fn a_note_is_found_by_its_name_across_the_vault() {
+        let dir = vault();
+        let mut client = Client::new(dir.path(), true);
+        let found = client.result("workspace/symbol", json!({ "query": "seeds" }));
+        let names: Vec<(&str, &str)> =
+            found.as_array().unwrap().iter().map(|s| (s["name"].as_str().unwrap(), s["containerName"].as_str().unwrap())).collect();
+        assert!(names.contains(&("Seeds", "")) && names.contains(&("Seeds", "Projects")), "{names:?}");
+        assert!(found[0]["location"]["uri"].as_str().unwrap().ends_with("Seeds.md"));
+        assert!(!names.iter().any(|(name, _)| name.ends_with(".jsonc")));
     }
 
     #[test]
