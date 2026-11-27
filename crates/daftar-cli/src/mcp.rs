@@ -23,7 +23,7 @@ use daftar_core::{
 use crate::{check, vault_commands};
 
 /// The protocol version answered when the client asks for none we know.
-const PROTOCOL: &str = "2025-06-18";
+const PROTOCOL: &str = "2025-11-25";
 const KNOWN: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 
 const INSTRUCTIONS: &str = "Daftar's tools on the person's notes: an Obsidian vault in a Git repository, \
@@ -673,11 +673,7 @@ fn tags(index: &VaultIndex, hidden: &ExcludedFiles, tag: Option<&str>) -> Vec<St
 }
 
 fn tasks(index: &VaultIndex, hidden: &ExcludedFiles, args: &Arguments) -> Result<Vec<String>, String> {
-    let by = match args.optional("due") {
-        None => None,
-        Some("today") => Some(Day::today().to_string()),
-        Some(text) => Some(Day::parse(text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?.to_string()),
-    };
+    let by = args.optional("due").map(|text| crate::day_argument(Some(text))).transpose()?.map(|day| day.to_string());
     let all = args.flag("all");
     let path = args.optional("path");
     let mut tasks: Vec<VaultTask> = hidden
@@ -1087,10 +1083,7 @@ impl Arguments<'_> {
     }
 
     fn day(&self, name: &str) -> Result<Day, String> {
-        match self.optional(name) {
-            None | Some("today") => Ok(Day::today()),
-            Some(text) => Day::parse(text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)")),
-        }
+        crate::day_argument(self.optional(name))
     }
 }
 
@@ -1193,7 +1186,7 @@ fn tools(read_only: bool) -> Vec<Value> {
             "tasks",
             "Tasks in the Tasks plugin's format, the ones due first: `path:line`, a tab, `[status] text` and their dates (⏳ scheduled, 📅 due, ✅ done, ❌ cancelled, 🔁 repeat, 💬 reason).",
             json!({
-                "due": string("Only those due or scheduled by this day, YYYY-MM-DD or `today`"),
+                "due": string("Only those due or scheduled by this day: YYYY-MM-DD, `today`, `tomorrow` or `yesterday`"),
                 "path": string("Only in notes whose path starts with this, as `Tasks/`"),
                 "all": boolean("Done and cancelled tasks too"),
                 "limit": integer("How many, 200 at first"),
@@ -1233,7 +1226,7 @@ fn tools(read_only: bool) -> Vec<Value> {
         tool(
             "daily_note",
             "The periodic note of a day (the Daily notes plugin's folder and format) and its text, if it was written.",
-            json!({ "day": string("YYYY-MM-DD, today at first") }),
+            json!({ "day": string("YYYY-MM-DD, `today`, `tomorrow` or `yesterday`; today at first") }),
             &[],
             false,
         ),
@@ -1412,10 +1405,85 @@ fn tools(read_only: bool) -> Vec<Value> {
             true,
         ),
     ]);
+    for tool in &mut all {
+        let name = tool["name"].as_str().unwrap_or_default();
+        let traits = Traits::of(name);
+        let writes = !tool["annotations"]["readOnlyHint"].as_bool().unwrap_or(true);
+        tool["title"] = json!(traits.title);
+        tool["annotations"] = json!({
+            "title": traits.title,
+            "readOnlyHint": !writes,
+            "destructiveHint": writes && traits.destructive,
+            "idempotentHint": !writes || traits.idempotent,
+            "openWorldHint": traits.open_world,
+        });
+    }
     if read_only {
         all.retain(|tool| tool["annotations"]["readOnlyHint"].as_bool().is_none_or(|read| read));
     }
     all
+}
+
+/// What a client shows for a tool, and what a call that writes does beyond adding.
+struct Traits {
+    title: &'static str,
+    /// A write that replaces text the note held, which a call cannot give back.
+    destructive: bool,
+    /// A write that a second call with the same arguments changes no further.
+    idempotent: bool,
+    /// The call reaches past the vault's files: `commit` pulls and pushes.
+    open_world: bool,
+}
+
+impl Traits {
+    fn of(name: &str) -> Self {
+        let (destructive, idempotent) = match name {
+            "set_property" | "replace_section" => (true, true),
+            "replace_in_note" | "edit_task" => (true, false),
+            "set_task_status" => (false, true),
+            _ => (false, false),
+        };
+        let title = match name {
+            "search" => "Search Notes",
+            "semantic_search" => "Search by Meaning",
+            "related_notes" => "Related Notes",
+            "find_notes" => "Find Notes by Name",
+            "read_note" => "Read Note",
+            "note_info" => "Note Info",
+            "list_folder" => "List Folder",
+            "concepts" => "Concepts",
+            "tags" => "Tags",
+            "tasks" => "Tasks",
+            "task_statuses" => "Task Statuses",
+            "query_tasks" => "Query Tasks",
+            "vault_brief" => "Vault Brief",
+            "recent_changes" => "Recent Changes",
+            "note_history" => "Note History",
+            "daily_note" => "Daily Note",
+            "check_vault" => "Check Vault",
+            "capture" => "Quick Capture",
+            "append_to_note" => "Append to Note",
+            "create_note" => "Create Note",
+            "toggle_task" => "Toggle Task",
+            "set_task_status" => "Set Task Status",
+            "edit_task" => "Edit Task",
+            "note_context" => "Note Context",
+            "set_property" => "Set Property",
+            "replace_in_note" => "Replace in Note",
+            "replace_section" => "Replace Section",
+            "move_note" => "Move Note",
+            "commit" => "Commit and Sync",
+            "doctor" => "Repository Doctor",
+            "job_pipeline" => "Job Pipeline",
+            "postpone_task" => "Postpone Task",
+            "random_note" => "Random Note",
+            "drill_due" => "Drill Cards Due",
+            "drill_card" => "Drill Card",
+            "drill_rate" => "Rate Drill Card",
+            _ => "",
+        };
+        Self { title, destructive, idempotent, open_world: name == "commit" }
+    }
 }
 
 #[cfg(test)]
@@ -1838,6 +1906,24 @@ mod tests {
         assert!(fs::read_to_string(root.path().join("Garden/Plants.md")).unwrap().contains("Needs sun."));
         let read_only: Vec<Value> = tools(true);
         assert!(read_only.iter().all(|t| t["name"] != "drill_rate"));
+    }
+
+    #[test]
+    fn every_tool_has_a_title_and_says_what_it_does() {
+        for tool in tools(false) {
+            let name = tool["name"].as_str().unwrap();
+            assert!(!tool["title"].as_str().unwrap().is_empty(), "{name} has no title");
+            assert_eq!(tool["title"], tool["annotations"]["title"], "{name}");
+        }
+        let hints = |name: &str| tools(false).into_iter().find(|tool| tool["name"] == name).unwrap()["annotations"].clone();
+        assert_eq!(hints("read_note")["readOnlyHint"], true);
+        assert_eq!(hints("read_note")["idempotentHint"], true);
+        assert_eq!(hints("append_to_note")["destructiveHint"], false);
+        assert_eq!(hints("append_to_note")["idempotentHint"], false);
+        assert_eq!(hints("replace_in_note")["destructiveHint"], true);
+        assert_eq!(hints("set_property")["idempotentHint"], true);
+        assert_eq!(hints("commit")["openWorldHint"], true);
+        assert_eq!(hints("search")["openWorldHint"], false);
     }
 
     #[test]

@@ -151,7 +151,7 @@ enum Command {
     },
     /// Open tasks, the ones due first.
     Tasks {
-        /// Only the ones due or scheduled by this day (YYYY-MM-DD, or `today`).
+        /// Only the ones due or scheduled by this day (YYYY-MM-DD, `today`, `tomorrow` or `yesterday`).
         #[arg(long)]
         due: Option<String>,
         /// Only the tasks in notes whose path starts with this.
@@ -484,7 +484,7 @@ enum Command {
     /// and format: a day, a week or a month), made from its template when
     /// it is not there.
     Daily {
-        /// Another day than today (YYYY-MM-DD).
+        /// Another day than today (YYYY-MM-DD, `tomorrow` or `yesterday`).
         #[arg(long)]
         day: Option<String>,
         /// Prints the path and makes nothing.
@@ -495,7 +495,7 @@ enum Command {
     /// barcelona), a line each: the day, `holiday` or `event`, its name, its
     /// name there, and its note when the vault has one.
     Events {
-        /// The first day (YYYY-MM-DD); else today.
+        /// The first day (YYYY-MM-DD, `today`, `tomorrow` or `yesterday`); else today.
         #[arg(long)]
         from: Option<String>,
         /// How many days from it.
@@ -763,7 +763,7 @@ enum Command {
     /// notes, the notes git saw change, and the tasks to mend. Prints it,
     /// or with --write makes it in `Reviews/` (never over a note).
     Review {
-        /// The day it is written (YYYY-MM-DD); it covers the seven days before. Today at first.
+        /// The day it is written (YYYY-MM-DD, `today`, `tomorrow` or `yesterday`); it covers the seven days before. Today at first.
         #[arg(long)]
         day: Option<String>,
         /// Makes the note and prints its path.
@@ -793,7 +793,7 @@ enum Command {
     /// tasks overdue, due and in progress, and the job search's events of
     /// the day with their prep notes.
     Agenda {
-        /// The day (YYYY-MM-DD); today at first.
+        /// The day (YYYY-MM-DD, `today`, `tomorrow` or `yesterday`); today at first.
         #[arg(long)]
         day: Option<String>,
         /// One JSON object: `day`, `now`, `timeline`, `free`, `overdue`,
@@ -1168,11 +1168,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Command::Tasks { due, path, all, json } => {
             let index = Vault::index(&root, None);
-            let by = match due.as_deref() {
-                None => None,
-                Some("today") => Some(Day::today().to_string()),
-                Some(text) => Some(Day::parse(text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?.to_string()),
-            };
+            let by = due.as_deref().map(|text| day_argument(Some(text))).transpose()?.map(|day| day.to_string());
             let mut tasks: Vec<_> = hidden
                 .tasks(&index)
                 .into_iter()
@@ -1251,10 +1247,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let recurrence = daftar_core::Recurrence::parse(&rule).ok_or_else(|| {
                 format!("“{rule}” is not repeated by Daftar: a tick completes the task with no next one (rules such as every 2 weeks or every jalali month are)")
             })?;
-            let mut day = match from.as_deref() {
-                None => Day::today(),
-                Some(text) => Day::parse(text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,
-            };
+            let mut day = day_argument(from.as_deref())?;
             for _ in 0..count {
                 // Each step from the day the last reached, as ticking it each time would.
                 let Some(next) = recurrence.next(day, day) else {
@@ -1415,7 +1408,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     let revision =
                         history.iter().find(|r| r.hash.starts_with(&hash)).ok_or_else(|| format!("no commit {hash} changed {path}"))?;
                     let text = git.content(&revision.path, &revision.hash).map_err(|e| e.to_string())?;
-                    print!("{text}");
+                    emit_text(&text);
                 }
                 None => {
                     for revision in history {
@@ -1575,10 +1568,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let (first, last) = if let Some(year) = year {
                 (Day::new(year, 1, 1).ok_or("no such year")?, Day::new(year, 12, 31).ok_or("no such year")?)
             } else {
-                let first = match from {
-                    Some(text) => Day::parse(&text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,
-                    None => Day::today(),
-                };
+                let first = day_argument(from.as_deref())?;
                 (first, first.adding_days(days.max(0)))
             };
             let index = Vault::index(&root, None);
@@ -1591,10 +1581,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Command::Daily { day, no_create } => {
             let index = Vault::index(&root, None);
-            let day = match day {
-                Some(text) => Day::parse(&text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,
-                None => Day::today(),
-            };
+            let day = day_argument(day.as_deref())?;
             out!("{}", vault_commands::daily(&root, &index.files, day, !no_create, Clock::now())?);
         }
         Command::Lint { paths, ignore, watch: true, .. } => {
@@ -1749,10 +1736,7 @@ fn run(cli: Cli) -> Result<(), String> {
             out!("{}", clip::run(&root, &url, &folder, title.as_deref())?);
         }
         Command::Review { day, write, folder } => {
-            let day = match day {
-                Some(text) => Day::parse(&text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,
-                None => Day::today(),
-            };
+            let day = day_argument(day.as_deref())?;
             let index = Vault::index(&root, None);
             let week = review::Week::before(day);
             let text = review::markdown(&root, &index, |path| hidden.contains(path), week, day);
@@ -1763,7 +1747,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 fmt::run(&root, &[root.join(&path)], &[], &fmt::Options { check: false, diff: false, mode: report::Mode::Plain }, |_| {})?;
                 out!("{path}");
             } else {
-                print!("{text}");
+                emit_text(&text);
             }
         }
         Command::Jobs { channels, upcoming } => {
@@ -1800,10 +1784,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Command::Agenda { day, json, waybar, .. } => {
             let (zone, now) = (chrono::Local, chrono::Utc::now());
-            let day = match day {
-                Some(text) => Day::parse(&text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD)"))?,
-                None => Day::today(),
-            };
+            let day = day_argument(day.as_deref())?;
             let index = Vault::index(&root, None);
             let settings = config(&root);
             let keys = daftar_core::JobKeys::of(&settings);
@@ -1882,6 +1863,34 @@ fn run(cli: Cli) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A day as a command or a tool takes it: `YYYY-MM-DD`, `today`, `tomorrow`
+/// or `yesterday`; today when none is given.
+pub(crate) fn day_argument(text: Option<&str>) -> Result<Day, String> {
+    spoken_day(text, Day::today())
+}
+
+fn spoken_day(text: Option<&str>, today: Day) -> Result<Day, String> {
+    match text.map(str::trim) {
+        None | Some("today") => Ok(today),
+        Some("tomorrow") => Ok(today.adding_days(1)),
+        Some("yesterday") => Ok(today.adding_days(-1)),
+        Some(text) => Day::parse(text).ok_or_else(|| format!("{text} is not a day (YYYY-MM-DD, today, tomorrow or yesterday)")),
+    }
+}
+
+/// Text as it is, with no line added: a reader that stops early (`| head`)
+/// ends the command quietly, as `out!` does.
+fn emit_text(text: &str) {
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    if let Err(error) = stdout.write_all(text.as_bytes()).and_then(|()| stdout.flush()) {
+        if error.kind() != std::io::ErrorKind::BrokenPipe {
+            eprintln!("daftar-cli: {error}");
+        }
+        std::process::exit(i32::from(error.kind() != std::io::ErrorKind::BrokenPipe));
+    }
 }
 
 fn emit(line: std::fmt::Arguments) {
@@ -2467,6 +2476,17 @@ mod tests {
         assert_eq!(property_value(words(&["x"]), false, true), None);
         let parsed = Cli::try_parse_from(["daftar-cli", "mv", "Inbox/Idea.md", "Projects/Idea", "--dry-run"]).unwrap();
         assert!(matches!(parsed.command, Some(Command::Mv { dry_run: true, .. })));
+    }
+
+    #[test]
+    fn a_day_is_a_date_or_today_tomorrow_or_yesterday() {
+        let today = Day::parse("2026-11-27").unwrap();
+        assert_eq!(spoken_day(None, today), Ok(today));
+        assert_eq!(spoken_day(Some("today"), today), Ok(today));
+        assert_eq!(spoken_day(Some("tomorrow"), today).unwrap().to_string(), "2026-11-28");
+        assert_eq!(spoken_day(Some(" yesterday "), today).unwrap().to_string(), "2026-11-26");
+        assert_eq!(spoken_day(Some("2026-01-02"), today).unwrap().to_string(), "2026-01-02");
+        assert!(spoken_day(Some("next week"), today).unwrap_err().contains("is not a day"));
     }
 
     #[test]

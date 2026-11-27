@@ -95,7 +95,7 @@ pub fn run(root: &Path, mut pass: impl FnMut(&BTreeSet<String>) -> Pass) -> Resu
     loop {
         let shown = pass(&changed);
         if clear {
-            print!("\x1b[2J\x1b[H");
+            crate::emit_text("\x1b[2J\x1b[H");
         }
         out!("{}", header(&chrono::Local::now().format("%H:%M:%S").to_string(), &shown.summary));
         for line in shown.lines {

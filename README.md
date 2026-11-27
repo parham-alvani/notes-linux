@@ -98,7 +98,7 @@ daftar-cli search --meaning "the consumer fell behind"  # by the words and by me
 daftar-cli related "Queue Design" # the notes nearest in meaning that it does not link to yet
 daftar-cli semantic-index --download-model  # the model of search by meaning (531 MB, once) and the vault's vectors
 daftar-cli search --json --meaning-only "renting a flat"  # one JSON array of path, line, score and snippet; related takes --json too
-daftar-cli tasks --due today      # open tasks due or scheduled by today, as path:line
+daftar-cli tasks --due today      # open tasks due or scheduled by today, as path:line (or tomorrow, yesterday, YYYY-MM-DD)
 daftar-cli query 'not done' 'due before next week' 'group by filename'
 daftar-cli query --note Tasks/Tasks.md  # the note's tasks blocks, as the app draws them
 daftar-cli tasks --json           # the same as one JSON array, for scripts; query takes --json and --strict too
