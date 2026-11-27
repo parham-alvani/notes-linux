@@ -16,8 +16,8 @@ use daftar_core::properties::{PropertyEdit, PropertySheet, PropertyValue};
 use daftar_core::{Card, Drill, DrillState, DueTasks, JobKeys, JobSearch, RandomNote, Rating};
 
 use daftar_core::{
-    Bookmarks, Clock, Day, ExcludedFiles, ParsedTask, QueryTask, QuickCapture, SearchIndex, Sections, TaskLine, TaskStatuses, TaskType,
-    TasksQuery, Vault, VaultEdits, VaultIndex, VaultMoves, VaultTask,
+    Bookmarks, Clock, ConfigFile, Day, ExcludedFiles, ParsedTask, QueryTask, QuickCapture, SearchIndex, Sections, TaskLine, TaskStatuses,
+    TaskType, TasksQuery, Vault, VaultEdits, VaultIndex, VaultMoves, VaultTask,
 };
 
 use crate::{check, vault_commands};
@@ -53,7 +53,12 @@ struct Server {
     /// The client's name and version, from `initialize`: the actor of its
     /// writes to a concept (`generated.by`).
     client: Option<(String, String)>,
-    search: Option<(SearchIndex, VaultIndex)>,
+    /// The vault's index, kept between calls: each call reads again only the
+    /// files that changed since (`changed_on_disk`).
+    index: Option<VaultIndex>,
+    /// The full-text index, made at the first search and kept up to date
+    /// with `index`.
+    search: Option<SearchIndex>,
     /// The drill's state file, in place of Daftar's: for the tests.
     drill_state: Option<PathBuf>,
     meaning: crate::meaning::Kept,
@@ -70,6 +75,7 @@ pub fn run(root: PathBuf, show_hidden: bool, read_only: bool) -> Result<(), Stri
         read_only: door != Door::Open,
         closed: door == Door::Closed,
         client: None,
+        index: None,
         search: None,
         drill_state: None,
         meaning,
@@ -175,40 +181,73 @@ impl Server {
         }
         let config = crate::config(root);
         let hidden = ExcludedFiles::from_config(root, &config, self.show_hidden);
-        let index = Vault::index(root, None);
+        let index = self.fresh_index();
+        let result = self.call_on(name, args, root, &config, &hidden, &index);
+        self.index = Some(index);
+        result
+    }
+
+    /// The index brought up to date with the files: built whole at the first
+    /// call, then only the files that changed since are read again.
+    fn fresh_index(&mut self) -> VaultIndex {
+        // `.daftar.toml` is no file of the index, so its statuses are read at each call.
+        TaskStatuses::set_current(TaskStatuses::load(&self.root));
+        let Some(mut index) = self.index.take() else {
+            let index = Vault::index(&self.root, None);
+            if let Some(search) = &self.search {
+                fill(search, &index);
+            }
+            return index;
+        };
+        let changed = changed_on_disk(&self.root, &index);
+        if !changed.is_empty() {
+            Vault::update_in_place(&mut index, &changed, &self.root, self.search.as_ref());
+        }
+        index
+    }
+
+    fn call_on(
+        &mut self,
+        name: &str,
+        args: &Arguments,
+        root: &Path,
+        config: &ConfigFile,
+        hidden: &ExcludedFiles,
+        index: &VaultIndex,
+    ) -> Result<String, String> {
         let lines = match name {
-            "find_notes" => crate::find(&index, &hidden, args.text("query")?, args.count("limit", 20)),
-            "search" => self.search_notes(&index, &hidden, args.text("query")?, args.count("limit", 20)),
+            "find_notes" => crate::find(index, hidden, args.text("query")?, args.count("limit", 20)),
+            "search" => self.search_notes(index, hidden, args.text("query")?, args.count("limit", 20)),
             "semantic_search" => {
                 let query = args.text("query")?;
-                let meaning = self.meaning.get(root, &index)?;
-                meaning.search(&hidden, query, args.count("limit", 10)).iter().map(crate::meaning::line).collect()
+                let meaning = self.meaning.get(root, index)?;
+                meaning.search(hidden, query, args.count("limit", 10)).iter().map(crate::meaning::line).collect()
             }
             "related_notes" => {
-                let path = crate::note_path(&index, args.text("note")?)?;
-                let meaning = self.meaning.get(root, &index)?;
-                meaning.related(&index, &hidden, &path, args.count("limit", 10)).iter().map(crate::meaning::line).collect()
+                let path = crate::note_path(index, args.text("note")?)?;
+                let meaning = self.meaning.get(root, index)?;
+                meaning.related(index, hidden, &path, args.count("limit", 10)).iter().map(crate::meaning::line).collect()
             }
-            "read_note" => return read_note(root, &index, args.text("note")?, args.optional("heading")),
+            "read_note" => return read_note(root, index, args.text("note")?, args.optional("heading")),
             "note_info" => {
-                let mut lines = note_info(&index, &hidden, args.text("note")?)?;
-                lines.extend(concept_line(root, &crate::note_path(&index, args.text("note")?)?));
+                let mut lines = note_info(index, hidden, args.text("note")?)?;
+                lines.extend(concept_line(root, &crate::note_path(index, args.text("note")?)?));
                 lines
             }
-            "concepts" => concepts(root, &index, &hidden, args),
-            "list_folder" => list_folder(&index, &hidden, args.optional("folder").unwrap_or_default())?,
-            "tags" => tags(&index, &hidden, args.optional("tag")),
-            "tasks" => tasks(&index, &hidden, args)?,
-            "query_tasks" => query_tasks(&index, &hidden, args.text("query")?, args.optional("note"))?,
+            "concepts" => concepts(root, index, hidden, args),
+            "list_folder" => list_folder(index, hidden, args.optional("folder").unwrap_or_default())?,
+            "tags" => tags(index, hidden, args.optional("tag")),
+            "tasks" => tasks(index, hidden, args)?,
+            "query_tasks" => query_tasks(index, hidden, args.text("query")?, args.optional("note"))?,
             "task_statuses" => TaskStatuses::load(root)
                 .all
                 .iter()
                 .map(|s| format!("[{}]\t{}\t{}\tnext [{}]", s.symbol, s.name, s.kind.type_name(), s.next))
                 .collect(),
             "recent_changes" => recent_changes(root, args.count("days", 7))?,
-            "vault_brief" => self.vault_brief(&index, &hidden, args.flag("audit"))?,
+            "vault_brief" => self.vault_brief(index, hidden, args.flag("audit"))?,
             "note_history" => {
-                let path = crate::note_path(&index, args.text("note")?)?;
+                let path = crate::note_path(index, args.text("note")?)?;
                 let git = crate::repository(root)?;
                 git.history(&path, args.count("limit", 30))
                     .map_err(|e| e.to_string())?
@@ -224,9 +263,7 @@ impl Server {
                 let text = fs::read_to_string(root.join(&path)).unwrap_or_default();
                 return Ok(if text.is_empty() { format!("{path}\n\n(not written yet)") } else { format!("{path}\n\n{text}") });
             }
-            "job_pipeline" => {
-                crate::jobs::pipeline(root, &index, |path| !hidden.contains(path), args.0.get("days").and_then(Value::as_i64))
-            }
+            "job_pipeline" => crate::jobs::pipeline(root, index, |path| !hidden.contains(path), args.0.get("days").and_then(Value::as_i64)),
             "doctor" => {
                 let found = crate::repository(root)?.doctor(1_048_576).map_err(|e| e.to_string())?;
                 found.iter().map(|d| format!("{}\t{}\t{}", d.level, d.code, d.message)).collect()
@@ -268,12 +305,12 @@ impl Server {
             }
             "capture" => {
                 let line = QuickCapture::line(args.text("text")?, args.flag("task")).ok_or("nothing to capture")?;
-                vec![format!("{}\t{line}", crate::capture(root, &config, &line)?)]
+                vec![format!("{}\t{line}", crate::capture(root, config, &line)?)]
             }
             "append_to_note" => {
                 let line = QuickCapture::line(args.text("text")?, args.flag("task")).ok_or("nothing to add")?;
                 let note = args.text("note")?;
-                let target = crate::note_path(&index, note).unwrap_or_else(|_| note.to_string());
+                let target = crate::note_path(index, note).unwrap_or_else(|_| note.to_string());
                 let heading = args.optional("heading").unwrap_or_default();
                 let path = QuickCapture::capture(root, &target, heading, &line, Day::today(), Clock::now())?;
                 // An agent's write to a concept is marked, right after it.
@@ -283,29 +320,29 @@ impl Server {
                 vec![format!("{path}\t{line}")]
             }
             "create_note" => vec![create_note(root, args.text("path")?, args.text("text")?)?],
-            "note_context" => return note_context(root, &index, &hidden, args.text("note")?),
-            "move_note" => move_note(root, &index, args.text("note")?, args.text("to")?, false)?,
-            "set_property" => vec![set_property(root, &index, args)?],
+            "note_context" => return note_context(root, index, hidden, args.text("note")?),
+            "move_note" => move_note(root, index, args.text("note")?, args.text("to")?, false)?,
+            "set_property" => vec![set_property(root, index, args)?],
             "replace_in_note" => {
                 let new = args.0.get("new").and_then(Value::as_str).ok_or("new is needed (empty to delete)")?;
-                vec![replace_in_note(root, &index, args.text("note")?, args.text("old")?, new, &self.producer())?]
+                vec![replace_in_note(root, index, args.text("note")?, args.text("old")?, new, &self.producer())?]
             }
             "replace_section" => {
                 let text = args.0.get("text").and_then(Value::as_str).ok_or("text is needed (empty to clear the section)")?;
-                vec![replace_section(root, &index, args.text("note")?, args.text("heading")?, text, &self.producer())?]
+                vec![replace_section(root, index, args.text("note")?, args.text("heading")?, text, &self.producer())?]
             }
             "commit" => {
                 commit(root, args.text("message")?, &args.list("paths"), args.0.get("push").and_then(Value::as_bool).is_none_or(|p| p))?
             }
             "toggle_task" => {
-                let (path, at, task) = task_at(root, &index, args)?;
+                let (path, at, task) = task_at(root, index, args)?;
                 VaultEdits::apply(&path, root, |text| VaultEdits::toggle_task(text, at, task.status, Some(&task.text), Day::today()))
                     .map_err(|e| e.to_string())?;
                 let after = fs::read_to_string(root.join(&path)).unwrap_or_default();
                 vec![format!("{path}:{}\t{}", at + 1, after.split('\n').nth(at).unwrap_or_default())]
             }
             "set_task_status" => {
-                let (path, at, _) = task_at(root, &index, args)?;
+                let (path, at, _) = task_at(root, index, args)?;
                 let status = match args.text("status")? {
                     "cancelled" => cancelled_symbol(),
                     symbol => symbol.to_string(),
@@ -313,7 +350,7 @@ impl Server {
                 vec![vault_commands::set_status(root, &path, at, &status, args.optional("reason"), Day::today())?]
             }
             "edit_task" => {
-                let (path, at, _) = task_at(root, &index, args)?;
+                let (path, at, _) = task_at(root, index, args)?;
                 for key in ["start", "scheduled", "due"] {
                     if let Some(value) = args.0.get(key).and_then(Value::as_str).map(str::trim)
                         && !value.is_empty()
@@ -347,16 +384,16 @@ impl Server {
                 vec![format!("{path}:{}\t{}", at + 1, after.split('\n').nth(at).unwrap_or_default())]
             }
             "postpone_task" => {
-                let (path, at, _) = task_at(root, &index, args)?;
+                let (path, at, _) = task_at(root, index, args)?;
                 vec![vault_commands::postpone(root, &path, at, args.optional("by").unwrap_or("day"), Day::today())?]
             }
             "random_note" => {
-                let candidates = RandomNote::candidates(&index, args.optional("folder"), args.optional("tag"), |p| hidden.contains(p));
+                let candidates = RandomNote::candidates(index, args.optional("folder"), args.optional("tag"), |p| hidden.contains(p));
                 let path = RandomNote::pick(&candidates, RandomNote::number).ok_or("no note to pick")?;
-                return read_note(root, &index, &path, None);
+                return read_note(root, index, &path, None);
             }
             "drill_due" => {
-                let deck = Drill::deck(root, &crate::drill::notes(&index, &args.list("notes"), |p| hidden.contains(p))?);
+                let deck = Drill::deck(root, &crate::drill::notes(index, &args.list("notes"), |p| hidden.contains(p))?);
                 let state = DrillState::load(&self.drill_file());
                 let due = Drill::due(&deck, &state, Day::today(), args.count("new", Drill::NEW_CARDS), args.count("limit", 10));
                 due.iter()
@@ -374,11 +411,11 @@ impl Server {
                     .collect()
             }
             "drill_card" => {
-                let card = drill_card(root, &index, args.text("id")?)?;
+                let card = drill_card(root, index, args.text("id")?)?;
                 vec![format!("{}\n{}:{}\n\n{}", card.id, card.path, card.line + 1, card.answer)]
             }
             "drill_rate" => {
-                let card = drill_card(root, &index, args.text("id")?)?;
+                let card = drill_card(root, index, args.text("id")?)?;
                 let rating = args.text("rating")?;
                 let rating = Rating::parse(rating).ok_or_else(|| format!("{rating} is not a rating: again, hard, good or easy (1-4)"))?;
                 let file = self.drill_file();
@@ -400,20 +437,14 @@ impl Server {
         self.drill_state.clone().unwrap_or_else(|| DrillState::file(&self.root))
     }
 
-    /// The notes whose text matches [query], from an index kept between
-    /// calls and brought up to date with the files that changed since.
+    /// The notes whose text matches [query], from a full-text index made at
+    /// the first search and kept up to date with the index since.
     fn search_notes(&mut self, index: &VaultIndex, hidden: &ExcludedFiles, query: &str, limit: usize) -> Vec<String> {
-        if let Some((search, known)) = &mut self.search {
-            let changed = changed_since(known, index);
-            if !changed.is_empty() {
-                Vault::update_in_place(known, &changed, &self.root, Some(search));
-            }
-        } else {
+        let search = self.search.get_or_insert_with(|| {
             let search = SearchIndex::new();
-            let known = Vault::index(&self.root, Some(&search));
-            self.search = Some((search, known));
-        }
-        let Some((search, _)) = &self.search else { return Vec::new() };
+            fill(&search, index);
+            search
+        });
         search
             .search(query, limit.saturating_add(100))
             .into_iter()
@@ -551,15 +582,29 @@ fn priority(value: &str) -> Option<String> {
     Some(emoji.to_string())
 }
 
-/// The notes added, gone or changed between [old] and [new].
-fn changed_since(old: &VaultIndex, new: &VaultIndex) -> BTreeSet<String> {
-    let mut changed: BTreeSet<String> = old.files.symmetric_difference(&new.files).cloned().collect();
-    for (path, note) in &new.notes {
-        if old.notes.get(path).is_none_or(|known| known.modified != note.modified) {
-            changed.insert(path.clone());
-        }
-    }
+/// The files of [root] that came, went or changed since [index] was read,
+/// by their change times, with no file read; and the folders that became
+/// empty or stopped being. What `Vault::update_in_place` takes.
+fn changed_on_disk(root: &Path, index: &VaultIndex) -> BTreeSet<String> {
+    let files = Vault::scan(root);
+    let mut changed: BTreeSet<String> = files.symmetric_difference(&index.files).cloned().collect();
+    let edited = files.iter().filter(|path| Vault::is_note(path) && index.notes.contains_key(*path)).filter(|path| {
+        let modified = fs::metadata(root.join(path)).and_then(|m| m.modified()).ok();
+        index.notes.get(*path).map(|note| note.modified) != modified
+    });
+    changed.extend(edited.cloned());
+    // A folder that became empty, or stopped being: `update_in_place` finds the empty ones again.
+    changed.extend(Vault::empty_folders(root, &files).symmetric_difference(&index.empty_folders).cloned());
     changed
+}
+
+/// Every note of [index] in the full-text index [search].
+fn fill(search: &SearchIndex, index: &VaultIndex) {
+    search.transaction(|search| {
+        for note in index.notes.values() {
+            search.put(&note.path, &note.title(), &note.parsed.plain);
+        }
+    });
 }
 
 /// A note's text, or the section under one of its headings.
@@ -1519,6 +1564,7 @@ mod tests {
             read_only,
             closed: false,
             client: None,
+            index: None,
             search: None,
             drill_state: Some(root.join(".drill-state.json")),
             meaning,
@@ -1738,6 +1784,7 @@ mod tests {
             read_only: true,
             closed: false,
             client: None,
+            index: None,
             search: None,
             drill_state: Some(root.join(".drill-state.json")),
             meaning,
@@ -1906,6 +1953,27 @@ mod tests {
         assert!(fs::read_to_string(root.path().join("Garden/Plants.md")).unwrap().contains("Needs sun."));
         let read_only: Vec<Value> = tools(true);
         assert!(read_only.iter().all(|t| t["name"] != "drill_rate"));
+    }
+
+    #[test]
+    fn the_kept_index_follows_the_files_between_calls() {
+        let root = vault();
+        let mut server = server(root.path(), false);
+        assert!(!call(&mut server, "search", json!({ "query": "zebra" })).0.contains(".md"));
+        fs::write(root.path().join("Zoo.md"), "# Zoo\n\nA zebra.\n").unwrap();
+        assert!(call(&mut server, "find_notes", json!({ "query": "Zoo" })).0.starts_with("Zoo.md"));
+        assert!(call(&mut server, "search", json!({ "query": "zebra" })).0.starts_with("Zoo.md"));
+        // A later change time, as a second write within the same tick of a coarse clock may not give.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        fs::write(root.path().join("Seeds.md"), "# Seeds\n\nA zebra too.\n").unwrap();
+        fs::File::options().write(true).open(root.path().join("Seeds.md")).unwrap().set_modified(later).unwrap();
+        assert!(call(&mut server, "search", json!({ "query": "zebra" })).0.contains("Seeds.md"));
+        fs::remove_file(root.path().join("Zoo.md")).unwrap();
+        let (found, _) = call(&mut server, "search", json!({ "query": "zebra" }));
+        assert!(!found.contains("Zoo.md") && found.contains("Seeds.md"), "{found}");
+        fs::create_dir(root.path().join("Empty")).unwrap();
+        call(&mut server, "find_notes", json!({ "query": "Seeds" }));
+        assert!(server.index.as_ref().unwrap().empty_folders.contains("Empty"));
     }
 
     #[test]
