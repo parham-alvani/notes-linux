@@ -1084,7 +1084,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let index = Vault::index(&root, Some(&search));
             let mut semantic = meaning::Meaning::open(&root)?;
             semantic.update(&root, &index, true)?;
-            let terminal = std::io::stdout().is_terminal();
+            let color = colored(std::io::stdout().is_terminal());
             let query = query.join(" ");
             if json {
                 let rows: Vec<serde_json::Value> = if meaning_only {
@@ -1112,7 +1112,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 semantic.hybrid(&search, &hidden, &query, limit)
             };
             for hit in hits {
-                out!("{}\t{}", hit.path, snippet(&hit.snippet, terminal));
+                out!("{}\t{}", hit.path, snippet(&hit.snippet, color));
             }
         }
         Command::Related { note, limit, json } => {
@@ -1151,7 +1151,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Search { query, limit, json, .. } => {
             let search = SearchIndex::new();
             Vault::index(&root, Some(&search));
-            let terminal = std::io::stdout().is_terminal();
+            let color = colored(std::io::stdout().is_terminal());
             let query = query.join(" ");
             // More asked for, so that [limit] are left once the hidden ones are out.
             let hits = search.search(&query, limit.saturating_add(100));
@@ -1163,7 +1163,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Ok(());
             }
             for hit in hits {
-                out!("{}\t{}", hit.path, snippet(&hit.snippet, terminal));
+                out!("{}\t{}", hit.path, snippet(&hit.snippet, color));
             }
         }
         Command::Tasks { due, path, all, json } => {
@@ -1865,6 +1865,22 @@ fn run(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether text for a terminal is in color: on a terminal, unless `NO_COLOR`
+/// is set and not empty (<https://no-color.org>).
+pub(crate) fn colored(terminal: bool) -> bool {
+    terminal && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+}
+
+pub(crate) const BOLD: &str = "1";
+pub(crate) const DIM: &str = "2";
+pub(crate) const RED: &str = "31";
+
+/// [text] in the SGR style [code], for the walks that ask on a terminal
+/// (`drill`, `inbox`); plain under `NO_COLOR`.
+pub(crate) fn paint(code: &str, text: impl std::fmt::Display) -> String {
+    if colored(true) { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() }
+}
+
 /// A day as a command or a tool takes it: `YYYY-MM-DD`, `today`, `tomorrow`
 /// or `yesterday`; today when none is given.
 pub(crate) fn day_argument(text: Option<&str>) -> Result<Day, String> {
@@ -1918,8 +1934,8 @@ fn words_line(root: &std::path::Path, hit: &daftar_core::Hit, query: &str) -> us
 
 /// A search snippet on one line, its matches in bold on a terminal; the
 /// index marks them with `\u{1}` and `\u{2}`.
-fn snippet(text: &str, terminal: bool) -> String {
-    let (open, close) = if terminal { ("\x1b[1m", "\x1b[0m") } else { ("", "") };
+fn snippet(text: &str, color: bool) -> String {
+    let (open, close) = if color { ("\x1b[1m", "\x1b[0m") } else { ("", "") };
     text.replace('\n', " ").replace('\u{1}', open).replace('\u{2}', close)
 }
 

@@ -203,7 +203,7 @@ struct Paint {
 
 impl Paint {
     fn new(hook: &'static str) -> Self {
-        Self { on: std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()), hook }
+        Self { on: crate::colored(std::io::stderr().is_terminal()), hook }
     }
 
     fn paint(&self, code: &str, text: &str) -> String {

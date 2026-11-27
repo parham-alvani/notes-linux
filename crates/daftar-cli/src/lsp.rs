@@ -123,6 +123,9 @@ fn serve(server: &mut Server, input: &mut impl BufRead, output: &mut impl Write)
     Ok(())
 }
 
+/// The largest message read, in bytes.
+const MAX_MESSAGE: usize = 64 << 20;
+
 /// The body of the next message, or none at the end of the input.
 fn read_message(input: &mut impl BufRead) -> Result<Option<Vec<u8>>, String> {
     let mut length: Option<usize> = None;
@@ -144,7 +147,12 @@ fn read_message(input: &mut impl BufRead) -> Result<Option<Vec<u8>>, String> {
             length = Some(value.trim().parse().map_err(|_| format!("a bad header: {header}"))?);
         }
     }
-    let mut body = vec![0; length.unwrap_or_default()];
+    let length = length.unwrap_or_default();
+    // A bad header must not make the server ask for gigabytes; a note is far smaller.
+    if length > MAX_MESSAGE {
+        return Err(format!("a message of {length} bytes, over the {MAX_MESSAGE} this server reads"));
+    }
+    let mut body = vec![0; length];
     input.read_exact(&mut body).map_err(|e| e.to_string())?;
     Ok(Some(body))
 }
@@ -853,6 +861,12 @@ mod tests {
         assert_eq!(second, json!({ "jsonrpc": "2.0", "id": 2, "result": null }));
         // Nothing after exit is read.
         assert_eq!(read_message(&mut reader).unwrap(), None);
+    }
+
+    #[test]
+    fn a_message_too_large_is_refused_before_it_is_read() {
+        let mut input = "Content-Length: 99999999999\r\n\r\n{}".as_bytes();
+        assert!(read_message(&mut input).unwrap_err().contains("over the"));
     }
 
     #[test]

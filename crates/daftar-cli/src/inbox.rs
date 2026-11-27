@@ -9,6 +9,7 @@
 //! its file again, and the second refuses when the item is not what was
 //! listed, which leaves it in both notes, never in neither.
 
+use crate::{BOLD, DIM, RED};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, IsTerminal, Write};
@@ -277,13 +278,13 @@ pub fn session(
     while let Some(item) = queue.pop_front() {
         asked += 1;
         let place = item.heading.as_deref().map_or_else(String::new, |h| format!(" · {h}"));
-        writeln!(output, "\n\x1b[2m[{asked}/{total}] {inbox}:{}{place}\x1b[0m", item.line + 1).map_err(failed)?;
+        writeln!(output, "\n{}", crate::paint(DIM, format!("[{asked}/{total}] {inbox}:{}{place}", item.line + 1))).map_err(failed)?;
         for line in &item.lines {
-            writeln!(output, "\x1b[1m{line}\x1b[0m").map_err(failed)?;
+            writeln!(output, "{}", crate::paint(BOLD, line)).map_err(failed)?;
         }
         let suggestions = suggest(&item);
         for (at, suggestion) in suggestions.iter().enumerate() {
-            writeln!(output, "  {} {} \x1b[2m({})\x1b[0m", at + 1, suggestion.path, suggestion.by).map_err(failed)?;
+            writeln!(output, "  {} {} {}", at + 1, suggestion.path, crate::paint(DIM, format!("({})", suggestion.by))).map_err(failed)?;
         }
         let target = loop {
             let numbers = match suggestions.len() {
@@ -320,15 +321,16 @@ pub fn session(
         match move_item(root, inbox, item.line, Some(&item.text), &to, heading.as_deref()) {
             Ok(moved) => {
                 outcome.moved += 1;
-                writeln!(output, "\x1b[2mmoved to {}\x1b[0m", moved.to).map_err(failed)?;
+                writeln!(output, "{}", crate::paint(DIM, format!("moved to {}", moved.to))).map_err(failed)?;
                 let text = fs::read_to_string(root.join(inbox)).map_err(|e| format!("{inbox}: {e}"))?;
                 let before = queue.len();
                 queue = follow(queue, &text);
                 if queue.len() < before {
-                    writeln!(output, "\x1b[2m{} items changed meanwhile and are left\x1b[0m", before - queue.len()).map_err(failed)?;
+                    writeln!(output, "{}", crate::paint(DIM, format!("{} items changed meanwhile and are left", before - queue.len())))
+                        .map_err(failed)?;
                 }
             }
-            Err(message) => writeln!(output, "\x1b[31m{message}\x1b[0m").map_err(failed)?,
+            Err(message) => writeln!(output, "{}", crate::paint(RED, message)).map_err(failed)?,
         }
     }
     Ok(outcome)
@@ -363,7 +365,7 @@ fn pick(candidates: &[Candidate], input: &mut impl BufRead, output: &mut impl Wr
     };
     let ranked = QuickSwitcher::rank(name, candidates, &[], 3);
     if ranked.is_empty() {
-        writeln!(output, "\x1b[2mno note like “{name}”\x1b[0m").map_err(failed)?;
+        writeln!(output, "{}", crate::paint(DIM, format!("no note like “{name}”"))).map_err(failed)?;
         return Ok(None);
     }
     for (at, path) in ranked.iter().enumerate() {

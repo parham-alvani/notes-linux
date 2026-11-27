@@ -4,6 +4,7 @@
 //! stops. Otherwise, or with `--list`, it prints the cards due. Each rating
 //! is saved at once in Daftar's state file; no note is ever written.
 
+use crate::{BOLD, DIM};
 use std::io::{BufRead, Write};
 use std::path::Path;
 
@@ -72,16 +73,16 @@ pub fn session(
     while let Some((card, again)) = queue.pop_front() {
         asked += usize::from(!again);
         let count = if again { "again".to_string() } else { format!("{asked}/{total}") };
-        writeln!(output, "\n\x1b[2m[{count}] {}\x1b[0m", context(card)).map_err(failed)?;
-        writeln!(output, "\x1b[1m{}\x1b[0m", card.question).map_err(failed)?;
-        write!(output, "\x1b[2mEnter shows the answer, q stops: \x1b[0m").map_err(failed)?;
+        writeln!(output, "\n{}", crate::paint(DIM, format!("[{count}] {}", context(card)))).map_err(failed)?;
+        writeln!(output, "{}", crate::paint(BOLD, &card.question)).map_err(failed)?;
+        write!(output, "{}", crate::paint(DIM, "Enter shows the answer, q stops: ")).map_err(failed)?;
         output.flush().map_err(failed)?;
         if read(input)?.is_none_or(|l| l == "q") {
             outcome.left = queue.len() + 1;
             break;
         }
         writeln!(output, "\n{}\n", card.answer).map_err(failed)?;
-        writeln!(output, "\x1b[2m{}:{}\x1b[0m", card.path, card.line + 1).map_err(failed)?;
+        writeln!(output, "{}", crate::paint(DIM, format!("{}:{}", card.path, card.line + 1))).map_err(failed)?;
         let rating = loop {
             write!(output, "1 Again  2 Hard  3 Good  4 Easy  q stop: ").map_err(failed)?;
             output.flush().map_err(failed)?;
@@ -103,7 +104,7 @@ pub fn session(
             let review = state.rate(&card.id, rating, today);
             state.save(file).map_err(|e| format!("{}: {e}", file.display()))?;
             outcome.rated += 1;
-            writeln!(output, "\x1b[2mnext on {}\x1b[0m", review.due).map_err(failed)?;
+            writeln!(output, "{}", crate::paint(DIM, format!("next on {}", review.due))).map_err(failed)?;
         }
         if rating == Rating::Again {
             outcome.again += usize::from(!again);
