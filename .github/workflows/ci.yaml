@@ -117,24 +117,57 @@ jobs:
           retry gh release edit "$tag" --draft=false --latest
 
   brew:
-    # The tap's bump moves the daftar-cli formula to the release now, not at
-    # its daily run. The workflow's own token cannot start a workflow in
-    # another repository: TAP_TOKEN is a fine-grained token with Actions
-    # read and write on parham-alvani/homebrew-tap only.
+    # The release moves the daftar-cli formula in parham-alvani/homebrew-tap
+    # itself, so Homebrew has it in minutes; the tap's daily bump, which does
+    # the same, is the fallback. TAP_DEPLOY_KEY is a deploy key with write
+    # access on the tap: a push with it starts the tap's CI, which a push with
+    # the workflow's own token would not.
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Start the tap's bump
+      - name: Move the formula
         env:
-          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
         run: |
-          test -n "$GH_TOKEN" || { echo "::error::TAP_TOKEN is not set; the tap's daily bump takes the release instead."; exit 1; }
-          for wait in 10 20 40 80 0; do
-            gh workflow run bump.yaml -R parham-alvani/homebrew-tap && exit 0
-            [ "$wait" -eq 0 ] && exit 1
-            echo "::warning::starting the bump failed; trying again in ${wait}s"
-            sleep "$wait"
+          test -n "$TAP_DEPLOY_KEY" || { echo "::error::TAP_DEPLOY_KEY is not set; the tap's daily bump takes the release instead."; exit 1; }
+          # GitHub fails a call now and then for some minutes: each call to it
+          # is tried again, the warning on stderr so a result stays clean.
+          retry() {
+            for wait in 10 20 40 80 0; do
+              "$@" && return 0
+              [ "$wait" -eq 0 ] && return 1
+              echo "::warning::'$1 $2 $3' failed; trying again in ${wait}s" >&2
+              sleep "$wait"
+            done
+          }
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$RUNNER_TEMP/tap"
+          chmod 600 "$RUNNER_TEMP/tap"
+          # GitHub's ED25519 host key, as `gh api meta` gives it.
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$RUNNER_TEMP/github_hosts"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tap -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/github_hosts"
+          retry git clone -q git@github.com:parham-alvani/homebrew-tap.git tap
+          cd tap
+          tag="$GITHUB_REF_NAME"
+          version=${tag#v}
+          current=$(grep -m1 -oE 'releases/download/v[^/]+/' Formula/daftar-cli.rb | sed -E 's|releases/download/v(.*)/|\1|')
+          if [ "$current" = "$version" ]; then
+            echo "daftar-cli is already at $version"
+            exit 0
+          fi
+          # Homebrew reads the version from the urls.
+          sed -i "s|/v$current/daftar-cli-$current-|/v$version/daftar-cli-$version-|" Formula/daftar-cli.rb
+          for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            digest=$(retry gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets \
+              -q ".assets[] | select(.name == \"daftar-cli-$version-$target.tar.gz\") | .digest")
+            sha256=${digest#sha256:}
+            test ${#sha256} -eq 64
+            # The checksum is on the line after its url.
+            sed -i -E "/-$target\.tar\.gz\"/{n;s/sha256 \".*\"/sha256 \"$sha256\"/}" Formula/daftar-cli.rb
           done
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qam "daftar-cli $version"
+          # The tap's own bump, or the Mac's release, may have pushed meanwhile.
+          retry sh -c 'git pull -q --rebase && git push -q'
 
   aur:
     # daftar-bin and daftar-cli-bin are built from the release's tarballs, so
