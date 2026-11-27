@@ -105,6 +105,9 @@ jobs:
           }
           tag="$GITHUB_REF_NAME"
           files=(daftar-*.tar.gz daftar-cli-*.zip)
+          # One file of checksums, for `sha256sum -c SHA256SUMS`.
+          sha256sum "${files[@]}" > SHA256SUMS
+          files+=(SHA256SUMS)
           # A create that made the release and then failed is not made twice.
           draft() { gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --draft --verify-tag --title "$tag" --generate-notes; }
           retry draft

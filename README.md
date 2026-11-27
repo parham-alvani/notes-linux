@@ -89,6 +89,8 @@ With Homebrew, on macOS or Linux: `brew install parham-alvani/tap/daftar-cli`.
 
 On Arch, from the AUR: `yay -S daftar-bin` for the app and the command line, or `yay -S daftar-cli-bin` for the command line alone (x86_64, aarch64).
 
+The AUR packages and the Homebrew formula install the completions for bash, zsh and fish, and a man page for each command (`man daftar-cli`, `man daftar-cli-check`). From a release archive or the source, `daftar-cli completions <shell>` prints the completions and `daftar-cli man --dir <folder>` writes the man pages. Each release has a `SHA256SUMS` file for `sha256sum -c SHA256SUMS`.
+
 ```bash
 daftar-cli find kub fire          # notes by name, as the quick switcher ranks them
 daftar-cli search "backup plan"   # the text of every note

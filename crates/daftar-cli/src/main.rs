@@ -40,7 +40,7 @@ mod watching;
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -403,6 +403,14 @@ enum Command {
     /// `daftar-cli completions zsh > ~/.zfunc/_daftar-cli`, or
     /// `source <(daftar-cli completions zsh)` in .zshrc.
     Completions { shell: String },
+    /// The manual page in roff, for `man`: `daftar-cli man > daftar-cli.1`.
+    /// With `--dir`, a page for each command too (`daftar-cli-check.1`, …),
+    /// as the AUR packages and the Homebrew formula install them.
+    Man {
+        /// The folder to write every page in, made when it is missing.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
     /// The vault's git hooks: `install` writes `pre-commit`, which formats,
     /// lints and audits the staged notes (`check --strict` on them) and the
     /// whole vault for errors, as CI does, and `post-merge` and
@@ -1005,6 +1013,18 @@ fn needs_model(command: &Command) -> bool {
     }
 }
 
+/// clap's zsh registration [script] for [name], made to work both sourced
+/// and as an autoloaded `_name` file in `site-functions`, where the AUR and
+/// Homebrew install it: there zsh runs the file as the completion function,
+/// so it completes at once instead of only registering for the next Tab.
+fn zsh_autoloadable(script: &str, name: &str) -> String {
+    let function = format!("_clap_dynamic_completer_{}", name.replace('-', "_"));
+    let register = format!("compdef {function} {name}");
+    let Some(at) = script.rfind(&register) else { return script.to_owned() };
+    let both = format!("if [ \"$funcstack[1]\" = \"_{name}\" ]; then\n    {function} \"$@\"\nelse\n    {register}\nfi");
+    format!("{}{both}{}", &script[..at], &script[at + register.len()..])
+}
+
 fn run(cli: Cli) -> Result<(), String> {
     let Some(command) = cli.command else {
         if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
@@ -1018,8 +1038,23 @@ fn run(cli: Cli) -> Result<(), String> {
             .completer(shell)
             .ok_or_else(|| format!("no completions for {shell}: {}", shells.names().collect::<Vec<_>>().join(", ")))?;
         let name = Cli::command().get_name().to_string();
-        return completer
-            .write_registration("COMPLETE", &name, &name, &name, &mut std::io::stdout())
+        let mut script = Vec::new();
+        completer.write_registration("COMPLETE", &name, &name, &name, &mut script).map_err(|e| e.to_string())?;
+        let mut script = String::from_utf8_lossy(&script).into_owned();
+        if shell == "zsh" {
+            script = zsh_autoloadable(&script, &name);
+        }
+        return std::io::stdout()
+            .write_all(script.as_bytes())
+            .or_else(|e| if e.kind() == std::io::ErrorKind::BrokenPipe { Ok(()) } else { Err(e.to_string()) });
+    }
+    if let Command::Man { dir } = &command {
+        if let Some(dir) = dir {
+            fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            return clap_mangen::generate_to(Cli::command(), dir).map_err(|e| format!("{}: {e}", dir.display()));
+        }
+        return clap_mangen::Man::new(Cli::command())
+            .render(&mut std::io::stdout())
             .or_else(|e| if e.kind() == std::io::ErrorKind::BrokenPipe { Ok(()) } else { Err(e.to_string()) });
     }
     // The list of vaults is the computer's: it needs no vault to be there.
@@ -1442,7 +1477,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 out!("{line}");
             }
         }
-        Command::Completions { .. } => unreachable!("answered before the vault is read"),
+        Command::Completions { .. } | Command::Man { .. } => unreachable!("answered before the vault is read"),
         Command::Hook { action: HookAction::Install { force, only } } => {
             let done = hook::install(&repository(&root)?, &root, force, &only)?;
             for file in &done.written {
@@ -1586,7 +1621,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let mut text = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map_err(|e| format!("stdin: {e}"))?;
             let formatted = fmt::formatted(&root, &text, path.as_deref(), &ignore)?;
-            std::io::Write::write_all(&mut std::io::stdout().lock(), formatted.as_bytes()).map_err(|e| e.to_string())?;
+            Write::write_all(&mut std::io::stdout().lock(), formatted.as_bytes()).map_err(|e| e.to_string())?;
         }
         Command::Fmt { paths, check, diff, json, ignore, .. } => {
             let options = fmt::Options { check, diff, mode: report::Mode::of(json) };
@@ -2432,5 +2467,25 @@ mod tests {
         assert_eq!(property_value(words(&["x"]), false, true), None);
         let parsed = Cli::try_parse_from(["daftar-cli", "mv", "Inbox/Idea.md", "Projects/Idea", "--dry-run"]).unwrap();
         assert!(matches!(parsed.command, Some(Command::Mv { dry_run: true, .. })));
+    }
+
+    #[test]
+    fn the_zsh_script_completes_when_it_is_autoloaded_and_when_it_is_sourced() {
+        let shells = clap_complete::env::Shells::builtins();
+        let mut script = Vec::new();
+        shells.completer("zsh").unwrap().write_registration("COMPLETE", "daftar-cli", "daftar-cli", "daftar-cli", &mut script).unwrap();
+        let script = zsh_autoloadable(&String::from_utf8(script).unwrap(), "daftar-cli");
+        assert!(script.starts_with("#compdef daftar-cli\n"));
+        assert!(script.contains("if [ \"$funcstack[1]\" = \"_daftar-cli\" ]; then\n    _clap_dynamic_completer_daftar_cli \"$@\"\nelse\n    compdef _clap_dynamic_completer_daftar_cli daftar-cli\nfi"));
+        assert_eq!(script.matches("compdef _clap").count(), 1);
+    }
+
+    #[test]
+    fn man_writes_a_page_for_each_command() {
+        let dir = tempfile::tempdir().unwrap();
+        clap_mangen::generate_to(Cli::command(), dir.path()).unwrap();
+        assert!(dir.path().join("daftar-cli.1").is_file());
+        assert!(dir.path().join("daftar-cli-check.1").is_file());
+        assert!(!dir.path().join("daftar-cli-refresh.1").exists(), "a hidden command has no page");
     }
 }

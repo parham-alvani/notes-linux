@@ -21,4 +21,11 @@ package() {
   install -Dm755 daftar-cli "$pkgdir/usr/bin/daftar-cli"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  # The completions call daftar-cli back, so they follow its commands and the vault's notes.
+  local cli="$pkgdir/usr/bin/daftar-cli"
+  install -d "$pkgdir/usr/share/bash-completion/completions" "$pkgdir/usr/share/zsh/site-functions" "$pkgdir/usr/share/fish/vendor_completions.d"
+  "$cli" completions bash > "$pkgdir/usr/share/bash-completion/completions/daftar-cli"
+  "$cli" completions zsh > "$pkgdir/usr/share/zsh/site-functions/_daftar-cli"
+  "$cli" completions fish > "$pkgdir/usr/share/fish/vendor_completions.d/daftar-cli.fish"
+  "$cli" man --dir "$pkgdir/usr/share/man/man1"
 }
