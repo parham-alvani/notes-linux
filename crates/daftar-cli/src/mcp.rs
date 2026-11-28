@@ -22,6 +22,8 @@ use daftar_core::{
 
 use crate::{check, vault_commands};
 
+pub mod http;
+
 /// The protocol version answered when the client asks for none we know.
 const PROTOCOL: &str = "2025-11-25";
 const KNOWN: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
@@ -47,6 +49,9 @@ struct Server {
     root: PathBuf,
     show_hidden: bool,
     read_only: bool,
+    /// `--read-only`, as asked: the door is worked out again from it and
+    /// the clone after each pull (`reopen`).
+    asked_read_only: bool,
     /// The vault is not open to agents here: every request is refused, no
     /// tool is listed and no note is read.
     closed: bool,
@@ -66,20 +71,7 @@ struct Server {
 
 /// Serves until stdin ends.
 pub fn run(root: PathBuf, show_hidden: bool, read_only: bool) -> Result<(), String> {
-    TaskStatuses::set_current(TaskStatuses::load(&root));
-    let meaning = crate::meaning::Kept::new(&root);
-    let door = Door::of(&root, read_only);
-    let mut server = Server {
-        root,
-        show_hidden,
-        read_only: door != Door::Open,
-        closed: door == Door::Closed,
-        client: None,
-        index: None,
-        search: None,
-        drill_state: None,
-        meaning,
-    };
+    let mut server = Server::open(root, show_hidden, read_only);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -95,6 +87,16 @@ pub fn run(root: PathBuf, show_hidden: bool, read_only: bool) -> Result<(), Stri
         }
     }
     if server.closed { Err(AGENTS_REFUSED.into()) } else { Ok(()) }
+}
+
+/// Serves over HTTP (`http.rs`) until the process is stopped. A vault
+/// closed to agents is not served at all: the server does not start.
+pub fn run_http(root: PathBuf, show_hidden: bool, read_only: bool, options: http::Options) -> Result<(), String> {
+    let server = Server::open(root, show_hidden, read_only);
+    if server.closed {
+        return Err(AGENTS_REFUSED.into());
+    }
+    http::Listener::bind(options.address)?.serve(server, &options)
 }
 
 /// What a vault that keeps agents out of its read-only clones answers.
@@ -125,6 +127,35 @@ impl Door {
 }
 
 impl Server {
+    fn open(root: PathBuf, show_hidden: bool, read_only: bool) -> Server {
+        TaskStatuses::set_current(TaskStatuses::load(&root));
+        let meaning = crate::meaning::Kept::new(&root);
+        let mut server = Server {
+            root,
+            show_hidden,
+            read_only: true,
+            asked_read_only: read_only,
+            closed: true,
+            client: None,
+            index: None,
+            search: None,
+            drill_state: None,
+            meaning,
+        };
+        server.reopen();
+        server
+    }
+
+    /// Opens the door as the clone and `.daftar.toml` say now, which a pull
+    /// may have changed; whether it changed.
+    fn reopen(&mut self) -> bool {
+        let door = Door::of(&self.root, self.asked_read_only);
+        let (read_only, closed) = (door != Door::Open, door == Door::Closed);
+        let changed = (read_only, closed) != (self.read_only, self.closed);
+        (self.read_only, self.closed) = (read_only, closed);
+        changed
+    }
+
     /// The actor of this client's writes: `<name>/<version>` from
     /// `initialize`, else `daftar-mcp/<version>`.
     fn producer(&self) -> String {
@@ -134,10 +165,17 @@ impl Server {
 
     /// The answer to one message, or none for a notification.
     fn handle(&mut self, line: &str) -> Option<Value> {
-        let message: Value = match serde_json::from_str(line) {
-            Ok(message) => message,
-            Err(error) => return Some(failure(&Value::Null, -32700, &format!("not JSON: {error}"))),
-        };
+        match serde_json::from_str(line) {
+            Ok(message) => self.answer(&message),
+            Err(error) => Some(failure(&Value::Null, -32700, &format!("not JSON: {error}"))),
+        }
+    }
+
+    /// The answer to one message, or none for a notification or a response.
+    fn answer(&mut self, message: &Value) -> Option<Value> {
+        // A notification has no id, and a response from the client no method:
+        // neither is answered.
+        message.get("method")?;
         let id = message.get("id").cloned()?;
         if self.closed {
             return Some(failure(&id, -32000, AGENTS_REFUSED));
@@ -1535,7 +1573,7 @@ impl Traits {
 mod tests {
     use super::*;
 
-    fn vault() -> tempfile::TempDir {
+    pub(super) fn vault() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         let root_path = root.path();
         fs::create_dir_all(root_path.join(".obsidian")).unwrap();
@@ -1556,12 +1594,13 @@ mod tests {
         (result["content"][0]["text"].as_str().unwrap().to_string(), result["isError"].as_bool().unwrap())
     }
 
-    fn server(root: &Path, read_only: bool) -> Server {
+    pub(super) fn server(root: &Path, read_only: bool) -> Server {
         let meaning = crate::meaning::Kept::with(crate::meaning::fake::load, root.join(".cache/semantic.sqlite"));
         Server {
             root: root.to_path_buf(),
             show_hidden: false,
             read_only,
+            asked_read_only: read_only,
             closed: false,
             client: None,
             index: None,
@@ -1782,6 +1821,7 @@ mod tests {
             root: root.to_path_buf(),
             show_hidden: false,
             read_only: true,
+            asked_read_only: true,
             closed: false,
             client: None,
             index: None,

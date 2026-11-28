@@ -32,4 +32,5 @@ A spec says what the Markdown looks like, how each app reads and writes it, what
 | [Wide blocks: tables, code and pictures wider than the prose](wide-blocks.md) | Linux 0.33.0 (the reader, and a wide table in the editor), macOS 0.30.0 (the reader, and a wide picture in the editor), Android 0.70.0 (the reader on a wide screen)
 | [Daftar's own settings in place of `.obsidian/`](no-obsidian-folder.md) | Linux 0.33.0 (with `daftar-cli migrate-obsidian`), macOS 0.30.0, Android 0.70.0
 | [More of a vault's own settings: the working day, tasks, the digest, the job search, rules and folders](more-vault-settings.md) | Linux 0.33.0, macOS 0.30.0, Android 0.70.0 (no job board on the phone; the folder direction in its reader only)
+| [The MCP server over HTTP: `daftar-cli mcp --http`](mcp-http.md) | Linux 0.36.0 (`daftar-cli`, and the image `ghcr.io/parham-alvani/daftar-cli`); macOS runs `daftar-cli` |
 | [The look of a note: reader, editor and cursors](look.md) | Part 1 in Linux 0.30.0, macOS 0.27.0 and Android 0.67.0; part 2 in Linux 0.31.0, macOS 0.28.0 and Android 0.68.0. The spec's last table says what each app still lacks |

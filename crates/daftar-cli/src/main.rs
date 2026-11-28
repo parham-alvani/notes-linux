@@ -842,10 +842,36 @@ enum Command {
     /// git history, the audit, and the app's safe writes (capture, add to a
     /// note, a new note, tick, set a status, postpone). `claude mcp add
     /// --scope user daftar -- daftar-cli mcp --vault ~/org`.
+    ///
+    /// With `--http`, the same tools over MCP's Streamable HTTP transport,
+    /// at `POST /mcp` (one JSON answer a message, no SSE), with `GET
+    /// /health` for a container's health check. Every `/mcp` request needs
+    /// `Authorization: Bearer <token>` when `$DAFTAR_MCP_TOKEN` (or the
+    /// variable `--token-env` names) is set, and a page of another site
+    /// (an `Origin` that is not localhost) is refused. A read-only clone is
+    /// served with the reading tools alone, and not at all when its
+    /// `.daftar.toml` says `[agents] read_only_clones = false`.
+    /// `DAFTAR_MCP_TOKEN=… daftar-cli mcp --vault /vault --http
+    /// 0.0.0.0:8080 --pull-every 300`.
     Mcp {
         /// Leaves the tools that write out.
         #[arg(long)]
         read_only: bool,
+        /// Serves over HTTP at this address and port instead of stdin and
+        /// stdout. An address other than loopback needs a token.
+        #[arg(long, value_name = "ADDR:PORT")]
+        http: Option<std::net::SocketAddr>,
+        /// The environment variable that holds the bearer token.
+        #[arg(long, value_name = "NAME", default_value = "DAFTAR_MCP_TOKEN", requires = "http")]
+        token_env: String,
+        /// Serves an address other than loopback with no token: only
+        /// behind something else that checks who asks.
+        #[arg(long, requires = "http")]
+        no_token: bool,
+        /// Pulls the vault every this many seconds while it serves, the
+        /// first time at once; a failure is logged and the next pull tried.
+        #[arg(long, value_name = "SECONDS", requires = "http", value_parser = clap::value_parser!(u64).range(1..))]
+        pull_every: Option<u64>,
     },
     /// The vault as a bundle of the Open Knowledge Format (OKF 0.3):
     /// `export` writes one from the vault, and `check` says whether a
@@ -1803,7 +1829,21 @@ fn run(cli: Cli) -> Result<(), String> {
             let events = ics::events(&hidden.tasks(&index), &search, Day::today(), days);
             ics::put(&ics::calendar(&events, chrono::Utc::now()), output.as_deref())?;
         }
-        Command::Mcp { read_only } => mcp::run(root, cli.hidden, read_only)?,
+        Command::Mcp { read_only, http: None, .. } => mcp::run(root, cli.hidden, read_only)?,
+        Command::Mcp { read_only, http: Some(address), token_env, no_token, pull_every } => {
+            let token = std::env::var(&token_env).ok().filter(|token| !token.trim().is_empty());
+            if token.is_some() && no_token {
+                return Err(format!("--no-token, and ${token_env} holds a token: say which"));
+            }
+            if token.is_none() && !no_token && !address.ip().is_loopback() {
+                return Err(format!("serving {address} needs a token in ${token_env}, or --no-token"));
+            }
+            if pull_every.is_some() && !Git::new(&root).is_repository() {
+                return Err(format!("--pull-every: {} is no git repository", root.display()));
+            }
+            let pull_every = pull_every.map(std::time::Duration::from_secs);
+            mcp::run_http(root, cli.hidden, read_only, mcp::http::Options { address, token, pull_every })?;
+        }
         Command::Okf { action: OkfAction::Export { output, include, exclude, log_days, dry_run } } => {
             let mut scope = okf::Scope::read(&root);
             scope.include = check::joined(scope.include, include);

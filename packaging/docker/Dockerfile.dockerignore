@@ -1,0 +1,6 @@
+target
+target-container
+web/node_modules
+crates/daftar/reader
+.git
+.claude

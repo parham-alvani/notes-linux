@@ -176,6 +176,45 @@ jobs:
           # The tap's own bump, or the Mac's release, may have pushed meanwhile.
           retry sh -c 'git pull -q --rebase && git push -q'
 
+  image:
+    # ghcr.io/parham-alvani/daftar-cli, for a server that serves a vault to
+    # agents over HTTP (`daftar-cli mcp --http`, docs/specs/mcp-http.md).
+    # It is built from the source in a Rust image, not from the release's
+    # binary, whose glibc is the runner's and newer than Debian's.
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/setup-buildx-action@v4
+      - name: The tags
+        id: tags
+        run: |
+          version=$(cat VERSION)
+          echo "tags=ghcr.io/parham-alvani/daftar-cli:$version,ghcr.io/parham-alvani/daftar-cli:latest" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.version }}
+            org.opencontainers.image.licenses=GPL-3.0-only
+            org.opencontainers.image.description=daftar-cli: an Obsidian vault in Git on the command line, and as an MCP server over HTTP
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   aur:
     # daftar-bin and daftar-cli-bin are built from the release's tarballs, so
     # they move once the release is public. AUR_SSH_KEY is the private half
