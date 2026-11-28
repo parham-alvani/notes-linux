@@ -55,6 +55,27 @@ use daftar_core::{
     Vault, VaultEdits, VaultIndex, VaultTask,
 };
 
+/// `mcp --http`'s options, apart from the command's own, so clap builds
+/// them in a function of their own.
+#[derive(clap::Args)]
+struct McpHttp {
+    /// Serves over HTTP at this address and port instead of stdin and
+    /// stdout. An address other than loopback needs a token.
+    #[arg(long, value_name = "ADDR:PORT")]
+    http: Option<std::net::SocketAddr>,
+    /// The environment variable that holds the bearer token.
+    #[arg(long, value_name = "NAME", default_value = "DAFTAR_MCP_TOKEN", requires = "http")]
+    token_env: String,
+    /// Serves an address other than loopback with no token: only
+    /// behind something else that checks who asks.
+    #[arg(long, requires = "http")]
+    no_token: bool,
+    /// Pulls the vault every this many seconds while it serves, the
+    /// first time at once; a failure is logged and the next pull tried.
+    #[arg(long, value_name = "SECONDS", requires = "http", value_parser = clap::value_parser!(u64).range(1..))]
+    pull_every: Option<u64>,
+}
+
 #[derive(Parser)]
 #[command(name = "daftar-cli", version, about = "Daftar on the command line: an Obsidian vault in a Git repository")]
 struct Cli {
@@ -857,21 +878,8 @@ enum Command {
         /// Leaves the tools that write out.
         #[arg(long)]
         read_only: bool,
-        /// Serves over HTTP at this address and port instead of stdin and
-        /// stdout. An address other than loopback needs a token.
-        #[arg(long, value_name = "ADDR:PORT")]
-        http: Option<std::net::SocketAddr>,
-        /// The environment variable that holds the bearer token.
-        #[arg(long, value_name = "NAME", default_value = "DAFTAR_MCP_TOKEN", requires = "http")]
-        token_env: String,
-        /// Serves an address other than loopback with no token: only
-        /// behind something else that checks who asks.
-        #[arg(long, requires = "http")]
-        no_token: bool,
-        /// Pulls the vault every this many seconds while it serves, the
-        /// first time at once; a failure is logged and the next pull tried.
-        #[arg(long, value_name = "SECONDS", requires = "http", value_parser = clap::value_parser!(u64).range(1..))]
-        pull_every: Option<u64>,
+        #[command(flatten)]
+        http: McpHttp,
     },
     /// The vault as a bundle of the Open Knowledge Format (OKF 0.3):
     /// `export` writes one from the vault, and `check` says whether a
@@ -1829,8 +1837,8 @@ fn run(cli: Cli) -> Result<(), String> {
             let events = ics::events(&hidden.tasks(&index), &search, Day::today(), days);
             ics::put(&ics::calendar(&events, chrono::Utc::now()), output.as_deref())?;
         }
-        Command::Mcp { read_only, http: None, .. } => mcp::run(root, cli.hidden, read_only)?,
-        Command::Mcp { read_only, http: Some(address), token_env, no_token, pull_every } => {
+        Command::Mcp { read_only, http: McpHttp { http: None, .. } } => mcp::run(root, cli.hidden, read_only)?,
+        Command::Mcp { read_only, http: McpHttp { http: Some(address), token_env, no_token, pull_every } } => {
             let token = std::env::var(&token_env).ok().filter(|token| !token.trim().is_empty());
             if token.is_some() && no_token {
                 return Err(format!("--no-token, and ${token_env} holds a token: say which"));

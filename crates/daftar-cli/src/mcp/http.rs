@@ -246,7 +246,7 @@ mod tests {
         let mut reply = String::new();
         stream.read_to_string(&mut reply).unwrap();
         let status = reply.split(' ').nth(1).unwrap().parse().unwrap();
-        let body = reply.split_once("\r\n\r\n").map(|(_, body)| body.to_string()).unwrap_or_default();
+        let body = reply.split_once("\r\n\r\n").map_or_default(|(_, body)| body.to_string());
         (status, body)
     }
 
